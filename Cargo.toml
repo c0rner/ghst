@@ -1,14 +1,21 @@
 [package]
-name = "template-rust"
+name = "ghst"
 version = "0.1.0"
 edition = "2024"
 # TODO: Update these fields for your project
-authors = ["Your Name <you@example.com>"]
-description = "A short description of your project"
+description = "GitHub Scoped Tokens Helper"
 license = "Apache-2.0"
-repository = "https://github.com/OWNER/REPO"
+repository = "https://github.com/c0rner/ghst"
 
 [dependencies]
+argh = "0.1.19"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sysdirs = "0.9.4"
+toml = "1.1.4"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+ureq = { version = "3.3.0", features = ["json"] }
 
 [lints.rust]
 unsafe_code = "forbid"

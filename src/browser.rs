@@ -1,0 +1,54 @@
+use tracing::{info, warn};
+
+/// Print a prominent multiline authorization banner for GitHub OAuth Device Flow.
+pub fn display_auth_instructions(app_name: &str, user_code: &str, verification_uri: &str) {
+    eprintln!(
+        "\n\
+===================================================================\n\
+DEVICE AUTHORIZATION REQUIRED\n\
+===================================================================\n\
+GitHub App:       {app_name}\n\
+User Code:        {user_code}\n\
+Verification URL: {verification_uri}\n\n\
+This application will only ever request authorization following\n\
+explicit user initiation from the ghst CLI.\n\n\
+Please verify that the GitHub App name matches \"{app_name}\"\n\
+on the verification screen before authorizing.\n\
+===================================================================\n"
+    );
+}
+
+/// Open base verification URL in default browser unless `no_browser` is set.
+pub fn open_auth_url(verification_uri: &str, no_browser: bool) {
+    if no_browser {
+        info!("`no_browser` active; skipping browser launch");
+        return;
+    }
+
+    match open::that(verification_uri) {
+        Ok(()) => info!("Opened browser to {verification_uri}"),
+        Err(err) => {
+            warn!("Failed to open browser ({err}); please open manually: {verification_uri}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_open_auth_url_with_no_browser_flag() {
+        // When no_browser is true, open_auth_url should return without error or opening browser
+        open_auth_url("https://github.com/login/device", true);
+    }
+
+    #[test]
+    fn test_display_auth_instructions() {
+        display_auth_instructions(
+            "acme-dev-app",
+            "WDJB-MJHT",
+            "https://github.com/login/device",
+        );
+    }
+}

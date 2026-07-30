@@ -6,6 +6,8 @@ use std::fmt;
 pub struct Config {
     pub version: u32,
     pub default_profile: Option<String>,
+    #[serde(default)]
+    pub no_browser: Option<bool>,
     #[serde(rename = "profile", default)]
     pub profiles: BTreeMap<String, ProfileConfig>,
 }
@@ -15,6 +17,7 @@ impl fmt::Debug for Config {
         f.debug_struct("Config")
             .field("version", &self.version)
             .field("default_profile", &self.default_profile)
+            .field("no_browser", &self.no_browser)
             .field("profiles", &self.profiles)
             .finish()
     }

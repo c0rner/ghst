@@ -255,4 +255,23 @@ permissions = { contents = "read" }
             ProfileConfig::Root(_) => panic!("expected derived profile"),
         }
     }
+
+    #[test]
+    fn test_no_browser_config_parsing() {
+        let config_str = r#"
+version = 1
+no_browser = true
+
+[profile.developer]
+kind = "root"
+github_app.account = "acme"
+github_app.client_id = "id"
+github_app.client_secret = "secret"
+"#;
+        let config: Config = config_str.parse().unwrap();
+        assert_eq!(config.no_browser, Some(true));
+
+        let default_config: Config = VALID_CONFIG.parse().unwrap();
+        assert_eq!(default_config.no_browser, None);
+    }
 }

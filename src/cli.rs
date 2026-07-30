@@ -31,6 +31,10 @@ pub struct LoginCmd {
     /// target profile name (override `GHST_PROFILE`)
     #[argh(option, short = 'p')]
     pub profile: Option<String>,
+
+    /// do not attempt to open browser automatically
+    #[argh(switch)]
+    pub no_browser: bool,
 }
 
 /// Mint or retrieve a scoped GitHub token.
@@ -112,7 +116,27 @@ mod tests {
             GhstCli {
                 config: None,
                 command: SubCommand::Login(LoginCmd {
-                    profile: Some("developer".to_string())
+                    profile: Some("developer".to_string()),
+                    no_browser: false,
+                })
+            }
+        );
+    }
+
+    #[test]
+    fn test_login_cmd_no_browser_parsing() {
+        let args = GhstCli::from_args(
+            &["ghst"],
+            &["login", "--profile", "developer", "--no-browser"],
+        )
+        .unwrap();
+        assert_eq!(
+            args,
+            GhstCli {
+                config: None,
+                command: SubCommand::Login(LoginCmd {
+                    profile: Some("developer".to_string()),
+                    no_browser: true,
                 })
             }
         );

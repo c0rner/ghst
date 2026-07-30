@@ -1,0 +1,103 @@
+use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
+use std::fmt;
+
+/// Response from `POST /login/device/code`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceCodeResponse {
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_uri: String,
+    pub expires_in: u64,
+    #[serde(default = "default_poll_interval")]
+    pub interval: u64,
+}
+
+const fn default_poll_interval() -> u64 {
+    5
+}
+
+/// Response from `POST /login/oauth/access_token`
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccessTokenResponse {
+    pub access_token: String,
+    pub token_type: String,
+    pub expires_in: Option<u64>,
+    pub refresh_token: Option<String>,
+    pub refresh_token_expires_in: Option<u64>,
+    pub scope: Option<String>,
+}
+
+// Hand-written Debug to redact access_token and refresh_token
+impl fmt::Debug for AccessTokenResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AccessTokenResponse")
+            .field("access_token", &"[REDACTED]")
+            .field("token_type", &self.token_type)
+            .field("expires_in", &self.expires_in)
+            .field(
+                "refresh_token",
+                &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("refresh_token_expires_in", &self.refresh_token_expires_in)
+            .field("scope", &self.scope)
+            .finish()
+    }
+}
+
+/// OAuth error response from token polling endpoint
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OAuthErrorResponse {
+    pub error: String,
+    pub error_description: Option<String>,
+    pub error_uri: Option<String>,
+}
+
+/// Response from `GET /user`
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserResponse {
+    pub login: String,
+    pub id: u64,
+    pub name: Option<String>,
+    pub email: Option<String>,
+}
+
+/// Request for `POST /applications/{client_id}/token/scoped`
+#[derive(Serialize)]
+pub struct ScopedTokenRequest<'a> {
+    pub access_token: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repositories: Option<&'a [String]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permissions: Option<&'a BTreeMap<String, String>>,
+}
+
+/// Response from `POST /applications/{client_id}/token/scoped`
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScopedTokenResponse {
+    pub token: String,
+    pub expires_at: Option<String>,
+    pub permissions: Option<BTreeMap<String, String>>,
+    pub repositories: Option<Vec<RepositoryInfo>>,
+}
+
+// Hand-written Debug to redact token
+impl fmt::Debug for ScopedTokenResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ScopedTokenResponse")
+            .field("token", &"[REDACTED]")
+            .field("expires_at", &self.expires_at)
+            .field("permissions", &self.permissions)
+            .field("repositories", &self.repositories)
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepositoryInfo {
+    pub id: u64,
+    pub name: String,
+    pub full_name: String,
+}

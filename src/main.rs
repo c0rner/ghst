@@ -1,3 +1,5 @@
+pub mod cli;
+
 use ghst::cli::{GhstCli, SubCommand};
 use tracing::info;
 use tracing_subscriber::EnvFilter;

@@ -38,6 +38,13 @@ pub fn validate_config(config: &Config) -> Result<(), ConfigError> {
                 }
             }
             ProfileConfig::Derived(derived) => {
+                if derived.permissions.is_empty() {
+                    return Err(ConfigError::InvalidDerivedProfile {
+                        profile: name.clone(),
+                        reason: "derived profile permissions map must not be empty".into(),
+                    });
+                }
+
                 let source_profile = config.profiles.get(&derived.source).ok_or_else(|| {
                     ConfigError::ProfileNotFound {
                         profile: name.clone(),

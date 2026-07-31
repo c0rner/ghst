@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 /// Response from `POST /login/device/code`
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceCodeResponse {
     pub device_code: String,
     pub user_code: String,
@@ -11,6 +11,19 @@ pub struct DeviceCodeResponse {
     pub expires_in: u64,
     #[serde(default = "default_poll_interval")]
     pub interval: u64,
+}
+
+// Hand-written Debug to redact device_code
+impl fmt::Debug for DeviceCodeResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DeviceCodeResponse")
+            .field("device_code", &"[REDACTED]")
+            .field("user_code", &self.user_code)
+            .field("verification_uri", &self.verification_uri)
+            .field("expires_in", &self.expires_in)
+            .field("interval", &self.interval)
+            .finish()
+    }
 }
 
 const fn default_poll_interval() -> u64 {

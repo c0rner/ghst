@@ -1,6 +1,9 @@
 mod browser;
+mod cache;
 mod cli;
+mod commands;
 mod config;
+mod git;
 mod github;
 
 use cli::{GhstCli, SubCommand};
@@ -20,11 +23,13 @@ fn main() {
 
     let args: GhstCli = argh::from_env();
 
-    match args.command {
-        SubCommand::Login(cmd) => info!(
-            "Command: login (profile: {:?}, no_browser: {})",
-            cmd.profile, cmd.no_browser
-        ),
+    match &args.command {
+        SubCommand::Login(cmd) => {
+            if let Err(err) = commands::run_login(&args, cmd) {
+                eprintln!("Error: {err}");
+                std::process::exit(1);
+            }
+        }
         SubCommand::Token(cmd) => info!(
             "Command: token (profile: {:?}, repo: {:?}, format: {:?})",
             cmd.profile, cmd.repo, cmd.format

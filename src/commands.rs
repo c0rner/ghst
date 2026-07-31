@@ -40,24 +40,19 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), String> {
         ProfileConfig::Root(root) => root,
     };
 
-    // 4. Determine repository scope and compute SHA-256 cache key
-    let repo_scope_str = match &root_profile.repo {
-        Some(RepoScope::All) | None => "all",
-        Some(RepoScope::Auto) => "auto",
-        Some(RepoScope::Specific(r)) => r.as_str(),
-    };
-    let hash_key = compute_cache_key(&profile_name, repo_scope_str);
+    // 4. Resolve repository scope and compute SHA-256 cache key
+    let repo_scope =
+        resolve_root_repo_scope_with(root_profile.repo.as_ref(), crate::git::resolve_origin_repo)?;
+    let hash_key = compute_cache_key(&profile_name, &repo_scope);
 
     // 5. Check if valid unexpired root token already exists in cache
     let cache_dir = Config::cache_dir().map_err(|e| e.to_string())?;
-    if let Ok(Some(CacheEntry::Root(entry))) = load_cache_entry(&cache_dir, &hash_key) {
-        if entry.is_valid() {
+    if let Some(entry) = load_valid_root_cache_entry(&cache_dir, &hash_key, &profile_name)? {
             println!(
                 "Profile '{profile_name}' already has a valid cached root token for @{} (valid until {}).",
                 entry.github_user, entry.expires_at
             );
             return Ok(());
-        }
     }
 
     // 6. Execute OAuth Device Flow
@@ -137,6 +132,27 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), String> {
     );
 
     Ok(())
+}
+#[cfg(test)]
+fn resolve_root_repo_scope_from(
+    repo_scope: Option<&RepoScope>,
+    start_dir: &std::path::Path,
+) -> Result<String, String> {
+    resolve_root_repo_scope_with(repo_scope, || {
+        crate::git::resolve_origin_repo_from(start_dir)
+    })
+}
+
+fn resolve_root_repo_scope_with(
+    repo_scope: Option<&RepoScope>,
+    resolve_auto: impl FnOnce() -> Result<String, crate::git::GitError>,
+) -> Result<String, String> {
+    match repo_scope {
+        Some(RepoScope::Auto) => resolve_auto()
+            .map_err(|err| format!("failed to resolve automatic repository scope: {err}")),
+        Some(RepoScope::All) | None => Ok("all".to_string()),
+        Some(RepoScope::Specific(repo)) => Ok(repo.clone()),
+    }
 }
 
 fn load_config(path: Option<&std::path::Path>) -> Result<Config, String> {
@@ -224,4 +240,63 @@ permissions = { contents = "read" }
         // Fallback to default_profile
         assert_eq!(resolve_profile_name(None, &config).unwrap(), "reader");
     }
+    #[test]
+    fn test_resolve_root_repo_scope_variants() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let specific = RepoScope::Specific("octo-org/api".into());
+
+        assert_eq!(
+            resolve_root_repo_scope_from(None, temp_dir.path()).unwrap(),
+            "all"
+        );
+        assert_eq!(
+            resolve_root_repo_scope_from(Some(&RepoScope::All), temp_dir.path()).unwrap(),
+            "all"
+        );
+        assert_eq!(
+            resolve_root_repo_scope_from(Some(&specific), temp_dir.path()).unwrap(),
+            "octo-org/api"
+        );
+    }
+
+    #[test]
+    fn test_resolve_auto_root_repo_scope_to_canonical_origin() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        write_origin_config(temp_dir.path(), "git@github.com:octo-org/api.git");
+
+        let auto = RepoScope::Auto;
+        assert_eq!(
+            resolve_root_repo_scope_from(Some(&auto), temp_dir.path()).unwrap(),
+            "octo-org/api"
+        );
+    }
+
+    #[test]
+    fn test_resolve_auto_root_repo_scope_fails_without_github_origin() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        write_origin_config(temp_dir.path(), "git@gitlab.com:octo-org/api.git");
+
+        let error =
+            resolve_root_repo_scope_from(Some(&RepoScope::Auto), temp_dir.path()).unwrap_err();
+        assert!(error.contains("failed to resolve automatic repository scope"));
+        assert!(error.contains("not a GitHub repository"));
+    }
+
+    #[test]
+    fn test_auto_root_repo_scopes_produce_distinct_cache_keys() {
+        let first_dir = tempfile::tempdir().unwrap();
+        let second_dir = tempfile::tempdir().unwrap();
+        write_origin_config(first_dir.path(), "git@github.com:octo-org/first.git");
+        write_origin_config(second_dir.path(), "git@github.com:octo-org/second.git");
+
+        let auto = RepoScope::Auto;
+        let first_scope = resolve_root_repo_scope_from(Some(&auto), first_dir.path()).unwrap();
+        let second_scope = resolve_root_repo_scope_from(Some(&auto), second_dir.path()).unwrap();
+
+        assert_ne!(
+            compute_cache_key("developer", &first_scope),
+            compute_cache_key("developer", &second_scope)
+        );
+    }
+
 }

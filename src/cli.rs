@@ -62,7 +62,11 @@ pub struct StatusCmd {}
 /// List configured permission profiles.
 #[derive(FromArgs, PartialEq, Eq, Debug)]
 #[argh(subcommand, name = "profiles")]
-pub struct ProfilesCmd {}
+pub struct ProfilesCmd {
+    /// show detailed profile information
+    #[argh(switch, short = 'v')]
+    pub verbose: bool,
+}
 
 /// Clear cached tokens.
 #[derive(FromArgs, PartialEq, Eq, Debug)]
@@ -195,6 +199,27 @@ mod tests {
                     socket: Some(PathBuf::from("/tmp/ghst.sock")),
                     allow_profile: vec!["reader".to_string(), "contributor".to_string()],
                 })
+            }
+        );
+    }
+
+    #[test]
+    fn test_profiles_cmd_parsing() {
+        let args = GhstCli::from_args(&["ghst"], &["profiles"]).unwrap();
+        assert_eq!(
+            args,
+            GhstCli {
+                config: None,
+                command: SubCommand::Profiles(ProfilesCmd { verbose: false }),
+            }
+        );
+
+        let args_v = GhstCli::from_args(&["ghst"], &["profiles", "-v"]).unwrap();
+        assert_eq!(
+            args_v,
+            GhstCli {
+                config: None,
+                command: SubCommand::Profiles(ProfilesCmd { verbose: true }),
             }
         );
     }

@@ -115,3 +115,13 @@ pub enum PermissionLevel {
     Write,
     None,
 }
+
+impl fmt::Display for PermissionLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Read => write!(f, "read"),
+            Self::Write => write!(f, "write"),
+            Self::None => write!(f, "none"),
+        }
+    }
+}

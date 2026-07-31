@@ -1,7 +1,9 @@
+pub mod display;
 pub mod error;
 pub mod types;
 pub mod validation;
 
+pub use display::print_profiles;
 pub use error::ConfigError;
 pub use types::*;
 
@@ -273,5 +275,31 @@ github_app.client_secret = "secret"
 
         let default_config: Config = VALID_CONFIG.parse().unwrap();
         assert_eq!(default_config.no_browser, None);
+    }
+
+    #[test]
+    fn test_empty_derived_permissions_disallowed() {
+        let invalid_config = r#"
+version = 1
+
+[profile.developer]
+kind = "root"
+github_app.account = "acme"
+github_app.client_id = "id"
+github_app.client_secret = "secret"
+
+[profile.reader]
+kind = "derived"
+source = "developer"
+permissions = {}
+"#;
+        let err: ConfigError = invalid_config.parse::<Config>().unwrap_err();
+        match err {
+            ConfigError::InvalidDerivedProfile { profile, reason } => {
+                assert_eq!(profile, "reader");
+                assert!(reason.contains("permissions map must not be empty"));
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }

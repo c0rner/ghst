@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
+use zeroize::Zeroizing;
 
 /// Response from `POST /login/device/code`
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,12 +32,12 @@ const fn default_poll_interval() -> u64 {
 }
 
 /// Response from `POST /login/oauth/access_token`
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Deserialize)]
 pub struct AccessTokenResponse {
     pub access_token: String,
     pub token_type: String,
     pub expires_in: Option<u64>,
-    pub refresh_token: Option<String>,
+    pub refresh_token: Option<Zeroizing<String>>,
     pub refresh_token_expires_in: Option<u64>,
     pub scope: Option<String>,
 }

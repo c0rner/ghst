@@ -243,6 +243,7 @@ mod tests {
         }"#;
 
         let res: AccessTokenResponse = serde_json::from_str(json_data).unwrap();
+        assert!(res.refresh_token.is_some());
         assert_eq!(res.access_token, "ghu_16C7e42F292c6912E7710c838347Ae178B4a");
 
         let debug_str = format!("{res:?}");

@@ -5,7 +5,7 @@ use crate::cache::{
 };
 use crate::cli::{GhstCli, LoginCmd};
 use crate::config::{Config, ProfileConfig, RepoScope};
-use crate::github::{GitHubClient, GitHubError};
+use crate::github::{AccessTokenResponse, GitHubClient, GitHubError};
 use std::env;
 use std::thread;
 use time::{Duration, OffsetDateTime};
@@ -133,6 +133,17 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), String> {
 
     Ok(())
 }
+fn extract_access_token(response: AccessTokenResponse) -> (String, Option<u64>) {
+    let AccessTokenResponse {
+        access_token,
+        expires_in,
+        refresh_token,
+        ..
+    } = response;
+    drop(refresh_token);
+    (access_token, expires_in)
+}
+
 #[cfg(test)]
 fn resolve_root_repo_scope_from(
     repo_scope: Option<&RepoScope>,
@@ -240,6 +251,24 @@ permissions = { contents = "read" }
         // Fallback to default_profile
         assert_eq!(resolve_profile_name(None, &config).unwrap(), "reader");
     }
+
+    #[test]
+    fn test_extract_access_token_drops_refresh_token() {
+        let response = AccessTokenResponse {
+            access_token: "access-token".into(),
+            token_type: "bearer".into(),
+            expires_in: Some(3600),
+            refresh_token: Some("refresh-token".to_string().into()),
+            refresh_token_expires_in: Some(3600),
+            scope: None,
+        };
+
+        assert_eq!(
+            extract_access_token(response),
+            ("access-token".to_string(), Some(3600))
+        );
+    }
+
     #[test]
     fn test_resolve_root_repo_scope_variants() {
         let temp_dir = tempfile::tempdir().unwrap();

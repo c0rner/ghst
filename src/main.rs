@@ -23,8 +23,8 @@ fn main() {
 
     let args: GhstCli = argh::from_env();
 
-    match args.command {
-        SubCommand::Login(ref cmd) => {
+    match &args.command {
+        SubCommand::Login(cmd) => {
             if let Err(err) = commands::run_login(&args, cmd) {
                 eprintln!("Error: {err}");
                 std::process::exit(1);

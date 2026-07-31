@@ -8,15 +8,16 @@ license = "Apache-2.0"
 repository = "https://github.com/c0rner/ghst"
 
 [dependencies]
-argh = "0.1.19"
-serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.151"
-open = "5.3"
-sysdirs = "0.9.4"
-toml = "1.1.4"
-tracing = "0.1.44"
-tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
-ureq = { version = "3.3.0", features = ["json"] }
+argh = "0.1"
+base64 = "0.23"
+open = "5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sysdirs = "0.9"
+toml = "1.1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+ureq = { version = "3.3", features = ["json"] }
 
 [lints.rust]
 unsafe_code = "forbid"

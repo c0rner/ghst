@@ -2,6 +2,8 @@ use crate::github::error::GitHubError;
 use crate::github::types::{
     AccessTokenResponse, DeviceCodeResponse, ScopedTokenRequest, ScopedTokenResponse, UserResponse,
 };
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -201,33 +203,7 @@ fn map_ureq_error(err: ureq::Error) -> GitHubError {
 
 fn basic_auth_header(client_id: &str, client_secret: &str) -> String {
     let credentials = format!("{client_id}:{client_secret}");
-    format!("Basic {}", base64_encode(credentials.as_bytes()))
-}
-
-fn base64_encode(input: &[u8]) -> String {
-    const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::new();
-    for chunk in input.chunks(3) {
-        let b0 = chunk[0];
-        let b1 = chunk.get(1).copied().unwrap_or(0);
-        let b2 = chunk.get(2).copied().unwrap_or(0);
-
-        out.push(CHARSET[(b0 >> 2) as usize] as char);
-        out.push(CHARSET[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
-
-        if chunk.len() > 1 {
-            out.push(CHARSET[(((b1 & 0x0F) << 2) | (b2 >> 6)) as usize] as char);
-        } else {
-            out.push('=');
-        }
-
-        if chunk.len() > 2 {
-            out.push(CHARSET[(b2 & 0x3F) as usize] as char);
-        } else {
-            out.push('=');
-        }
-    }
-    out
+    format!("Basic {}", STANDARD.encode(credentials.as_bytes()))
 }
 
 #[cfg(test)]
@@ -326,5 +302,11 @@ mod tests {
 
         let res: OAuthErrorResponse = serde_json::from_str(json_data).unwrap();
         assert_eq!(res.error, "authorization_pending");
+    }
+
+    #[test]
+    fn test_basic_auth_header() {
+        let header = basic_auth_header("client_id_123", "secret_abc");
+        assert_eq!(header, "Basic Y2xpZW50X2lkXzEyMzpzZWNyZXRfYWJj");
     }
 }

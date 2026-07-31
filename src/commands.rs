@@ -1,7 +1,7 @@
 use crate::browser::{display_auth_instructions, open_auth_url};
 use crate::cache::{
-    CacheEntry, RootCacheEntry, compute_cache_key, format_rfc3339, load_cache_entry,
-    save_cache_entry,
+    CacheEntry, RootCacheEntry, SaveCacheEntry, compute_cache_key, format_rfc3339,
+    load_cache_entry, save_cache_entry,
 };
 use crate::cli::{GhstCli, LoginCmd};
 use crate::config::{Config, ProfileConfig, RepoScope};
@@ -48,11 +48,11 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), String> {
     // 5. Check if valid unexpired root token already exists in cache
     let cache_dir = Config::cache_dir().map_err(|e| e.to_string())?;
     if let Some(entry) = load_valid_root_cache_entry(&cache_dir, &hash_key, &profile_name)? {
-            println!(
-                "Profile '{profile_name}' already has a valid cached root token for @{} (valid until {}).",
-                entry.github_user, entry.expires_at
-            );
-            return Ok(());
+        println!(
+            "Profile '{profile_name}' already has a valid cached root token for @{} (valid until {}).",
+            entry.github_user, entry.expires_at
+        );
+        return Ok(());
     }
 
     // 6. Execute OAuth Device Flow
@@ -103,16 +103,17 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), String> {
         }
     };
 
+    let (access_token, expires_in) = extract_access_token(token_res);
+
     // 8. Fetch authenticated user details
-    // Note: Refresh token in `token_res` is destroyed in memory and never stored (Rule 7).
     let user_info = client
-        .get_user(&token_res.access_token)
+        .get_user(&access_token)
         .map_err(|e| format!("Failed to fetch user details: {e}"))?;
 
     // 9. Compute timestamps and save root token to cache
     let now = OffsetDateTime::now_utc();
     let issued_at = format_rfc3339(now);
-    let expires_in_secs = i64::try_from(token_res.expires_in.unwrap_or(28800)).unwrap_or(28800);
+    let expires_in_secs = i64::try_from(expires_in.unwrap_or(28800)).unwrap_or(28800);
     let expires_at = format_rfc3339(now + Duration::seconds(expires_in_secs));
 
     let root_entry = RootCacheEntry {
@@ -120,19 +121,66 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), String> {
         github_user: user_info.login.clone(),
         issued_at,
         expires_at: expires_at.clone(),
-        access_token: token_res.access_token,
+        access_token,
     };
 
-    save_cache_entry(&cache_dir, &hash_key, &CacheEntry::Root(root_entry))
-        .map_err(|e| format!("Failed to save cache entry: {e}"))?;
-
-    println!(
-        "Successfully authenticated as @{} for profile '{profile_name}'. Root token cached until {expires_at}.",
-        user_info.login
-    );
+    report_root_cache_save(
+        save_cache_entry(&cache_dir, &hash_key, &CacheEntry::Root(root_entry))
+            .map_err(|err| format!("Failed to save cache entry: {err}"))?,
+        &profile_name,
+        &user_info.login,
+        &expires_at,
+    )?;
 
     Ok(())
 }
+
+fn load_valid_root_cache_entry(
+    cache_dir: &std::path::Path,
+    hash_key: &str,
+    profile_name: &str,
+) -> Result<Option<RootCacheEntry>, String> {
+    match load_cache_entry(cache_dir, hash_key).map_err(|err| err.to_string())? {
+        Some(CacheEntry::Root(entry)) if entry.is_valid() => Ok(Some(entry)),
+        Some(entry) if entry.is_valid() => Err(format!(
+            "valid cache entry for profile '{profile_name}' has unexpected kind '{}'",
+            entry_kind(&entry)
+        )),
+        Some(_) | None => Ok(None),
+    }
+}
+
+fn report_root_cache_save(
+    outcome: SaveCacheEntry,
+    profile_name: &str,
+    github_user: &str,
+    expires_at: &str,
+) -> Result<(), String> {
+    match outcome {
+        SaveCacheEntry::Saved => println!(
+            "Successfully authenticated as @{github_user} for profile '{profile_name}'. Root token cached until {expires_at}."
+        ),
+        SaveCacheEntry::Retained(CacheEntry::Root(entry)) => println!(
+            "Profile '{profile_name}' already has a valid cached root token for @{} (valid until {}).",
+            entry.github_user, entry.expires_at
+        ),
+        SaveCacheEntry::Retained(entry) => {
+            return Err(format!(
+                "valid cache entry for profile '{profile_name}' has unexpected kind '{}'",
+                entry_kind(&entry)
+            ));
+        }
+    }
+    Ok(())
+}
+
+const fn entry_kind(entry: &CacheEntry) -> &'static str {
+    match entry {
+        CacheEntry::Root(_) => "root",
+        CacheEntry::Derived(_) => "derived",
+    }
+}
+
 fn extract_access_token(response: AccessTokenResponse) -> (String, Option<u64>) {
     let AccessTokenResponse {
         access_token,
@@ -197,8 +245,10 @@ fn resolve_profile_name(cli_profile: Option<&str>, config: &Config) -> Result<St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::compute_cache_key;
     use crate::cli::SubCommand;
     use argh::FromArgs;
+    use std::fs;
 
     const SAMPLE_CONFIG: &str = r#"
 version = 1
@@ -328,4 +378,13 @@ permissions = { contents = "read" }
         );
     }
 
+    fn write_origin_config(directory: &std::path::Path, origin_url: &str) {
+        let git_dir = directory.join(".git");
+        fs::create_dir(&git_dir).unwrap();
+        fs::write(
+            git_dir.join("config"),
+            format!("[remote \"origin\"]\n\turl = {origin_url}\n"),
+        )
+        .unwrap();
+    }
 }

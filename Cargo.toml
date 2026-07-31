@@ -10,16 +10,19 @@ repository = "https://github.com/c0rner/ghst"
 [dependencies]
 argh = "0.1"
 base64 = "0.23"
+fs2 = "0.4"
 open = "5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.11"
 sysdirs = "0.9"
+tempfile = "3.27"
 time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
 toml = "1.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 ureq = { version = "3.3", features = ["json"] }
+zeroize = { version = "1.9", features = ["serde"] }
 
 [lints.rust]
 unsafe_code = "forbid"
@@ -37,3 +40,6 @@ must_use_candidate = "allow"
 lto = true
 codegen-units = 1
 strip = true
+
+[target."cfg(unix)".dependencies]
+rustix = { version = "1.1.4", features = ["fs", "process"] }

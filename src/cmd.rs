@@ -1,3 +1,10 @@
+pub mod clear;
+pub mod login;
+pub mod profiles;
+pub mod proxy;
+pub mod status;
+pub mod token;
+
 use argh::FromArgs;
 use std::path::PathBuf;
 use std::str::FromStr;

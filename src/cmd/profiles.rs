@@ -1,12 +1,24 @@
+use crate::cmd::{GhstCli, ProfilesCmd};
 use crate::config::{Config, ProfileConfig, RepoScope};
 use std::io::{self, Write};
 
-/// Print configured profiles to the provided writer in concise or verbose format.
+/// Handles execution of the `ghst profiles` subcommand.
 ///
 /// # Errors
 ///
-/// Returns `std::io::Error` if writing to `writer` fails.
-pub fn print_profiles<W: Write>(writer: &mut W, config: &Config, verbose: bool) -> io::Result<()> {
+/// Returns an error string if loading configuration or printing profiles fails.
+pub fn run_profiles(args: &GhstCli, cmd: &ProfilesCmd) -> Result<(), String> {
+    let config = args
+        .config
+        .as_ref()
+        .map_or_else(Config::load, |path| Config::load_from_path(path))
+        .map_err(|err| format!("loading configuration: {err}"))?;
+
+    print_profiles(&mut io::stdout(), &config, cmd.verbose)
+        .map_err(|err| format!("writing profiles: {err}"))
+}
+
+fn print_profiles<W: Write>(writer: &mut W, config: &Config, verbose: bool) -> io::Result<()> {
     if verbose {
         writeln!(writer, "Configured Profiles:\n")?;
     }

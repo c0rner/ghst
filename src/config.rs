@@ -1,10 +1,8 @@
-pub mod display;
-pub mod error;
-pub mod types;
-pub mod validation;
+mod error;
+mod types;
+mod validation;
 
-pub use display::print_profiles;
-pub use error::ConfigError;
+use error::ConfigError;
 pub use types::*;
 
 use std::fs;

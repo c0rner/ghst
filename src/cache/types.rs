@@ -54,7 +54,6 @@ impl TokenExpiry {
         Self(value)
     }
 
-    #[cfg(test)]
     pub const fn value(self) -> OffsetDateTime {
         self.0
     }
@@ -65,10 +64,6 @@ impl TokenExpiry {
 
     pub fn is_usable_at(self, now: OffsetDateTime) -> bool {
         self.0 > now + TOKEN_SAFETY_MARGIN
-    }
-
-    pub fn is_bounded_by(self, parent: Self) -> bool {
-        self.0 <= parent.0
     }
 }
 
@@ -168,9 +163,6 @@ impl CacheEntry {
                     && existing.repo_scope == candidate.repo_scope
                     && existing.parent_generation == candidate.parent_generation
                     && existing.policy_fingerprint == candidate.policy_fingerprint
-                    && existing
-                        .expires_at
-                        .is_bounded_by(candidate.parent_expires_at)
             }
             _ => false,
         }
@@ -246,14 +238,7 @@ pub struct DerivedCacheEntry {
     pub repo_scope: String,
     pub issued_at: String,
     pub expires_at: TokenExpiry,
-    /// Used only for the atomic compatibility check and not serialized.
-    #[serde(skip, default = "distant_past")]
-    pub parent_expires_at: TokenExpiry,
     pub access_token: AccessToken,
-}
-
-const fn distant_past() -> TokenExpiry {
-    TokenExpiry::new(OffsetDateTime::UNIX_EPOCH)
 }
 
 impl fmt::Debug for DerivedCacheEntry {
@@ -268,7 +253,6 @@ impl fmt::Debug for DerivedCacheEntry {
             .field("repo_scope", &self.repo_scope)
             .field("issued_at", &self.issued_at)
             .field("expires_at", &self.expires_at)
-            .field("parent_expires_at", &self.parent_expires_at)
             .field("access_token", &self.access_token)
             .finish()
     }

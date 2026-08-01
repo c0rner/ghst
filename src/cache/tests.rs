@@ -256,7 +256,6 @@ fn compatible_entry_is_retained_and_wrong_kind_fails_closed() {
         repo_scope: "all".into(),
         issued_at: format_rfc3339(OffsetDateTime::now_utc()),
         expires_at: TokenExpiry::new(OffsetDateTime::now_utc() + Duration::hours(1)),
-        parent_expires_at: TokenExpiry::new(OffsetDateTime::now_utc() + Duration::hours(2)),
         access_token: "derived".into(),
     });
     save_cache_entry(&other, &root_key(), &derived).unwrap();

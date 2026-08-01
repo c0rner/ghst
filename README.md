@@ -1,6 +1,6 @@
 # ghst (GitHub Scoped Tokens)
 
-`ghst` (pronounced "ghost") is a local, developer-focused CLI tool that issues short-lived GitHub App user access tokens for humans and AI coding tools. It replaces long-lived personal access credentials with user-attributed, strictly scoped access tokens whose privilege and lifetime can only decrease.
+`ghst` (pronounced "ghost") is a local, developer-focused CLI tool that issues short-lived GitHub App user access tokens for humans and AI coding tools. It replaces long-lived personal access credentials with user-attributed, strictly scoped access tokens.
 
 ---
 
@@ -62,6 +62,12 @@ permissions = { contents = "read", pull_requests = "read", issues = "read" }
 Root profiles cannot define `repo`: they represent the GitHub App's complete authority ceiling and are cached under `profile|all`. A root token can be printed only by calling `ghst token` without `--repo`.
 
 A derived profile's `repo` value is its default selection. Repeated CLI `--repo` values replace that default. `all` means “apply no additional repository narrowing”; it never widens the permissions or repositories GitHub allows for the root token. Explicit repositories must use `owner/repository`, and every owner must match the source root profile's `github_app.account`.
+
+### Independent Token Lifetimes
+
+GitHub issues a scoped token as a separate user access token with its own `expires_at` and the documented eight-hour lifetime for expiring GitHub App user tokens. Because GitHub serializes that expiry at whole-second precision while `ghst` records receipt time with subsecond precision, lifetime validation allows a one-second rounding tolerance. A scoped token may remain valid after the root token used to mint it has expired or been individually revoked. An expired root may validate an already-cached child but cannot mint a new one.
+
+Root-token expiration or individual revocation must not be treated as revoking its children. The planned `ghst clear` kill switch must explicitly revoke every cached live root and derived token before removing its cache entry. See GitHub's [scoped-token endpoint](https://docs.github.com/en/rest/apps/apps?apiVersion=2022-11-28#create-a-scoped-access-token) and [single-token revocation endpoint](https://docs.github.com/en/rest/apps/oauth-applications?apiVersion=2022-11-28#delete-an-app-token).
 
 ---
 

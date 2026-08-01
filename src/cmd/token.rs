@@ -5,7 +5,7 @@ use crate::cache::{
 };
 use crate::cmd::{
     CmdError, GhstCli, OutputFormat, RepositorySelection, TokenCmd, load_config,
-    load_valid_root_entry, resolve_profile_name,
+    load_current_root_entry, load_valid_root_entry, resolve_profile_name,
 };
 use crate::config::{Config, DerivedProfile, ProfileConfig, RootProfile};
 use crate::github::{GitHubClient, ScopedTokenClient, ScopedTokenResponse};
@@ -14,6 +14,9 @@ use std::io::{self, Write};
 use std::path::Path;
 use time::OffsetDateTime;
 use tracing::info;
+
+const MAX_SCOPED_LIFETIME: time::Duration = time::Duration::hours(8);
+const SCOPED_EXPIRY_ROUNDING_TOLERANCE: time::Duration = time::Duration::seconds(1);
 
 /// Handles execution of the `ghst token` subcommand.
 ///
@@ -120,11 +123,10 @@ fn handle_derived<C: ScopedTokenClient, W: Write>(
         &permissions,
     );
 
-    let root_entry =
-        load_valid_root_entry(context.cache_dir, source_name, source_profile, context.now)?
-            .ok_or_else(|| CmdError::NoSourceTokenCached {
-                profile: source_name.clone(),
-            })?;
+    let root_entry = load_current_root_entry(context.cache_dir, source_name, source_profile)?
+        .ok_or_else(|| CmdError::NoSourceTokenCached {
+            profile: source_name.clone(),
+        })?;
     let parent_generation = root_entry.generation_fingerprint();
     let cache_key = compute_cache_key(profile_name, &canonical_scope);
 
@@ -135,13 +137,9 @@ fn handle_derived<C: ScopedTokenClient, W: Write>(
         policy: &policy,
         parent_generation: &parent_generation,
     };
-    if let Some(entry) = load_valid_derived_entry(
-        context.cache_dir,
-        &cache_key,
-        &provenance,
-        root_entry.expires_at,
-        context.now,
-    )? {
+    if let Some(entry) =
+        load_valid_derived_entry(context.cache_dir, &cache_key, &provenance, context.now)?
+    {
         write_token(
             writer,
             &entry.access_token,
@@ -151,6 +149,12 @@ fn handle_derived<C: ScopedTokenClient, W: Write>(
             cmd.format,
         )?;
         return Ok(());
+    }
+
+    if !root_entry.expires_at.is_usable_at(context.now) {
+        return Err(CmdError::NoSourceTokenCached {
+            profile: source_name.clone(),
+        });
     }
 
     let request = MintRequest {
@@ -204,7 +208,6 @@ fn load_valid_derived_entry(
     cache_dir: &Path,
     cache_key: &str,
     provenance: &DerivedProvenance<'_>,
-    parent_expiry: TokenExpiry,
     now: OffsetDateTime,
 ) -> Result<Option<DerivedCacheEntry>, CmdError> {
     let Some(entry) = load_cache_entry(cache_dir, cache_key)? else {
@@ -223,8 +226,7 @@ fn load_valid_derived_entry(
                 && entry.repo_scope == provenance.canonical_scope
                 && entry.policy_fingerprint == provenance.policy
                 && entry.parent_generation == provenance.parent_generation
-                && entry.expires_at.is_usable_at(now)
-                && entry.expires_at.is_bounded_by(parent_expiry);
+                && entry.expires_at.is_usable_at(now);
             Ok(valid.then_some(entry))
         }
         CacheEntry::Legacy(LegacyCacheEntry::Derived(_)) => Ok(None),
@@ -279,19 +281,19 @@ fn mint_and_persist<C: ScopedTokenClient, W: Write>(
     let ScopedTokenResponse {
         token, expires_at, ..
     } = response;
+    let response_received_at = OffsetDateTime::now_utc();
 
-    let expiry =
-        match validate_scoped_expiry(expires_at.as_deref(), context.now, root_entry.expires_at) {
-            Ok(expiry) => expiry,
-            Err(error) => {
-                return Err(revoke_with_context(
-                    context.client,
-                    source_profile,
-                    &token,
-                    error,
-                ));
-            }
-        };
+    let expiry = match validate_scoped_expiry(expires_at.as_deref(), response_received_at) {
+        Ok(expiry) => expiry,
+        Err(error) => {
+            return Err(revoke_with_context(
+                context.client,
+                source_profile,
+                &token,
+                error,
+            ));
+        }
+    };
 
     ensure_root_generation(
         context,
@@ -309,9 +311,8 @@ fn mint_and_persist<C: ScopedTokenClient, W: Write>(
         policy_fingerprint: policy.to_owned(),
         github_user: root_entry.github_user,
         repo_scope: canonical_scope.to_owned(),
-        issued_at: format_rfc3339(context.now),
+        issued_at: format_rfc3339(response_received_at),
         expires_at: expiry,
-        parent_expires_at: root_entry.expires_at,
         access_token: token,
     });
 
@@ -331,7 +332,7 @@ fn ensure_root_generation<C: ScopedTokenClient>(
     token: &AccessToken,
     expected_generation: &str,
 ) -> Result<(), CmdError> {
-    let reread = load_valid_root_entry(context.cache_dir, source_name, source_profile, context.now);
+    let reread = load_current_root_entry(context.cache_dir, source_name, source_profile);
     match reread {
         Ok(Some(current)) if current.generation_fingerprint() == expected_generation => Ok(()),
         Ok(Some(_) | None) => Err(revoke_with_context(
@@ -402,7 +403,6 @@ fn persist_scoped_candidate<C: ScopedTokenClient, W: Write>(
 fn validate_scoped_expiry(
     value: Option<&str>,
     now: OffsetDateTime,
-    parent: TokenExpiry,
 ) -> Result<TokenExpiry, CmdError> {
     let value = value.ok_or_else(|| CmdError::InvalidLifetime {
         token_kind: "scoped",
@@ -418,10 +418,10 @@ fn validate_scoped_expiry(
             reason: "expires_at is not beyond the 30-second safety margin".into(),
         });
     }
-    if !expiry.is_bounded_by(parent) {
+    if expiry.value() > now + MAX_SCOPED_LIFETIME + SCOPED_EXPIRY_ROUNDING_TOLERANCE {
         return Err(CmdError::InvalidLifetime {
             token_kind: "scoped",
-            reason: "expires_at exceeds the parent root token expiry".into(),
+            reason: "expires_at exceeds the supported eight-hour maximum and one-second timestamp rounding tolerance".into(),
         });
     }
     Ok(expiry)
@@ -623,7 +623,7 @@ permissions = { contents = "read", pull_requests = "write" }
         let temp = tempfile::tempdir().unwrap();
         let cache_dir = temp.path().join("cache");
         cache_root(&cache_dir, now);
-        let expiry = TokenExpiry::new(now + Duration::hours(1)).to_string();
+        let expiry = TokenExpiry::new(now + Duration::hours(6)).to_string();
         let client = client(ScopedTokenResponse {
             token: "child-token".into(),
             expires_at: Some(expiry.clone()),
@@ -704,19 +704,31 @@ permissions = { contents = "read", pull_requests = "write" }
     }
 
     #[test]
-    fn scoped_expiry_rejects_malformed_margin_and_parent_overrun() {
+    fn scoped_expiry_validates_lifetime_with_timestamp_rounding_tolerance() {
         let now = OffsetDateTime::now_utc();
-        let parent = TokenExpiry::new(now + Duration::hours(1));
         for value in [
             Some("not-a-timestamp".to_owned()),
             Some(TokenExpiry::new(now + Duration::seconds(30)).to_string()),
-            Some(TokenExpiry::new(now + Duration::hours(2)).to_string()),
+            Some(TokenExpiry::new(now + Duration::hours(8) + Duration::seconds(2)).to_string()),
         ] {
             assert!(matches!(
-                validate_scoped_expiry(value.as_deref(), now, parent),
+                validate_scoped_expiry(value.as_deref(), now),
                 Err(CmdError::InvalidLifetime { .. })
             ));
         }
+
+        let issued_at = OffsetDateTime::parse(
+            "2026-08-01T17:20:25.889841154Z",
+            &time::format_description::well_known::Rfc3339,
+        )
+        .unwrap();
+        let github_expiry = "2026-08-02T01:20:26.000Z";
+        assert_eq!(
+            validate_scoped_expiry(Some(github_expiry), issued_at)
+                .unwrap()
+                .value(),
+            TokenExpiry::parse(github_expiry).unwrap().value()
+        );
     }
 
     struct WinningClient<'a> {
@@ -747,7 +759,6 @@ permissions = { contents = "read", pull_requests = "write" }
                 repo_scope: "acme/api".into(),
                 issued_at: format_rfc3339(self.now),
                 expires_at: TokenExpiry::new(self.now + Duration::minutes(50)),
-                parent_expires_at: TokenExpiry::new(self.now + Duration::hours(2)),
                 access_token: "winning-token".into(),
             });
             save_cache_entry(
@@ -953,6 +964,63 @@ permissions = { contents = "read", pull_requests = "write" }
         })
         .unwrap();
         assert_eq!(output, b"root-token\n");
+        assert!(client.request.borrow().is_none());
+    }
+
+    #[test]
+    fn independently_live_child_is_returned_after_root_expiry() {
+        let issued_at = OffsetDateTime::now_utc();
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        cache_root(&cache_dir, issued_at);
+        let root = load_cache_entry(&cache_dir, &root_cache_key("developer"))
+            .unwrap()
+            .unwrap();
+        let CacheEntry::Root(root) = root else {
+            panic!("expected root entry");
+        };
+        let permissions = BTreeMap::from([
+            ("contents".into(), "read".into()),
+            ("pull_requests".into(), "write".into()),
+        ]);
+        let child = CacheEntry::Derived(DerivedCacheEntry {
+            version: CACHE_SCHEMA_VERSION,
+            profile: "reader".into(),
+            source_profile: "developer".into(),
+            parent_generation: root.generation_fingerprint(),
+            policy_fingerprint: policy_fingerprint("acme", "acme/api", &permissions),
+            github_user: "octocat".into(),
+            repo_scope: "acme/api".into(),
+            issued_at: format_rfc3339(issued_at),
+            expires_at: TokenExpiry::new(issued_at + Duration::hours(6)),
+            access_token: "still-live-child".into(),
+        });
+        save_cache_entry(&cache_dir, &compute_cache_key("reader", "acme/api"), &child).unwrap();
+
+        let config: Config = CONFIG.parse().unwrap();
+        let client = client(ScopedTokenResponse {
+            token: "must-not-mint".into(),
+            expires_at: None,
+            permissions: None,
+            repositories: None,
+        });
+        let context = TokenContext {
+            config: &config,
+            cache_dir: &cache_dir,
+            client: &client,
+            now: issued_at + Duration::hours(3),
+        };
+        let mut output = Vec::new();
+        execute_token(
+            &context,
+            "reader",
+            &command(OutputFormat::Text),
+            &mut output,
+            || panic!("auto not expected"),
+        )
+        .unwrap();
+
+        assert_eq!(output, b"still-live-child\n");
         assert!(client.request.borrow().is_none());
     }
 

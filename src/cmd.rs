@@ -156,6 +156,15 @@ fn load_valid_root_entry(
     profile: &RootProfile,
     now: time::OffsetDateTime,
 ) -> Result<Option<RootCacheEntry>, CmdError> {
+    Ok(load_current_root_entry(cache_dir, profile_name, profile)?
+        .filter(|entry| entry.expires_at.is_usable_at(now)))
+}
+
+fn load_current_root_entry(
+    cache_dir: &Path,
+    profile_name: &str,
+    profile: &RootProfile,
+) -> Result<Option<RootCacheEntry>, CmdError> {
     let key = root_cache_key(profile_name);
     let Some(entry) = load_cache_entry(cache_dir, &key)? else {
         return Ok(None);
@@ -174,7 +183,6 @@ fn load_valid_root_entry(
                 authority_fingerprint(&profile.github_app.client_id, &profile.github_app.account);
             if entry.version == crate::cache::CACHE_SCHEMA_VERSION
                 && entry.authority_fingerprint == expected_authority
-                && entry.expires_at.is_usable_at(now)
             {
                 Ok(Some(entry))
             } else {

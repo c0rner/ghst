@@ -3,7 +3,7 @@ use crate::cache::{
     CacheEntry, RootCacheEntry, SaveCacheEntry, compute_cache_key, format_rfc3339,
     load_cache_entry, save_cache_entry,
 };
-use crate::cli::{GhstCli, LoginCmd};
+use crate::cmd::{GhstCli, LoginCmd};
 use crate::config::{Config, ProfileConfig, RepoScope};
 use crate::github::{AccessTokenResponse, GitHubClient, GitHubError};
 use std::env;
@@ -246,7 +246,7 @@ fn resolve_profile_name(cli_profile: Option<&str>, config: &Config) -> Result<St
 mod tests {
     use super::*;
     use crate::cache::compute_cache_key;
-    use crate::cli::SubCommand;
+    use crate::cmd::SubCommand;
     use argh::FromArgs;
     use std::fs;
 

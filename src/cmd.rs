@@ -1,11 +1,23 @@
 pub mod clear;
+pub mod error;
 pub mod login;
 pub mod profiles;
 pub mod proxy;
+mod repository;
 pub mod status;
 pub mod token;
 
+pub use error::CmdError;
+use repository::RepositorySelection;
+
+use crate::cache::{
+    CacheEntry, CacheKind, LegacyCacheEntry, RootCacheEntry, authority_fingerprint,
+    compute_cache_key, load_cache_entry,
+};
+use crate::config::{Config, RootProfile};
 use argh::FromArgs;
+use std::env;
+use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -52,7 +64,7 @@ pub struct TokenCmd {
     #[argh(option, short = 'p')]
     pub profile: Option<String>,
 
-    /// repository scope (all, auto, or owner/repo; may be specified multiple times)
+    /// derived-profile repository selection (all, auto, or owner/repo; repeat to select repositories; rejected for root profiles)
     #[argh(option, short = 'r')]
     pub repo: Vec<String>,
 
@@ -101,16 +113,81 @@ pub enum OutputFormat {
 }
 
 impl FromStr for OutputFormat {
-    type Err = String;
+    type Err = CmdError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
             "text" => Ok(Self::Text),
             "json" => Ok(Self::Json),
             "env" => Ok(Self::Env),
-            other => Err(format!(
-                "unknown output format '{other}', expected 'text', 'json', or 'env'"
-            )),
+            other => Err(CmdError::InvalidOutputFormat(other.to_string())),
+        }
+    }
+}
+
+fn load_config(path: Option<&Path>) -> Result<Config, CmdError> {
+    path.map_or_else(Config::load, Config::load_from_path)
+        .map_err(CmdError::Config)
+}
+
+fn resolve_profile_name(cli_profile: Option<&str>, config: &Config) -> Result<String, CmdError> {
+    if let Some(profile) = cli_profile {
+        return Ok(profile.to_owned());
+    }
+    if let Ok(profile) = env::var("GHST_PROFILE") {
+        let profile = profile.trim();
+        if !profile.is_empty() {
+            return Ok(profile.to_owned());
+        }
+    }
+    config
+        .default_profile
+        .clone()
+        .ok_or(CmdError::ProfileRequired)
+}
+
+fn root_cache_key(profile_name: &str) -> String {
+    compute_cache_key(profile_name, "all")
+}
+
+fn load_valid_root_entry(
+    cache_dir: &Path,
+    profile_name: &str,
+    profile: &RootProfile,
+    now: time::OffsetDateTime,
+) -> Result<Option<RootCacheEntry>, CmdError> {
+    let key = root_cache_key(profile_name);
+    let Some(entry) = load_cache_entry(cache_dir, &key)? else {
+        return Ok(None);
+    };
+
+    if entry.profile() != profile_name {
+        return Err(CmdError::InconsistentCacheMetadata {
+            profile: profile_name.to_owned(),
+            found: entry.profile().to_owned(),
+        });
+    }
+
+    match entry {
+        CacheEntry::Root(entry) => {
+            let expected_authority =
+                authority_fingerprint(&profile.github_app.client_id, &profile.github_app.account);
+            if entry.version == crate::cache::CACHE_SCHEMA_VERSION
+                && entry.authority_fingerprint == expected_authority
+                && entry.expires_at.is_usable_at(now)
+            {
+                Ok(Some(entry))
+            } else {
+                Ok(None)
+            }
+        }
+        CacheEntry::Legacy(LegacyCacheEntry::Root(_)) => Ok(None),
+        CacheEntry::Derived(_) | CacheEntry::Legacy(LegacyCacheEntry::Derived(_)) => {
+            Err(CmdError::UnexpectedCacheKind {
+                profile: profile_name.to_owned(),
+                expected: CacheKind::Root,
+                actual: CacheKind::Derived,
+            })
         }
     }
 }
@@ -233,9 +310,9 @@ mod tests {
 
     #[test]
     fn test_output_format_from_str() {
-        assert_eq!("text".parse::<OutputFormat>(), Ok(OutputFormat::Text));
-        assert_eq!("JSON".parse::<OutputFormat>(), Ok(OutputFormat::Json));
-        assert_eq!("Env".parse::<OutputFormat>(), Ok(OutputFormat::Env));
+        assert_eq!("text".parse::<OutputFormat>().unwrap(), OutputFormat::Text);
+        assert_eq!("JSON".parse::<OutputFormat>().unwrap(), OutputFormat::Json);
+        assert_eq!("Env".parse::<OutputFormat>().unwrap(), OutputFormat::Env);
         assert!("invalid".parse::<OutputFormat>().is_err());
     }
 }

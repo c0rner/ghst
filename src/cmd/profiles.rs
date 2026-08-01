@@ -1,4 +1,4 @@
-use crate::cmd::{GhstCli, ProfilesCmd};
+use crate::cmd::{CmdError, GhstCli, ProfilesCmd};
 use crate::config::{Config, ProfileConfig, RepoScope};
 use std::io::{self, Write};
 
@@ -6,16 +6,15 @@ use std::io::{self, Write};
 ///
 /// # Errors
 ///
-/// Returns an error string if loading configuration or printing profiles fails.
-pub fn run_profiles(args: &GhstCli, cmd: &ProfilesCmd) -> Result<(), String> {
+/// Returns `CmdError` if loading configuration or printing profiles fails.
+pub fn run_profiles(args: &GhstCli, cmd: &ProfilesCmd) -> Result<(), CmdError> {
     let config = args
         .config
         .as_ref()
-        .map_or_else(Config::load, |path| Config::load_from_path(path))
-        .map_err(|err| format!("loading configuration: {err}"))?;
+        .map_or_else(Config::load, |path| Config::load_from_path(path))?;
 
-    print_profiles(&mut io::stdout(), &config, cmd.verbose)
-        .map_err(|err| format!("writing profiles: {err}"))
+    print_profiles(&mut io::stdout(), &config, cmd.verbose)?;
+    Ok(())
 }
 
 fn print_profiles<W: Write>(writer: &mut W, config: &Config, verbose: bool) -> io::Result<()> {
@@ -34,12 +33,7 @@ fn print_profiles<W: Write>(writer: &mut W, config: &Config, verbose: bool) -> i
                     writeln!(writer, "{marker} {name} [root]{default_suffix}")?;
                     writeln!(writer, "    Account:     {}", root.github_app.account)?;
                     writeln!(writer, "    Client ID:   {}", root.github_app.client_id)?;
-                    let repo_str = match &root.repo {
-                        Some(RepoScope::All) | None => "all",
-                        Some(RepoScope::Auto) => "auto",
-                        Some(RepoScope::Specific(r)) => r.as_str(),
-                    };
-                    writeln!(writer, "    Repo Scope:  {repo_str}")?;
+                    writeln!(writer, "    Repo Scope:  all (root authority)")?;
                     if let Some(desc) = &root.description {
                         writeln!(writer, "    Description: {desc}")?;
                     }

@@ -3,7 +3,7 @@ use crate::cache::fs::{
     LockMode, cache_dir_exists, create_private_tempfile, ensure_cache_dir, open_private_file,
     sync_cache_dir, validate_cache_file, with_cache_lock,
 };
-use crate::cache::key::validate_cache_key;
+use crate::cache::key::{compute_cache_key, validate_cache_key};
 use crate::cache::types::{CacheEntry, SaveCacheEntry};
 use std::ffi::OsStr;
 use std::fs;
@@ -12,19 +12,29 @@ use std::path::Path;
 
 /// Saves a `CacheEntry` to `cache_dir/<hash_key>.json`.
 ///
-/// A valid existing entry is retained. An expired entry is atomically replaced.
+/// A compatible current entry is retained. A legacy, expired, or same-kind
+/// stale-provenance entry is atomically replaced. Malformed, inconsistent, or
+/// wrong-kind entries fail closed.
 pub fn save_cache_entry(
     cache_dir: &Path,
     hash_key: &str,
     entry: &CacheEntry,
 ) -> Result<SaveCacheEntry, CacheError> {
     ensure_cache_dir(cache_dir)?;
+    validate_entry_key(hash_key, entry)?;
     let json_bytes = serde_json::to_vec_pretty(entry).map_err(CacheError::Json)?;
 
     with_cache_lock(cache_dir, hash_key, LockMode::Exclusive, |cache_file| {
         if let Some(existing) = read_cache_entry(cache_file)? {
-            if !existing.is_expired()? {
-                return Ok(SaveCacheEntry::Retained(existing));
+            validate_entry_key(hash_key, &existing)?;
+            if existing.kind() != entry.kind() {
+                return Err(CacheError::UnexpectedKind {
+                    expected: kind_name(entry),
+                    actual: kind_name(&existing),
+                });
+            }
+            if existing.compatible_with(entry, time::OffsetDateTime::now_utc()) {
+                return Ok(SaveCacheEntry::Retained(Box::new(existing)));
             }
         }
 
@@ -44,6 +54,25 @@ pub fn save_cache_entry(
 
         Ok(SaveCacheEntry::Saved)
     })
+}
+
+fn validate_entry_key(hash_key: &str, entry: &CacheEntry) -> Result<(), CacheError> {
+    let actual_key = compute_cache_key(entry.profile(), entry.repo_scope());
+    if actual_key == hash_key {
+        Ok(())
+    } else {
+        Err(CacheError::InconsistentMetadata {
+            expected_key: hash_key.to_owned(),
+            actual_key,
+        })
+    }
+}
+
+const fn kind_name(entry: &CacheEntry) -> &'static str {
+    match entry.kind() {
+        crate::cache::types::CacheKind::Root => "root",
+        crate::cache::types::CacheKind::Derived => "derived",
+    }
 }
 
 /// Loads a `CacheEntry` from `cache_dir/<hash_key>.json`.
@@ -113,7 +142,7 @@ pub fn list_cache_entries(cache_dir: &Path) -> Result<Vec<(String, CacheEntry)>,
     Ok(entries)
 }
 
-pub fn read_cache_entry(cache_file: &Path) -> Result<Option<CacheEntry>, CacheError> {
+fn read_cache_entry(cache_file: &Path) -> Result<Option<CacheEntry>, CacheError> {
     match fs::symlink_metadata(cache_file) {
         Ok(metadata) => {
             validate_cache_file(cache_file, &metadata)?;

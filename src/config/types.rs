@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
+use std::str::FromStr;
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
     pub version: u32,
     pub default_profile: Option<String>,
@@ -23,7 +24,7 @@ impl fmt::Debug for Config {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProfileConfig {
     Root(RootProfile),
@@ -39,11 +40,11 @@ impl fmt::Debug for ProfileConfig {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RootProfile {
     pub description: Option<String>,
     pub github_app: GitHubAppConfig,
-    pub repo: Option<RepoScope>,
 }
 
 impl fmt::Debug for RootProfile {
@@ -51,12 +52,11 @@ impl fmt::Debug for RootProfile {
         f.debug_struct("RootProfile")
             .field("description", &self.description)
             .field("github_app", &self.github_app)
-            .field("repo", &self.repo)
             .finish()
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitHubAppConfig {
     pub account: String,
     pub client_id: String,
@@ -78,7 +78,7 @@ const fn default_derived_repo() -> RepoScope {
     RepoScope::Auto
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
 pub struct DerivedProfile {
     pub description: Option<String>,
     pub source: String,
@@ -99,13 +99,35 @@ impl fmt::Debug for DerivedProfile {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RepoScope {
     All,
     Auto,
     #[serde(untagged)]
     Specific(String),
+}
+
+impl fmt::Display for RepoScope {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::All => write!(f, "all"),
+            Self::Auto => write!(f, "auto"),
+            Self::Specific(repo) => write!(f, "{repo}"),
+        }
+    }
+}
+
+impl FromStr for RepoScope {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "all" => Ok(Self::All),
+            "auto" => Ok(Self::Auto),
+            _ => Ok(Self::Specific(s.to_string())),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

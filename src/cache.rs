@@ -16,6 +16,7 @@ pub use key::compute_cache_key;
 pub use storage::{delete_cache_entry, list_cache_entries, load_cache_entry, save_cache_entry};
 #[allow(unused_imports)]
 pub use types::{
-    CacheEntry, DerivedCacheEntry, RootCacheEntry, SaveCacheEntry, format_rfc3339,
-    is_timestamp_valid,
+    AccessToken, CACHE_SCHEMA_VERSION, CacheEntry, CacheKind, DerivedCacheEntry, LegacyCacheEntry,
+    RootCacheEntry, SaveCacheEntry, TokenExpiry, authority_fingerprint, format_rfc3339,
+    policy_fingerprint,
 };

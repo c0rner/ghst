@@ -1,187 +1,102 @@
 use crate::browser::{display_auth_instructions, open_auth_url};
 use crate::cache::{
-    CacheEntry, RootCacheEntry, SaveCacheEntry, compute_cache_key, format_rfc3339,
-    load_cache_entry, save_cache_entry,
+    AccessToken, CACHE_SCHEMA_VERSION, CacheEntry, RootCacheEntry, SaveCacheEntry, TokenExpiry,
+    authority_fingerprint, format_rfc3339, save_cache_entry,
 };
-use crate::cmd::{GhstCli, LoginCmd};
-use crate::config::{Config, ProfileConfig, RepoScope};
-use crate::github::{AccessTokenResponse, GitHubClient, GitHubError};
-use std::env;
+use crate::cmd::{
+    CmdError, GhstCli, LoginCmd, load_config, load_valid_root_entry, resolve_profile_name,
+    root_cache_key,
+};
+use crate::config::ProfileConfig;
+use crate::github::{AccessTokenResponse, GitHubClient, GitHubError, RootTokenClient};
 use std::thread;
 use time::{Duration, OffsetDateTime};
 use tracing::{info, warn};
+
+const MAX_ROOT_LIFETIME_SECONDS: u64 = 8 * 60 * 60;
 
 /// Handles execution of the `ghst login` subcommand.
 ///
 /// # Errors
 ///
-/// Returns error string if configuration loading, profile resolution,
-/// profile validation, or OAuth device flow execution fails.
-pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), String> {
-    // 1. Load configuration
+/// Returns `CmdError` if configuration loading, profile resolution,
+/// OAuth execution, lifetime validation, persistence, or cleanup fails.
+pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
     let config = load_config(args.config.as_deref())?;
-
-    // 2. Resolve target profile name
     let profile_name = resolve_profile_name(cmd.profile.as_deref(), &config)?;
-
-    // 3. Look up profile and enforce Root-only rule
     let profile = config
         .profiles
         .get(&profile_name)
-        .ok_or_else(|| format!("profile '{profile_name}' is not defined in configuration"))?;
-
+        .ok_or_else(|| CmdError::ProfileNotFound(profile_name.clone()))?;
     let root_profile = match profile {
-        ProfileConfig::Derived(derived) => {
-            return Err(format!(
-                "profile '{profile_name}' is a derived profile. Login is only permitted for root profiles. Please log in to its root source profile '{}' instead: ghst login -p {}",
-                derived.source, derived.source
-            ));
-        }
         ProfileConfig::Root(root) => root,
+        ProfileConfig::Derived(derived) => {
+            return Err(CmdError::DerivedLoginNotAllowed {
+                profile: profile_name,
+                source: derived.source.clone(),
+            });
+        }
     };
 
-    // 4. Resolve repository scope and compute SHA-256 cache key
-    let repo_scope =
-        resolve_root_repo_scope_with(root_profile.repo.as_ref(), crate::git::resolve_origin_repo)?;
-    let hash_key = compute_cache_key(&profile_name, &repo_scope);
-
-    // 5. Check if valid unexpired root token already exists in cache
-    let cache_dir = Config::cache_dir().map_err(|e| e.to_string())?;
-    if let Some(entry) = load_valid_root_cache_entry(&cache_dir, &hash_key, &profile_name)? {
-        println!(
-            "Profile '{profile_name}' already has a valid cached root token for @{} (valid until {}).",
-            entry.github_user, entry.expires_at
-        );
+    let cache_dir = crate::config::Config::cache_dir()?;
+    if let Some(entry) = load_valid_root_entry(
+        &cache_dir,
+        &profile_name,
+        root_profile,
+        OffsetDateTime::now_utc(),
+    )? {
+        report_existing(&profile_name, &entry);
         return Ok(());
     }
 
-    // 6. Execute OAuth Device Flow
     let client = GitHubClient::new();
     info!("Initiating OAuth Device Flow for profile '{profile_name}'...");
-
-    let device_res = client
-        .request_device_code(&root_profile.github_app.client_id)
-        .map_err(|e| format!("Failed to request device code: {e}"))?;
-
-    // Display authorization instructions banner
+    let device = client.request_device_code(&root_profile.github_app.client_id)?;
     display_auth_instructions(
         &root_profile.github_app.account,
-        &device_res.user_code,
-        &device_res.verification_uri,
+        &device.user_code,
+        &device.verification_uri,
     );
-
-    // Open browser unless disabled via CLI flag or config
-    let no_browser = cmd.no_browser || config.no_browser.unwrap_or(false);
-    open_auth_url(&device_res.verification_uri, no_browser);
-
+    open_auth_url(
+        &device.verification_uri,
+        cmd.no_browser || config.no_browser.unwrap_or(false),
+    );
     println!("Waiting for authorization in browser...");
 
-    // 7. Poll for access token
-    let mut interval = device_res.interval;
-    let token_res = loop {
+    let mut interval = device.interval;
+    let response = loop {
         thread::sleep(std::time::Duration::from_secs(interval));
-
-        match client.poll_access_token(&root_profile.github_app.client_id, &device_res.device_code)
-        {
-            Ok(res) => break res,
-            Err(GitHubError::OAuthPending) => {
-                // Continue polling
-            }
+        match client.poll_access_token(&root_profile.github_app.client_id, &device.device_code) {
+            Ok(response) => break response,
+            Err(GitHubError::OAuthPending) => {}
             Err(GitHubError::OAuthSlowDown) => {
                 interval += 5;
                 warn!("Polling rate limited by GitHub; increasing interval to {interval}s");
             }
-            Err(GitHubError::OAuthExpired) => {
-                return Err("Device code expired. Please run `ghst login` again.".into());
-            }
-            Err(GitHubError::OAuthAccessDenied) => {
-                return Err("Authorization request was denied by the user.".into());
-            }
-            Err(err) => {
-                return Err(format!("OAuth polling error: {err}"));
-            }
+            Err(GitHubError::OAuthExpired) => return Err(CmdError::OAuthExpired),
+            Err(GitHubError::OAuthAccessDenied) => return Err(CmdError::OAuthAccessDenied),
+            Err(error) => return Err(CmdError::GitHub(error)),
         }
     };
 
-    let (access_token, expires_in) = extract_access_token(token_res);
-
-    // 8. Fetch authenticated user details
-    let user_info = client
-        .get_user(&access_token)
-        .map_err(|e| format!("Failed to fetch user details: {e}"))?;
-
-    // 9. Compute timestamps and save root token to cache
-    let now = OffsetDateTime::now_utc();
-    let issued_at = format_rfc3339(now);
-    let expires_in_secs = i64::try_from(expires_in.unwrap_or(28800)).unwrap_or(28800);
-    let expires_at = format_rfc3339(now + Duration::seconds(expires_in_secs));
-
-    let root_entry = RootCacheEntry {
-        profile: profile_name.clone(),
-        github_user: user_info.login.clone(),
-        issued_at,
-        expires_at: expires_at.clone(),
-        access_token,
-    };
-
-    report_root_cache_save(
-        save_cache_entry(&cache_dir, &hash_key, &CacheEntry::Root(root_entry))
-            .map_err(|err| format!("Failed to save cache entry: {err}"))?,
+    persist_root_response(
+        &client,
+        root_profile,
         &profile_name,
-        &user_info.login,
-        &expires_at,
-    )?;
-
-    Ok(())
+        &cache_dir,
+        response,
+        OffsetDateTime::now_utc(),
+    )
 }
 
-fn load_valid_root_cache_entry(
+fn persist_root_response<C: RootTokenClient>(
+    client: &C,
+    profile: &crate::config::RootProfile,
+    profile_name: &str,
     cache_dir: &std::path::Path,
-    hash_key: &str,
-    profile_name: &str,
-) -> Result<Option<RootCacheEntry>, String> {
-    match load_cache_entry(cache_dir, hash_key).map_err(|err| err.to_string())? {
-        Some(CacheEntry::Root(entry)) if entry.is_valid() => Ok(Some(entry)),
-        Some(entry) if entry.is_valid() => Err(format!(
-            "valid cache entry for profile '{profile_name}' has unexpected kind '{}'",
-            entry_kind(&entry)
-        )),
-        Some(_) | None => Ok(None),
-    }
-}
-
-fn report_root_cache_save(
-    outcome: SaveCacheEntry,
-    profile_name: &str,
-    github_user: &str,
-    expires_at: &str,
-) -> Result<(), String> {
-    match outcome {
-        SaveCacheEntry::Saved => println!(
-            "Successfully authenticated as @{github_user} for profile '{profile_name}'. Root token cached until {expires_at}."
-        ),
-        SaveCacheEntry::Retained(CacheEntry::Root(entry)) => println!(
-            "Profile '{profile_name}' already has a valid cached root token for @{} (valid until {}).",
-            entry.github_user, entry.expires_at
-        ),
-        SaveCacheEntry::Retained(entry) => {
-            return Err(format!(
-                "valid cache entry for profile '{profile_name}' has unexpected kind '{}'",
-                entry_kind(&entry)
-            ));
-        }
-    }
-    Ok(())
-}
-
-const fn entry_kind(entry: &CacheEntry) -> &'static str {
-    match entry {
-        CacheEntry::Root(_) => "root",
-        CacheEntry::Derived(_) => "derived",
-    }
-}
-
-fn extract_access_token(response: AccessTokenResponse) -> (String, Option<u64>) {
+    response: AccessTokenResponse,
+    now: OffsetDateTime,
+) -> Result<(), CmdError> {
     let AccessTokenResponse {
         access_token,
         expires_in,
@@ -189,68 +104,168 @@ fn extract_access_token(response: AccessTokenResponse) -> (String, Option<u64>) 
         ..
     } = response;
     drop(refresh_token);
-    (access_token, expires_in)
-}
 
-#[cfg(test)]
-fn resolve_root_repo_scope_from(
-    repo_scope: Option<&RepoScope>,
-    start_dir: &std::path::Path,
-) -> Result<String, String> {
-    resolve_root_repo_scope_with(repo_scope, || {
-        crate::git::resolve_origin_repo_from(start_dir)
-    })
-}
-
-fn resolve_root_repo_scope_with(
-    repo_scope: Option<&RepoScope>,
-    resolve_auto: impl FnOnce() -> Result<String, crate::git::GitError>,
-) -> Result<String, String> {
-    match repo_scope {
-        Some(RepoScope::Auto) => resolve_auto()
-            .map_err(|err| format!("failed to resolve automatic repository scope: {err}")),
-        Some(RepoScope::All) | None => Ok("all".to_string()),
-        Some(RepoScope::Specific(repo)) => Ok(repo.clone()),
-    }
-}
-
-fn load_config(path: Option<&std::path::Path>) -> Result<Config, String> {
-    path.map_or_else(
-        || Config::load().map_err(|e| e.to_string()),
-        |p| Config::load_from_path(p).map_err(|e| e.to_string()),
-    )
-}
-
-fn resolve_profile_name(cli_profile: Option<&str>, config: &Config) -> Result<String, String> {
-    if let Some(p) = cli_profile {
-        return Ok(p.to_string());
-    }
-
-    if let Ok(env_p) = env::var("GHST_PROFILE") {
-        if !env_p.trim().is_empty() {
-            return Ok(env_p.trim().to_string());
+    let expiry = match validate_root_expiry(expires_in, now) {
+        Ok(expiry) => expiry,
+        Err(error) => return Err(revoke_with_context(client, profile, &access_token, error)),
+    };
+    let user = match client.get_user(access_token.as_ref()) {
+        Ok(user) => user,
+        Err(error) => {
+            return Err(revoke_with_context(
+                client,
+                profile,
+                &access_token,
+                CmdError::GitHub(error),
+            ));
         }
-    }
+    };
 
-    if let Some(ref def_p) = config.default_profile {
-        return Ok(def_p.clone());
-    }
+    let candidate = CacheEntry::Root(RootCacheEntry {
+        version: CACHE_SCHEMA_VERSION,
+        profile: profile_name.to_owned(),
+        authority_fingerprint: authority_fingerprint(
+            &profile.github_app.client_id,
+            &profile.github_app.account,
+        ),
+        github_user: user.login,
+        issued_at: format_rfc3339(now),
+        expires_at: expiry,
+        access_token,
+    });
+    let key = root_cache_key(profile_name);
+    let result = match save_cache_entry(cache_dir, &key, &candidate) {
+        Ok(result) => result,
+        Err(error) => {
+            return Err(revoke_with_context(
+                client,
+                profile,
+                root_token(&candidate),
+                CmdError::Cache(error),
+            ));
+        }
+    };
 
-    Err(
-        "No profile specified. Pass `-p <profile>` or set `default_profile` in configuration."
-            .into(),
-    )
+    match result {
+        SaveCacheEntry::Saved => report_saved(profile_name, root_entry(&candidate)),
+        SaveCacheEntry::Retained(entry) => match *entry {
+            CacheEntry::Root(entry) => {
+                if let Err(source) = client.delete_token(
+                    &profile.github_app.client_id,
+                    &profile.github_app.client_secret,
+                    root_token(&candidate).as_ref(),
+                ) {
+                    return Err(CmdError::RevocationFailed {
+                        context: Box::new(CmdError::StaleProvenance {
+                            profile: profile_name.to_owned(),
+                            reason: "a compatible concurrent root cache winner was retained",
+                        }),
+                        source,
+                    });
+                }
+                report_existing(profile_name, &entry);
+            }
+            entry => {
+                return Err(CmdError::UnexpectedCacheKind {
+                    profile: profile_name.to_owned(),
+                    expected: crate::cache::CacheKind::Root,
+                    actual: entry.kind(),
+                });
+            }
+        },
+    }
+    Ok(())
+}
+
+fn validate_root_expiry(
+    expires_in: Option<u64>,
+    now: OffsetDateTime,
+) -> Result<TokenExpiry, CmdError> {
+    let seconds = expires_in.ok_or_else(|| CmdError::InvalidLifetime {
+        token_kind: "root",
+        reason: "response did not contain expires_in".into(),
+    })?;
+    if seconds == 0 {
+        return Err(CmdError::InvalidLifetime {
+            token_kind: "root",
+            reason: "expires_in must be positive".into(),
+        });
+    }
+    if seconds > MAX_ROOT_LIFETIME_SECONDS {
+        return Err(CmdError::InvalidLifetime {
+            token_kind: "root",
+            reason: format!(
+                "expires_in of {seconds} seconds exceeds the supported eight-hour maximum"
+            ),
+        });
+    }
+    let seconds = i64::try_from(seconds).map_err(|_| CmdError::InvalidLifetime {
+        token_kind: "root",
+        reason: "expires_in cannot be represented safely".into(),
+    })?;
+    let expiry = TokenExpiry::new(now + Duration::seconds(seconds));
+    if !expiry.is_usable_at(now) {
+        return Err(CmdError::InvalidLifetime {
+            token_kind: "root",
+            reason: "expires_in is not beyond the 30-second safety margin".into(),
+        });
+    }
+    Ok(expiry)
+}
+
+fn revoke_with_context<C: RootTokenClient>(
+    client: &C,
+    profile: &crate::config::RootProfile,
+    token: &AccessToken,
+    context: CmdError,
+) -> CmdError {
+    match client.delete_token(
+        &profile.github_app.client_id,
+        &profile.github_app.client_secret,
+        token.as_ref(),
+    ) {
+        Ok(()) => context,
+        Err(source) => CmdError::RevocationFailed {
+            context: Box::new(context),
+            source,
+        },
+    }
+}
+
+fn root_entry(entry: &CacheEntry) -> &RootCacheEntry {
+    match entry {
+        CacheEntry::Root(entry) => entry,
+        CacheEntry::Derived(_) | CacheEntry::Legacy(_) => unreachable!("candidate is root"),
+    }
+}
+
+fn root_token(entry: &CacheEntry) -> &AccessToken {
+    &root_entry(entry).access_token
+}
+
+fn report_saved(profile_name: &str, entry: &RootCacheEntry) {
+    println!(
+        "Successfully authenticated as @{} for profile '{profile_name}'. Root token cached until {}.",
+        entry.github_user, entry.expires_at
+    );
+}
+
+fn report_existing(profile_name: &str, entry: &RootCacheEntry) {
+    println!(
+        "Profile '{profile_name}' already has a valid cached root token for @{} (valid until {}).",
+        entry.github_user, entry.expires_at
+    );
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::compute_cache_key;
     use crate::cmd::SubCommand;
+    use crate::github::UserResponse;
     use argh::FromArgs;
-    use std::fs;
+    use std::cell::RefCell;
 
-    const SAMPLE_CONFIG: &str = r#"
+    const CONFIG: &str = r#"
 version = 1
 default_profile = "reader"
 
@@ -267,124 +282,144 @@ permissions = { contents = "read" }
 "#;
 
     #[test]
-    fn test_derived_profile_login_rejected() {
-        let config: Config = SAMPLE_CONFIG.parse().unwrap();
+    fn derived_login_is_rejected() {
+        let config: crate::config::Config = CONFIG.parse().unwrap();
         let args = GhstCli::from_args(&["ghst"], &["login", "-p", "reader"]).unwrap();
-        let SubCommand::Login(cmd) = &args.command else {
-            panic!("expected login cmd");
+        let SubCommand::Login(command) = &args.command else {
+            panic!("expected login command");
         };
+        let profile_name = resolve_profile_name(command.profile.as_deref(), &config).unwrap();
+        let ProfileConfig::Derived(derived) = config.profiles.get(&profile_name).unwrap() else {
+            panic!("expected derived profile");
+        };
+        let error = CmdError::DerivedLoginNotAllowed {
+            profile: profile_name,
+            source: derived.source.clone(),
+        };
+        assert!(error.to_string().contains("ghst login -p developer"));
+    }
 
-        let profile_name = resolve_profile_name(cmd.profile.as_deref(), &config).unwrap();
-        let profile = config.profiles.get(&profile_name).unwrap();
-        match profile {
-            ProfileConfig::Derived(derived) => {
-                let err_msg = format!(
-                    "profile '{profile_name}' is a derived profile. Login is only permitted for root profiles. Please log in to its root source profile '{}' instead: ghst login -p {}",
-                    derived.source, derived.source
-                );
-                assert!(err_msg.contains("ghst login -p developer"));
+    #[test]
+    fn root_lifetime_requires_positive_bounded_value_and_margin() {
+        let now = OffsetDateTime::now_utc();
+        for value in [None, Some(0), Some(30), Some(MAX_ROOT_LIFETIME_SECONDS + 1)] {
+            assert!(matches!(
+                validate_root_expiry(value, now),
+                Err(CmdError::InvalidLifetime { .. })
+            ));
+        }
+        assert_eq!(
+            validate_root_expiry(Some(MAX_ROOT_LIFETIME_SECONDS), now)
+                .unwrap()
+                .value(),
+            now + Duration::hours(8)
+        );
+    }
+
+    #[test]
+    fn refresh_token_is_redacted_and_access_token_is_not_clone() {
+        let response: AccessTokenResponse = serde_json::from_str(
+            r#"{"access_token":"access","token_type":"bearer","expires_in":3600,"refresh_token":"refresh"}"#,
+        )
+        .unwrap();
+        let debug = format!("{response:?}");
+        assert!(!debug.contains("\"access\""));
+        assert!(!debug.contains("\"refresh\""));
+    }
+
+    struct MockRootClient {
+        revoked: RefCell<Vec<String>>,
+        revoke_fails: bool,
+    }
+
+    impl RootTokenClient for MockRootClient {
+        fn get_user(&self, _access_token: &str) -> Result<UserResponse, GitHubError> {
+            Ok(UserResponse {
+                login: "octocat".into(),
+                id: 1,
+                name: None,
+                email: None,
+            })
+        }
+
+        fn delete_token(
+            &self,
+            _client_id: &str,
+            _client_secret: &str,
+            access_token: &str,
+        ) -> Result<(), GitHubError> {
+            self.revoked.borrow_mut().push(access_token.to_owned());
+            if self.revoke_fails {
+                Err(GitHubError::Http {
+                    status: 500,
+                    message: "revocation failed".into(),
+                })
+            } else {
+                Ok(())
             }
-            ProfileConfig::Root(_) => panic!("expected derived profile"),
+        }
+    }
+
+    fn invalid_response() -> AccessTokenResponse {
+        AccessTokenResponse {
+            access_token: "new-root".into(),
+            token_type: "bearer".into(),
+            expires_in: None,
+            refresh_token: Some(zeroize::Zeroizing::new("refresh".into())),
+            refresh_token_expires_in: Some(3600),
+            scope: None,
         }
     }
 
     #[test]
-    fn test_resolve_profile_name_priority() {
-        let config: Config = SAMPLE_CONFIG.parse().unwrap();
-
-        // CLI flag priority
-        assert_eq!(
-            resolve_profile_name(Some("developer"), &config).unwrap(),
-            "developer"
-        );
-
-        // Fallback to default_profile
-        assert_eq!(resolve_profile_name(None, &config).unwrap(), "reader");
-    }
-
-    #[test]
-    fn test_extract_access_token_drops_refresh_token() {
-        let response = AccessTokenResponse {
-            access_token: "access-token".into(),
-            token_type: "bearer".into(),
-            expires_in: Some(3600),
-            refresh_token: Some("refresh-token".to_string().into()),
-            refresh_token_expires_in: Some(3600),
-            scope: None,
+    fn invalid_root_lifetime_revokes_without_writing_cache() {
+        let config: crate::config::Config = CONFIG.parse().unwrap();
+        let ProfileConfig::Root(profile) = config.profiles.get("developer").unwrap() else {
+            panic!("expected root profile");
         };
-
-        assert_eq!(
-            extract_access_token(response),
-            ("access-token".to_string(), Some(3600))
-        );
-    }
-
-    #[test]
-    fn test_resolve_root_repo_scope_variants() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        let specific = RepoScope::Specific("octo-org/api".into());
-
-        assert_eq!(
-            resolve_root_repo_scope_from(None, temp_dir.path()).unwrap(),
-            "all"
-        );
-        assert_eq!(
-            resolve_root_repo_scope_from(Some(&RepoScope::All), temp_dir.path()).unwrap(),
-            "all"
-        );
-        assert_eq!(
-            resolve_root_repo_scope_from(Some(&specific), temp_dir.path()).unwrap(),
-            "octo-org/api"
-        );
-    }
-
-    #[test]
-    fn test_resolve_auto_root_repo_scope_to_canonical_origin() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        write_origin_config(temp_dir.path(), "git@github.com:octo-org/api.git");
-
-        let auto = RepoScope::Auto;
-        assert_eq!(
-            resolve_root_repo_scope_from(Some(&auto), temp_dir.path()).unwrap(),
-            "octo-org/api"
-        );
-    }
-
-    #[test]
-    fn test_resolve_auto_root_repo_scope_fails_without_github_origin() {
-        let temp_dir = tempfile::tempdir().unwrap();
-        write_origin_config(temp_dir.path(), "git@gitlab.com:octo-org/api.git");
-
-        let error =
-            resolve_root_repo_scope_from(Some(&RepoScope::Auto), temp_dir.path()).unwrap_err();
-        assert!(error.contains("failed to resolve automatic repository scope"));
-        assert!(error.contains("not a GitHub repository"));
-    }
-
-    #[test]
-    fn test_auto_root_repo_scopes_produce_distinct_cache_keys() {
-        let first_dir = tempfile::tempdir().unwrap();
-        let second_dir = tempfile::tempdir().unwrap();
-        write_origin_config(first_dir.path(), "git@github.com:octo-org/first.git");
-        write_origin_config(second_dir.path(), "git@github.com:octo-org/second.git");
-
-        let auto = RepoScope::Auto;
-        let first_scope = resolve_root_repo_scope_from(Some(&auto), first_dir.path()).unwrap();
-        let second_scope = resolve_root_repo_scope_from(Some(&auto), second_dir.path()).unwrap();
-
-        assert_ne!(
-            compute_cache_key("developer", &first_scope),
-            compute_cache_key("developer", &second_scope)
-        );
-    }
-
-    fn write_origin_config(directory: &std::path::Path, origin_url: &str) {
-        let git_dir = directory.join(".git");
-        fs::create_dir(&git_dir).unwrap();
-        fs::write(
-            git_dir.join("config"),
-            format!("[remote \"origin\"]\n\turl = {origin_url}\n"),
+        let client = MockRootClient {
+            revoked: RefCell::new(Vec::new()),
+            revoke_fails: false,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let error = persist_root_response(
+            &client,
+            profile,
+            "developer",
+            &temp.path().join("cache"),
+            invalid_response(),
+            OffsetDateTime::now_utc(),
         )
-        .unwrap();
+        .unwrap_err();
+        assert!(matches!(error, CmdError::InvalidLifetime { .. }));
+        assert_eq!(&*client.revoked.borrow(), &["new-root"]);
+        assert!(!temp.path().join("cache").exists());
+    }
+
+    #[test]
+    fn revocation_failure_preserves_lifetime_failure_context() {
+        let config: crate::config::Config = CONFIG.parse().unwrap();
+        let ProfileConfig::Root(profile) = config.profiles.get("developer").unwrap() else {
+            panic!("expected root profile");
+        };
+        let client = MockRootClient {
+            revoked: RefCell::new(Vec::new()),
+            revoke_fails: true,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let error = persist_root_response(
+            &client,
+            profile,
+            "developer",
+            &temp.path().join("cache"),
+            invalid_response(),
+            OffsetDateTime::now_utc(),
+        )
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            CmdError::RevocationFailed { context, .. }
+                if matches!(*context, CmdError::InvalidLifetime { .. })
+        ));
     }
 }

@@ -3,10 +3,12 @@ use std::collections::BTreeMap;
 use std::fmt;
 use zeroize::Zeroizing;
 
+use crate::cache::AccessToken;
+
 /// Response from `POST /login/device/code`
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
 pub struct DeviceCodeResponse {
-    pub device_code: String,
+    pub device_code: Zeroizing<String>,
     pub user_code: String,
     pub verification_uri: String,
     pub expires_in: u64,
@@ -34,7 +36,7 @@ const fn default_poll_interval() -> u64 {
 /// Response from `POST /login/oauth/access_token`
 #[derive(PartialEq, Eq, Deserialize)]
 pub struct AccessTokenResponse {
-    pub access_token: String,
+    pub access_token: AccessToken,
     pub token_type: String,
     pub expires_in: Option<u64>,
     pub refresh_token: Option<Zeroizing<String>>,
@@ -59,14 +61,6 @@ impl fmt::Debug for AccessTokenResponse {
     }
 }
 
-/// OAuth error response from token polling endpoint
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OAuthErrorResponse {
-    pub error: String,
-    pub error_description: Option<String>,
-    pub error_uri: Option<String>,
-}
-
 /// Response from `GET /user`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserResponse {
@@ -80,18 +74,28 @@ pub struct UserResponse {
 #[derive(Serialize)]
 pub struct ScopedTokenRequest<'a> {
     pub access_token: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub target: Option<&'a str>,
+    pub target: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repositories: Option<&'a [String]>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub permissions: Option<&'a BTreeMap<String, String>>,
+    pub permissions: &'a BTreeMap<String, String>,
+}
+
+// Hand-written Debug to redact access_token
+impl fmt::Debug for ScopedTokenRequest<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ScopedTokenRequest")
+            .field("access_token", &"[REDACTED]")
+            .field("target", &self.target)
+            .field("repositories", &self.repositories)
+            .field("permissions", &self.permissions)
+            .finish()
+    }
 }
 
 /// Response from `POST /applications/{client_id}/token/scoped`
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScopedTokenResponse {
-    pub token: String,
+    pub token: AccessToken,
     pub expires_at: Option<String>,
     pub permissions: Option<BTreeMap<String, String>>,
     pub repositories: Option<Vec<RepositoryInfo>>,

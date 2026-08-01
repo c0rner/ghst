@@ -2,7 +2,7 @@ mod error;
 mod types;
 mod validation;
 
-use error::ConfigError;
+pub use error::ConfigError;
 pub use types::*;
 
 use std::fs;
@@ -93,7 +93,6 @@ description = "Security engineering privilege ceiling with vulnerability access"
 github_app.account = "acme-corp"
 github_app.client_id = "Iv1.7777777777777777"
 github_app.client_secret = "secret_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
-repo = "all"
 
 [profile.reader]
 kind = "derived"
@@ -254,6 +253,24 @@ permissions = { contents = "read" }
             }
             ProfileConfig::Root(_) => panic!("expected derived profile"),
         }
+    }
+
+    #[test]
+    fn test_root_profile_rejects_repository_scope() {
+        let config = r#"
+version = 1
+
+[profile.developer]
+kind = "root"
+repo = "all"
+github_app.account = "acme"
+github_app.client_id = "id"
+github_app.client_secret = "secret"
+"#;
+        assert!(matches!(
+            config.parse::<Config>(),
+            Err(ConfigError::Parse(_))
+        ));
     }
 
     #[test]

@@ -12,10 +12,10 @@ pub fn run_profiles(args: &GhstCli, cmd: &ProfilesCmd) -> Result<(), String> {
         .config
         .as_ref()
         .map_or_else(Config::load, |path| Config::load_from_path(path))
-        .map_err(|err| format!("Error loading configuration: {err}"))?;
+        .map_err(|err| format!("loading configuration: {err}"))?;
 
     print_profiles(&mut io::stdout(), &config, cmd.verbose)
-        .map_err(|err| format!("Error writing profiles: {err}"))
+        .map_err(|err| format!("writing profiles: {err}"))
 }
 
 fn print_profiles<W: Write>(writer: &mut W, config: &Config, verbose: bool) -> io::Result<()> {

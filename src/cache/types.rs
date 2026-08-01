@@ -1,117 +1,387 @@
-use crate::cache::error::CacheError;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::fmt;
+use std::fmt::Write as _;
 use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
+use zeroize::Zeroizing;
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+pub const CACHE_SCHEMA_VERSION: u32 = 2;
+pub const TOKEN_SAFETY_MARGIN: Duration = Duration::seconds(30);
+
+/// A secret access token that is zeroized on drop and never exposed by `Debug`.
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct AccessToken(Zeroizing<String>);
+
+impl AccessToken {
+    pub fn new(value: String) -> Self {
+        Self(Zeroizing::new(value))
+    }
+}
+
+impl AsRef<str> for AccessToken {
+    fn as_ref(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl From<String> for AccessToken {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<&str> for AccessToken {
+    fn from(value: &str) -> Self {
+        Self::new(value.to_owned())
+    }
+}
+
+impl fmt::Debug for AccessToken {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("[REDACTED]")
+    }
+}
+
+/// A parsed RFC 3339 token expiration timestamp.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TokenExpiry(OffsetDateTime);
+
+impl TokenExpiry {
+    pub const fn new(value: OffsetDateTime) -> Self {
+        Self(value)
+    }
+
+    #[cfg(test)]
+    pub const fn value(self) -> OffsetDateTime {
+        self.0
+    }
+
+    pub fn parse(value: &str) -> Result<Self, time::error::Parse> {
+        OffsetDateTime::parse(value, &Rfc3339).map(Self)
+    }
+
+    pub fn is_usable_at(self, now: OffsetDateTime) -> bool {
+        self.0 > now + TOKEN_SAFETY_MARGIN
+    }
+
+    pub fn is_bounded_by(self, parent: Self) -> bool {
+        self.0 <= parent.0
+    }
+}
+
+impl fmt::Display for TokenExpiry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let value = self.0.format(&Rfc3339).map_err(|_| fmt::Error)?;
+        f.write_str(&value)
+    }
+}
+
+impl fmt::Debug for TokenExpiry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(self, f)
+    }
+}
+
+impl Serialize for TokenExpiry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for TokenExpiry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::parse(&value).map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(PartialEq, Eq)]
 pub enum CacheEntry {
     Root(RootCacheEntry),
     Derived(DerivedCacheEntry),
+    Legacy(LegacyCacheEntry),
 }
 
 impl CacheEntry {
-    #[allow(dead_code)]
+    pub const fn kind(&self) -> CacheKind {
+        match self {
+            Self::Root(_) | Self::Legacy(LegacyCacheEntry::Root(_)) => CacheKind::Root,
+            Self::Derived(_) | Self::Legacy(LegacyCacheEntry::Derived(_)) => CacheKind::Derived,
+        }
+    }
+
     pub fn profile(&self) -> &str {
         match self {
-            Self::Root(r) => &r.profile,
-            Self::Derived(d) => &d.profile,
+            Self::Root(entry) => &entry.profile,
+            Self::Derived(entry) => &entry.profile,
+            Self::Legacy(LegacyCacheEntry::Root(entry)) => &entry.profile,
+            Self::Legacy(LegacyCacheEntry::Derived(entry)) => &entry.profile,
         }
     }
 
-    #[allow(dead_code)]
-    pub fn github_user(&self) -> &str {
+    pub fn repo_scope(&self) -> &str {
         match self {
-            Self::Root(r) => &r.github_user,
-            Self::Derived(d) => &d.github_user,
+            Self::Root(_) | Self::Legacy(LegacyCacheEntry::Root(_)) => "all",
+            Self::Derived(entry) => &entry.repo_scope,
+            Self::Legacy(LegacyCacheEntry::Derived(entry)) => &entry.repo_scope,
         }
     }
 
-    #[allow(dead_code)]
-    pub fn access_token(&self) -> &str {
+    pub const fn is_current(&self) -> bool {
         match self {
-            Self::Root(r) => &r.access_token,
-            Self::Derived(d) => &d.access_token,
+            Self::Root(entry) => entry.version == CACHE_SCHEMA_VERSION,
+            Self::Derived(entry) => entry.version == CACHE_SCHEMA_VERSION,
+            Self::Legacy(_) => false,
         }
     }
 
-    pub fn expires_at(&self) -> &str {
+    pub fn is_usable_at(&self, now: OffsetDateTime) -> bool {
         match self {
-            Self::Root(r) => &r.expires_at,
-            Self::Derived(d) => &d.expires_at,
+            Self::Root(entry) => entry.expires_at.is_usable_at(now),
+            Self::Derived(entry) => entry.expires_at.is_usable_at(now),
+            Self::Legacy(_) => false,
         }
     }
 
-    pub fn is_valid(&self) -> bool {
-        is_timestamp_valid(self.expires_at())
-    }
+    pub fn compatible_with(&self, candidate: &Self, now: OffsetDateTime) -> bool {
+        if !self.is_current() || !self.is_usable_at(now) {
+            return false;
+        }
 
-    pub(crate) fn is_expired(&self) -> Result<bool, CacheError> {
-        let expiry = OffsetDateTime::parse(self.expires_at(), &Rfc3339)
-            .map_err(|_| CacheError::InvalidTimestamp(self.expires_at().to_string()))?;
-        Ok(expiry <= OffsetDateTime::now_utc() + Duration::seconds(30))
+        match (self, candidate) {
+            (Self::Root(existing), Self::Root(candidate)) => {
+                existing.profile == candidate.profile
+                    && existing.authority_fingerprint == candidate.authority_fingerprint
+            }
+            (Self::Derived(existing), Self::Derived(candidate)) => {
+                existing.profile == candidate.profile
+                    && existing.source_profile == candidate.source_profile
+                    && existing.repo_scope == candidate.repo_scope
+                    && existing.parent_generation == candidate.parent_generation
+                    && existing.policy_fingerprint == candidate.policy_fingerprint
+                    && existing
+                        .expires_at
+                        .is_bounded_by(candidate.parent_expires_at)
+            }
+            _ => false,
+        }
     }
 }
 
 impl fmt::Debug for CacheEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Root(r) => f.debug_tuple("Root").field(r).finish(),
-            Self::Derived(d) => f.debug_tuple("Derived").field(d).finish(),
+            Self::Root(entry) => f.debug_tuple("Root").field(entry).finish(),
+            Self::Derived(entry) => f.debug_tuple("Derived").field(entry).finish(),
+            Self::Legacy(entry) => f.debug_tuple("Legacy").field(entry).finish(),
         }
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheKind {
+    Root,
+    Derived,
+}
+
+impl fmt::Display for CacheKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Root => f.write_str("root"),
+            Self::Derived => f.write_str("derived"),
+        }
+    }
+}
+
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RootCacheEntry {
+    pub version: u32,
     pub profile: String,
+    pub authority_fingerprint: String,
     pub github_user: String,
     pub issued_at: String,
-    pub expires_at: String,
-    pub access_token: String,
+    pub expires_at: TokenExpiry,
+    pub access_token: AccessToken,
 }
 
 impl RootCacheEntry {
-    pub fn is_valid(&self) -> bool {
-        is_timestamp_valid(&self.expires_at)
+    pub fn generation_fingerprint(&self) -> String {
+        fingerprint(&[self.access_token.as_ref()])
     }
 }
 
 impl fmt::Debug for RootCacheEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RootCacheEntry")
+            .field("version", &self.version)
             .field("profile", &self.profile)
+            .field("authority_fingerprint", &self.authority_fingerprint)
             .field("github_user", &self.github_user)
             .field("issued_at", &self.issued_at)
             .field("expires_at", &self.expires_at)
-            .field("access_token", &"[REDACTED]")
+            .field("access_token", &self.access_token)
             .finish()
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DerivedCacheEntry {
+    pub version: u32,
+    pub profile: String,
+    pub source_profile: String,
+    pub parent_generation: String,
+    pub policy_fingerprint: String,
+    pub github_user: String,
+    pub repo_scope: String,
+    pub issued_at: String,
+    pub expires_at: TokenExpiry,
+    /// Used only for the atomic compatibility check and not serialized.
+    #[serde(skip, default = "distant_past")]
+    pub parent_expires_at: TokenExpiry,
+    pub access_token: AccessToken,
+}
+
+const fn distant_past() -> TokenExpiry {
+    TokenExpiry::new(OffsetDateTime::UNIX_EPOCH)
+}
+
+impl fmt::Debug for DerivedCacheEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DerivedCacheEntry")
+            .field("version", &self.version)
+            .field("profile", &self.profile)
+            .field("source_profile", &self.source_profile)
+            .field("parent_generation", &self.parent_generation)
+            .field("policy_fingerprint", &self.policy_fingerprint)
+            .field("github_user", &self.github_user)
+            .field("repo_scope", &self.repo_scope)
+            .field("issued_at", &self.issued_at)
+            .field("expires_at", &self.expires_at)
+            .field("parent_expires_at", &self.parent_expires_at)
+            .field("access_token", &self.access_token)
+            .finish()
+    }
+}
+
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum LegacyCacheEntry {
+    Root(LegacyRootCacheEntry),
+    Derived(LegacyDerivedCacheEntry),
+}
+
+impl fmt::Debug for LegacyCacheEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Root(entry) => f.debug_tuple("Root").field(entry).finish(),
+            Self::Derived(entry) => f.debug_tuple("Derived").field(entry).finish(),
+        }
+    }
+}
+
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LegacyRootCacheEntry {
+    pub profile: String,
+    pub github_user: String,
+    pub issued_at: String,
+    pub expires_at: String,
+    pub access_token: AccessToken,
+}
+
+impl fmt::Debug for LegacyRootCacheEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LegacyRootCacheEntry")
+            .field("profile", &self.profile)
+            .field("github_user", &self.github_user)
+            .field("issued_at", &self.issued_at)
+            .field("expires_at", &self.expires_at)
+            .field("access_token", &self.access_token)
+            .finish()
+    }
+}
+
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LegacyDerivedCacheEntry {
     pub profile: String,
     pub source_profile: String,
     pub github_user: String,
     pub repo_scope: String,
     pub issued_at: String,
     pub expires_at: String,
-    pub access_token: String,
+    pub access_token: AccessToken,
 }
 
-impl fmt::Debug for DerivedCacheEntry {
+impl fmt::Debug for LegacyDerivedCacheEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DerivedCacheEntry")
+        f.debug_struct("LegacyDerivedCacheEntry")
             .field("profile", &self.profile)
             .field("source_profile", &self.source_profile)
             .field("github_user", &self.github_user)
             .field("repo_scope", &self.repo_scope)
             .field("issued_at", &self.issued_at)
             .field("expires_at", &self.expires_at)
-            .field("access_token", &"[REDACTED]")
+            .field("access_token", &self.access_token)
             .finish()
+    }
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum CurrentCacheEntryRef<'a> {
+    Root(&'a RootCacheEntry),
+    Derived(&'a DerivedCacheEntry),
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum CurrentCacheEntry {
+    Root(RootCacheEntry),
+    Derived(DerivedCacheEntry),
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum CacheEntryWire {
+    Current(CurrentCacheEntry),
+    Legacy(LegacyCacheEntry),
+}
+
+impl Serialize for CacheEntry {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        match self {
+            Self::Root(entry) => CurrentCacheEntryRef::Root(entry).serialize(serializer),
+            Self::Derived(entry) => CurrentCacheEntryRef::Derived(entry).serialize(serializer),
+            Self::Legacy(entry) => entry.serialize(serializer),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for CacheEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match CacheEntryWire::deserialize(deserializer)? {
+            CacheEntryWire::Current(CurrentCacheEntry::Root(entry)) => Ok(Self::Root(entry)),
+            CacheEntryWire::Current(CurrentCacheEntry::Derived(entry)) => Ok(Self::Derived(entry)),
+            CacheEntryWire::Legacy(entry) => Ok(Self::Legacy(entry)),
+        }
     }
 }
 
@@ -119,18 +389,41 @@ impl fmt::Debug for DerivedCacheEntry {
 #[derive(Debug)]
 pub enum SaveCacheEntry {
     Saved,
-    Retained(CacheEntry),
+    Retained(Box<CacheEntry>),
 }
 
-/// Formats an `OffsetDateTime` as an RFC 3339 timestamp string.
-pub fn format_rfc3339(dt: OffsetDateTime) -> String {
-    dt.format(&Rfc3339).unwrap_or_default()
+pub fn format_rfc3339(value: OffsetDateTime) -> String {
+    value.format(&Rfc3339).unwrap_or_default()
 }
 
-/// Checks if an RFC 3339 timestamp is in the future (with a 30-second safety margin).
-pub fn is_timestamp_valid(expires_at_str: &str) -> bool {
-    OffsetDateTime::parse(expires_at_str, &Rfc3339).is_ok_and(|expires_at| {
-        let now = OffsetDateTime::now_utc();
-        expires_at > now + Duration::seconds(30)
-    })
+pub fn authority_fingerprint(client_id: &str, account: &str) -> String {
+    fingerprint(&[client_id, account])
+}
+
+pub fn policy_fingerprint(
+    account: &str,
+    repo_scope: &str,
+    permissions: &BTreeMap<String, String>,
+) -> String {
+    let permission_string = permissions
+        .iter()
+        .map(|(name, level)| format!("{name}={level}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fingerprint(&[account, repo_scope, &permission_string])
+}
+
+fn fingerprint(parts: &[&str]) -> String {
+    let mut hasher = Sha256::new();
+    for part in parts {
+        hasher.update(part.len().to_string().as_bytes());
+        hasher.update(b":");
+        hasher.update(part.as_bytes());
+    }
+    let digest = hasher.finalize();
+    let mut result = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        let _ = write!(result, "{byte:02x}");
+    }
+    result
 }

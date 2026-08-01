@@ -5,9 +5,19 @@ use std::path::PathBuf;
 pub enum CacheError {
     Io(std::io::Error),
     Json(serde_json::Error),
-    InsecurePath { path: PathBuf, reason: &'static str },
+    InsecurePath {
+        path: PathBuf,
+        reason: &'static str,
+    },
     InvalidKey(String),
-    InvalidTimestamp(String),
+    InconsistentMetadata {
+        expected_key: String,
+        actual_key: String,
+    },
+    UnexpectedKind {
+        expected: &'static str,
+        actual: &'static str,
+    },
     Platform(&'static str),
 }
 
@@ -20,8 +30,18 @@ impl fmt::Display for CacheError {
                 write!(f, "insecure cache path '{}': {reason}", path.display())
             }
             Self::InvalidKey(key) => write!(f, "invalid cache key '{key}'"),
-            Self::InvalidTimestamp(timestamp) => {
-                write!(f, "invalid RFC3339 expiry timestamp '{timestamp}' in cache")
+            Self::InconsistentMetadata {
+                expected_key,
+                actual_key,
+            } => write!(
+                f,
+                "cache entry metadata resolves to key '{actual_key}', expected '{expected_key}'"
+            ),
+            Self::UnexpectedKind { expected, actual } => {
+                write!(
+                    f,
+                    "unexpected cache entry kind '{actual}', expected '{expected}'"
+                )
             }
             Self::Platform(reason) => write!(f, "cache platform error: {reason}"),
         }
@@ -35,7 +55,8 @@ impl std::error::Error for CacheError {
             Self::Json(err) => Some(err),
             Self::InsecurePath { .. }
             | Self::InvalidKey(_)
-            | Self::InvalidTimestamp(_)
+            | Self::InconsistentMetadata { .. }
+            | Self::UnexpectedKind { .. }
             | Self::Platform(_) => None,
         }
     }

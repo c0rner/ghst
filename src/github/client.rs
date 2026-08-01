@@ -1,7 +1,6 @@
 use crate::github::error::GitHubError;
 use crate::github::types::{
-    AccessTokenResponse, DeviceCodeResponse, OAuthErrorResponse, ScopedTokenRequest,
-    ScopedTokenResponse, UserResponse,
+    AccessTokenResponse, DeviceCodeResponse, ScopedTokenRequest, ScopedTokenResponse, UserResponse,
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -120,18 +119,7 @@ impl GitHubClient {
         let value: serde_json::Value = res.body_mut().read_json().map_err(map_ureq_error)?;
 
         if value.get("error").is_some() {
-            if let Ok(oauth_err) = serde_json::from_value::<OAuthErrorResponse>(value.clone()) {
-                return match oauth_err.error.as_str() {
-                    "authorization_pending" => Err(GitHubError::OAuthPending),
-                    "slow_down" => Err(GitHubError::OAuthSlowDown),
-                    "expired_token" => Err(GitHubError::OAuthExpired),
-                    "access_denied" => Err(GitHubError::OAuthAccessDenied),
-                    _ => Err(GitHubError::OAuthError {
-                        error: oauth_err.error,
-                        description: oauth_err.error_description,
-                    }),
-                };
-            }
+            return Err(oauth_error_from_value(&value));
         }
 
         serde_json::from_value(value).map_err(GitHubError::Json)
@@ -223,6 +211,32 @@ impl GitHubClient {
     }
 }
 
+fn oauth_error_from_value(value: &serde_json::Value) -> GitHubError {
+    let error = value
+        .get("error")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("malformed_oauth_error");
+    let description = value
+        .get("error_description")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            (error == "malformed_oauth_error")
+                .then(|| "OAuth response contained a non-string error field".to_owned())
+        });
+
+    match error {
+        "authorization_pending" => GitHubError::OAuthPending,
+        "slow_down" => GitHubError::OAuthSlowDown,
+        "expired_token" => GitHubError::OAuthExpired,
+        "access_denied" => GitHubError::OAuthAccessDenied,
+        _ => GitHubError::OAuthError {
+            error: error.to_owned(),
+            description,
+        },
+    }
+}
+
 impl ScopedTokenClient for GitHubClient {
     fn create_scoped_token(
         &self,
@@ -287,7 +301,6 @@ fn basic_auth_header(client_id: &str, client_secret: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::github::types::OAuthErrorResponse;
 
     #[test]
     fn test_device_code_response_deserialization() {
@@ -412,15 +425,37 @@ mod tests {
     }
 
     #[test]
-    fn test_oauth_error_response_deserialization() {
-        let json_data = r#"{
-            "error": "authorization_pending",
-            "error_description": "The authorization request is still pending.",
-            "error_uri": "https://docs.github.com/apps/building-oauth-apps/authorizing-oauth-apps/"
-        }"#;
+    fn oauth_error_mapping_preserves_unknown_error_context() {
+        let value = serde_json::json!({
+            "error": "custom_oauth_failure",
+            "error_description": "The custom request failed."
+        });
 
-        let res: OAuthErrorResponse = serde_json::from_str(json_data).unwrap();
-        assert_eq!(res.error, "authorization_pending");
+        assert!(matches!(
+            oauth_error_from_value(&value),
+            GitHubError::OAuthError { error, description }
+                if error == "custom_oauth_failure"
+                    && description.as_deref() == Some("The custom request failed.")
+        ));
+    }
+
+    #[test]
+    fn malformed_oauth_error_never_falls_through_or_exposes_response() {
+        let value = serde_json::json!({
+            "error": { "unexpected": "shape" },
+            "error_description": 42,
+            "access_token": "must-not-appear-in-error"
+        });
+
+        let error = oauth_error_from_value(&value);
+        assert!(matches!(
+            &error,
+            GitHubError::OAuthError { error, description }
+                if error == "malformed_oauth_error"
+                    && description.as_deref()
+                        == Some("OAuth response contained a non-string error field")
+        ));
+        assert!(!error.to_string().contains("must-not-appear-in-error"));
     }
 
     #[test]

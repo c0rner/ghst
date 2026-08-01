@@ -61,14 +61,6 @@ impl fmt::Debug for AccessTokenResponse {
     }
 }
 
-/// OAuth error response from token polling endpoint
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OAuthErrorResponse {
-    pub error: String,
-    pub error_description: Option<String>,
-    pub error_uri: Option<String>,
-}
-
 /// Response from `GET /user`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UserResponse {

@@ -26,20 +26,17 @@ fn print_profiles<W: Write>(writer: &mut W, config: &Config, verbose: bool) -> i
         let is_default = config.default_profile.as_deref() == Some(name.as_str());
         let marker = if is_default { "*" } else { " " };
         let default_suffix = if is_default { " (default)" } else { "" };
+        let kind = profile.kind();
 
         if verbose {
+            writeln!(writer, "{marker} {name} [{kind}]{default_suffix}")?;
             match profile {
                 ProfileConfig::Root(root) => {
-                    writeln!(writer, "{marker} {name} [root]{default_suffix}")?;
                     writeln!(writer, "    Account:     {}", root.github_app.account)?;
                     writeln!(writer, "    Client ID:   {}", root.github_app.client_id)?;
                     writeln!(writer, "    Repo Scope:  all (root authority)")?;
-                    if let Some(desc) = &root.description {
-                        writeln!(writer, "    Description: {desc}")?;
-                    }
                 }
                 ProfileConfig::Derived(derived) => {
-                    writeln!(writer, "{marker} {name} [derived]{default_suffix}")?;
                     writeln!(writer, "    Source:      {}", derived.source)?;
                     let repo_str = match &derived.repo {
                         RepoScope::All => "all",
@@ -56,29 +53,16 @@ fn print_profiles<W: Write>(writer: &mut W, config: &Config, verbose: bool) -> i
                             .join(", ");
                         writeln!(writer, "    Permissions: {perms}")?;
                     }
-                    if let Some(desc) = &derived.description {
-                        writeln!(writer, "    Description: {desc}")?;
-                    }
                 }
             }
-            writeln!(writer)?;
-        } else {
-            let kind_str = match profile {
-                ProfileConfig::Root(_) => "root",
-                ProfileConfig::Derived(_) => "derived",
-            };
-            let desc_str = match profile {
-                ProfileConfig::Root(r) => r.description.as_deref().unwrap_or(""),
-                ProfileConfig::Derived(d) => d.description.as_deref().unwrap_or(""),
-            };
-            if desc_str.is_empty() {
-                writeln!(writer, "{marker} {name} [{kind_str}]{default_suffix}")?;
-            } else {
-                writeln!(
-                    writer,
-                    "{marker} {name} [{kind_str}]{default_suffix} - {desc_str}"
-                )?;
+            if let Some(desc) = profile.description() {
+                writeln!(writer, "    Description: {desc}")?;
             }
+            writeln!(writer)?;
+        } else if let Some(desc) = profile.description() {
+            writeln!(writer, "{marker} {name} [{kind}]{default_suffix} - {desc}")?;
+        } else {
+            writeln!(writer, "{marker} {name} [{kind}]{default_suffix}")?;
         }
     }
     Ok(())

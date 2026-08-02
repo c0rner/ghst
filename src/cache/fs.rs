@@ -18,13 +18,13 @@ pub fn ensure_cache_dir(cache_dir: &Path) -> Result<(), CacheError> {
     match fs::symlink_metadata(cache_dir) {
         Ok(metadata) => {
             validate_cache_dir(cache_dir, &metadata)?;
-            validate_open_cache_dir(cache_dir)
+            validate_cache_dir_openable(cache_dir)
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             create_private_cache_dir(cache_dir)?;
             let metadata = fs::symlink_metadata(cache_dir).map_err(CacheError::Io)?;
             validate_cache_dir(cache_dir, &metadata)?;
-            validate_open_cache_dir(cache_dir)
+            validate_cache_dir_openable(cache_dir)
         }
         Err(err) => Err(CacheError::Io(err)),
     }
@@ -38,7 +38,7 @@ pub fn cache_dir_exists(cache_dir: &Path) -> Result<bool, CacheError> {
     match fs::symlink_metadata(cache_dir) {
         Ok(metadata) => {
             validate_cache_dir(cache_dir, &metadata)?;
-            validate_open_cache_dir(cache_dir)?;
+            validate_cache_dir_openable(cache_dir)?;
             Ok(true)
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
@@ -215,7 +215,7 @@ fn open_validated_cache_dir(cache_dir: &Path) -> Result<File, CacheError> {
 }
 
 #[cfg(unix)]
-fn validate_open_cache_dir(cache_dir: &Path) -> Result<(), CacheError> {
+fn validate_cache_dir_openable(cache_dir: &Path) -> Result<(), CacheError> {
     open_validated_cache_dir(cache_dir).map(|_| ())
 }
 

@@ -17,10 +17,10 @@ pub fn validate_config(config: &Config) -> Result<(), ConfigError> {
     }
 
     // 2. Validate default profile reference
-    if let Some(ref default_p) = config.default_profile {
-        if !config.profiles.contains_key(default_p) {
-            return Err(ConfigError::MissingDefaultProfile(default_p.clone()));
-        }
+    if let Some(ref default_p) = config.default_profile
+        && !config.profiles.contains_key(default_p)
+    {
+        return Err(ConfigError::MissingDefaultProfile(default_p.clone()));
     }
 
     // 3. Validate profiles

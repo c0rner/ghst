@@ -140,20 +140,20 @@ fn persist_root_response<C: RootTokenClient>(
             return Err(revoke_with_context(
                 client,
                 profile,
-                root_token(&candidate),
+                root_token(&candidate)?,
                 CmdError::Cache(error),
             ));
         }
     };
 
     match result {
-        SaveCacheEntry::Saved => report_saved(profile_name, root_entry(&candidate)),
+        SaveCacheEntry::Saved => report_saved(profile_name, root_entry(&candidate)?),
         SaveCacheEntry::Retained(entry) => match *entry {
             CacheEntry::Root(entry) => {
                 if let Err(source) = client.delete_token(
                     &profile.github_app.client_id,
                     &profile.github_app.client_secret,
-                    root_token(&candidate).as_ref(),
+                    root_token(&candidate)?.as_ref(),
                 ) {
                     return Err(CmdError::RevocationFailed {
                         context: Box::new(CmdError::StaleProvenance {
@@ -213,15 +213,18 @@ fn validate_root_expiry(
     Ok(expiry)
 }
 
-fn root_entry(entry: &CacheEntry) -> &RootCacheEntry {
-    match entry {
-        CacheEntry::Root(entry) => entry,
-        CacheEntry::Derived(_) | CacheEntry::Legacy(_) => unreachable!("candidate is root"),
-    }
+fn root_entry(entry: &CacheEntry) -> Result<&RootCacheEntry, CmdError> {
+    entry
+        .as_root()
+        .ok_or_else(|| CmdError::UnexpectedCacheKind {
+            profile: entry.profile().to_owned(),
+            expected: crate::cache::CacheKind::Root,
+            actual: entry.kind(),
+        })
 }
 
-fn root_token(entry: &CacheEntry) -> &AccessToken {
-    &root_entry(entry).access_token
+fn root_token(entry: &CacheEntry) -> Result<&AccessToken, CmdError> {
+    root_entry(entry).map(|root| &root.access_token)
 }
 
 fn report_saved(profile_name: &str, entry: &RootCacheEntry) {

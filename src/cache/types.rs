@@ -167,6 +167,20 @@ impl CacheEntry {
             _ => false,
         }
     }
+
+    pub const fn as_root(&self) -> Option<&RootCacheEntry> {
+        match self {
+            Self::Root(entry) => Some(entry),
+            _ => None,
+        }
+    }
+
+    pub const fn as_derived(&self) -> Option<&DerivedCacheEntry> {
+        match self {
+            Self::Derived(entry) => Some(entry),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Debug for CacheEntry {

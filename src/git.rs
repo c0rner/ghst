@@ -121,16 +121,14 @@ pub fn parse_origin_url_from_config(config_content: &str) -> Result<String, GitE
             continue;
         }
 
-        if in_origin_section {
-            if let Some((key, val)) = line.split_once('=') {
-                let key = key.trim();
-                let val = val.trim();
-                if key.eq_ignore_ascii_case("url") {
-                    if val.is_empty() {
-                        return Err(GitError::MissingUrl);
-                    }
-                    return Ok(val.to_string());
+        if in_origin_section && let Some((key, val)) = line.split_once('=') {
+            let key = key.trim();
+            let val = val.trim();
+            if key.eq_ignore_ascii_case("url") {
+                if val.is_empty() {
+                    return Err(GitError::MissingUrl);
                 }
+                return Ok(val.to_string());
             }
         }
     }
@@ -148,13 +146,13 @@ pub fn parse_github_owner_repo(url: &str) -> Result<String, GitError> {
     let raw = url_trimmed.strip_suffix(".git").unwrap_or(url_trimmed);
 
     // 1. SSH format: git@github.com:owner/repo
-    if let Some(rest) = raw.strip_prefix("git@") {
-        if let Some((host, path)) = rest.split_once(':') {
-            if !host.eq_ignore_ascii_case("github.com") {
-                return Err(GitError::NonGitHubRemote(url.to_string()));
-            }
-            return extract_owner_repo_path(path, url);
+    if let Some(rest) = raw.strip_prefix("git@")
+        && let Some((host, path)) = rest.split_once(':')
+    {
+        if !host.eq_ignore_ascii_case("github.com") {
+            return Err(GitError::NonGitHubRemote(url.to_string()));
         }
+        return extract_owner_repo_path(path, url);
     }
 
     // 2. URL format: https://github.com/owner/repo or ssh://git@github.com/owner/repo or http://github.com/owner/repo

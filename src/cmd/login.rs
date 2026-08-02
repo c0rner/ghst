@@ -5,7 +5,7 @@ use crate::cache::{
 };
 use crate::cmd::{
     CmdError, GhstCli, LoginCmd, load_config, load_valid_root_entry, resolve_profile_name,
-    root_cache_key,
+    revoke_with_context, root_cache_key,
 };
 use crate::config::ProfileConfig;
 use crate::github::{AccessTokenResponse, GitHubClient, GitHubError, RootTokenClient};
@@ -140,20 +140,20 @@ fn persist_root_response<C: RootTokenClient>(
             return Err(revoke_with_context(
                 client,
                 profile,
-                root_token(&candidate),
+                root_token(&candidate)?,
                 CmdError::Cache(error),
             ));
         }
     };
 
     match result {
-        SaveCacheEntry::Saved => report_saved(profile_name, root_entry(&candidate)),
+        SaveCacheEntry::Saved => report_saved(profile_name, root_entry(&candidate)?),
         SaveCacheEntry::Retained(entry) => match *entry {
             CacheEntry::Root(entry) => {
                 if let Err(source) = client.delete_token(
                     &profile.github_app.client_id,
                     &profile.github_app.client_secret,
-                    root_token(&candidate).as_ref(),
+                    root_token(&candidate)?.as_ref(),
                 ) {
                     return Err(CmdError::RevocationFailed {
                         context: Box::new(CmdError::StaleProvenance {
@@ -213,34 +213,18 @@ fn validate_root_expiry(
     Ok(expiry)
 }
 
-fn revoke_with_context<C: RootTokenClient>(
-    client: &C,
-    profile: &crate::config::RootProfile,
-    token: &AccessToken,
-    context: CmdError,
-) -> CmdError {
-    match client.delete_token(
-        &profile.github_app.client_id,
-        &profile.github_app.client_secret,
-        token.as_ref(),
-    ) {
-        Ok(()) => context,
-        Err(source) => CmdError::RevocationFailed {
-            context: Box::new(context),
-            source,
-        },
-    }
+fn root_entry(entry: &CacheEntry) -> Result<&RootCacheEntry, CmdError> {
+    entry
+        .as_root()
+        .ok_or_else(|| CmdError::UnexpectedCacheKind {
+            profile: entry.profile().to_owned(),
+            expected: crate::cache::CacheKind::Root,
+            actual: entry.kind(),
+        })
 }
 
-fn root_entry(entry: &CacheEntry) -> &RootCacheEntry {
-    match entry {
-        CacheEntry::Root(entry) => entry,
-        CacheEntry::Derived(_) | CacheEntry::Legacy(_) => unreachable!("candidate is root"),
-    }
-}
-
-fn root_token(entry: &CacheEntry) -> &AccessToken {
-    &root_entry(entry).access_token
+fn root_token(entry: &CacheEntry) -> Result<&AccessToken, CmdError> {
+    root_entry(entry).map(|root| &root.access_token)
 }
 
 fn report_saved(profile_name: &str, entry: &RootCacheEntry) {
@@ -261,7 +245,7 @@ fn report_existing(profile_name: &str, entry: &RootCacheEntry) {
 mod tests {
     use super::*;
     use crate::cmd::SubCommand;
-    use crate::github::UserResponse;
+    use crate::github::{RevokeTokenClient, UserResponse};
     use argh::FromArgs;
     use std::cell::RefCell;
 
@@ -332,16 +316,7 @@ permissions = { contents = "read" }
         revoke_fails: bool,
     }
 
-    impl RootTokenClient for MockRootClient {
-        fn get_user(&self, _access_token: &str) -> Result<UserResponse, GitHubError> {
-            Ok(UserResponse {
-                login: "octocat".into(),
-                id: 1,
-                name: None,
-                email: None,
-            })
-        }
-
+    impl RevokeTokenClient for MockRootClient {
         fn delete_token(
             &self,
             _client_id: &str,
@@ -357,6 +332,17 @@ permissions = { contents = "read" }
             } else {
                 Ok(())
             }
+        }
+    }
+
+    impl RootTokenClient for MockRootClient {
+        fn get_user(&self, _access_token: &str) -> Result<UserResponse, GitHubError> {
+            Ok(UserResponse {
+                login: "octocat".into(),
+                id: 1,
+                name: None,
+                email: None,
+            })
         }
     }
 

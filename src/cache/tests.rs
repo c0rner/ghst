@@ -87,6 +87,14 @@ fn save_creates_private_directory_and_entry() {
                 & 0o7777,
             0o600
         );
+        assert_eq!(
+            fs::metadata(directory.join(".cache.lock"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o7777,
+            0o600
+        );
     }
 }
 
@@ -116,6 +124,52 @@ fn insecure_or_symlinked_cache_state_fails_closed() {
     symlink(target, &link).unwrap();
     assert!(matches!(
         ensure_cache_dir(&link),
+        Err(CacheError::InsecurePath { .. })
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn insecure_global_lock_file_fails_closed() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let entry = root_entry(
+        "token",
+        OffsetDateTime::now_utc() + Duration::hours(1),
+        "authority",
+    );
+
+    let symlink_temp = cache_dir();
+    let symlink_cache = symlink_temp.path().join("cache");
+    ensure_cache_dir(&symlink_cache).unwrap();
+    let symlink_target = symlink_temp.path().join("target");
+    fs::write(&symlink_target, b"").unwrap();
+    symlink(&symlink_target, symlink_cache.join(".cache.lock")).unwrap();
+    assert!(matches!(
+        save_cache_entry(&symlink_cache, &root_key(), &entry),
+        Err(CacheError::InsecurePath { .. })
+    ));
+
+    let mode_temp = cache_dir();
+    let mode_cache = mode_temp.path().join("cache");
+    ensure_cache_dir(&mode_cache).unwrap();
+    let mode_lock = mode_cache.join(".cache.lock");
+    fs::write(&mode_lock, b"").unwrap();
+    fs::set_permissions(&mode_lock, fs::Permissions::from_mode(0o644)).unwrap();
+    assert!(matches!(
+        save_cache_entry(&mode_cache, &root_key(), &entry),
+        Err(CacheError::InsecurePath { .. })
+    ));
+
+    let hard_link_temp = cache_dir();
+    let hard_link_cache = hard_link_temp.path().join("cache");
+    ensure_cache_dir(&hard_link_cache).unwrap();
+    let hard_link_target = hard_link_temp.path().join("target");
+    fs::write(&hard_link_target, b"").unwrap();
+    fs::set_permissions(&hard_link_target, fs::Permissions::from_mode(0o600)).unwrap();
+    fs::hard_link(&hard_link_target, hard_link_cache.join(".cache.lock")).unwrap();
+    assert!(matches!(
+        save_cache_entry(&hard_link_cache, &root_key(), &entry),
         Err(CacheError::InsecurePath { .. })
     ));
 }
@@ -331,6 +385,7 @@ fn delete_and_list_operate_on_validated_entries() {
         &authority_fingerprint("id", "account"),
     );
     save_cache_entry(&directory, &root_key(), &entry).unwrap();
+    fs::write(directory.join(format!("{}.lock", root_key())), b"legacy").unwrap();
     assert_eq!(list_cache_entries(&directory).unwrap().len(), 1);
     assert!(delete_cache_entry(&directory, &root_key()).unwrap());
     assert!(list_cache_entries(&directory).unwrap().is_empty());

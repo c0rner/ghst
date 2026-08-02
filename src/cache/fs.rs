@@ -1,7 +1,8 @@
 use crate::cache::error::CacheError;
-use crate::cache::key::validate_cache_key;
 use std::fs::{self, File, OpenOptions};
 use std::path::{Path, PathBuf};
+
+const CACHE_LOCK_FILE: &str = ".cache.lock";
 
 #[derive(Clone, Copy)]
 pub enum LockMode {
@@ -52,20 +53,18 @@ pub fn cache_file_path(cache_dir: &Path, hash_key: &str) -> PathBuf {
 
 pub fn with_cache_lock<T>(
     cache_dir: &Path,
-    hash_key: &str,
     lock_mode: LockMode,
-    operation: impl FnOnce(&Path) -> Result<T, CacheError>,
+    operation: impl FnOnce() -> Result<T, CacheError>,
 ) -> Result<T, CacheError> {
     ensure_cache_dir(cache_dir)?;
-    validate_cache_key(hash_key)?;
 
-    let lock_file = open_lock_file(cache_dir, hash_key)?;
+    let lock_file = open_cache_lock_file(cache_dir)?;
     match lock_mode {
         LockMode::Shared => fs2::FileExt::lock_shared(&lock_file).map_err(CacheError::Io)?,
         LockMode::Exclusive => fs2::FileExt::lock_exclusive(&lock_file).map_err(CacheError::Io)?,
     }
 
-    operation(&cache_file_path(cache_dir, hash_key))
+    operation()
 }
 
 pub fn create_private_tempfile(cache_dir: &Path) -> Result<tempfile::NamedTempFile, CacheError> {
@@ -149,8 +148,8 @@ fn create_private_cache_dir(cache_dir: &Path) -> Result<(), CacheError> {
     }
 }
 
-fn open_lock_file(cache_dir: &Path, hash_key: &str) -> Result<File, CacheError> {
-    let lock_path = cache_dir.join(format!("{hash_key}.lock"));
+fn open_cache_lock_file(cache_dir: &Path) -> Result<File, CacheError> {
+    let lock_path = cache_dir.join(CACHE_LOCK_FILE);
     match fs::symlink_metadata(&lock_path) {
         Ok(metadata) => validate_cache_file(&lock_path, &metadata)?,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}

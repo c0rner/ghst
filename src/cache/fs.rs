@@ -123,18 +123,9 @@ pub fn sync_cache_dir(cache_dir: &Path) -> Result<(), CacheError> {
     return Err(unsupported_platform(cache_dir));
 
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-
-        let mut options = OpenOptions::new();
-        options.read(true).custom_flags(open_flags(
-            rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::NOFOLLOW,
-        )?);
-        let directory = options.open(cache_dir).map_err(CacheError::Io)?;
-        let metadata = directory.metadata().map_err(CacheError::Io)?;
-        validate_cache_dir(cache_dir, &metadata)?;
-        directory.sync_all().map_err(CacheError::Io)
-    }
+    open_validated_cache_dir(cache_dir)?
+        .sync_all()
+        .map_err(CacheError::Io)
 }
 
 fn create_private_cache_dir(cache_dir: &Path) -> Result<(), CacheError> {
@@ -210,7 +201,7 @@ fn validate_unix_metadata(
 }
 
 #[cfg(unix)]
-fn validate_open_cache_dir(cache_dir: &Path) -> Result<(), CacheError> {
+fn open_validated_cache_dir(cache_dir: &Path) -> Result<File, CacheError> {
     use std::os::unix::fs::OpenOptionsExt;
 
     let mut options = OpenOptions::new();
@@ -219,7 +210,13 @@ fn validate_open_cache_dir(cache_dir: &Path) -> Result<(), CacheError> {
     )?);
     let directory = options.open(cache_dir).map_err(CacheError::Io)?;
     let metadata = directory.metadata().map_err(CacheError::Io)?;
-    validate_cache_dir(cache_dir, &metadata)
+    validate_cache_dir(cache_dir, &metadata)?;
+    Ok(directory)
+}
+
+#[cfg(unix)]
+fn validate_open_cache_dir(cache_dir: &Path) -> Result<(), CacheError> {
+    open_validated_cache_dir(cache_dir).map(|_| ())
 }
 
 #[cfg(not(unix))]

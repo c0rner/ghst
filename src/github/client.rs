@@ -14,7 +14,16 @@ pub struct GitHubClient {
     user_agent: String,
 }
 
-pub trait ScopedTokenClient {
+pub trait RevokeTokenClient {
+    fn delete_token(
+        &self,
+        client_id: &str,
+        client_secret: &str,
+        access_token: &str,
+    ) -> Result<(), GitHubError>;
+}
+
+pub trait ScopedTokenClient: RevokeTokenClient {
     fn create_scoped_token(
         &self,
         client_id: &str,
@@ -24,24 +33,10 @@ pub trait ScopedTokenClient {
         repositories: Option<&[String]>,
         permissions: &BTreeMap<String, String>,
     ) -> Result<ScopedTokenResponse, GitHubError>;
-
-    fn delete_token(
-        &self,
-        client_id: &str,
-        client_secret: &str,
-        access_token: &str,
-    ) -> Result<(), GitHubError>;
 }
 
-pub trait RootTokenClient {
+pub trait RootTokenClient: RevokeTokenClient {
     fn get_user(&self, access_token: &str) -> Result<UserResponse, GitHubError>;
-
-    fn delete_token(
-        &self,
-        client_id: &str,
-        client_secret: &str,
-        access_token: &str,
-    ) -> Result<(), GitHubError>;
 }
 
 impl fmt::Debug for GitHubClient {
@@ -237,6 +232,17 @@ fn oauth_error_from_value(value: &serde_json::Value) -> GitHubError {
     }
 }
 
+impl RevokeTokenClient for GitHubClient {
+    fn delete_token(
+        &self,
+        client_id: &str,
+        client_secret: &str,
+        access_token: &str,
+    ) -> Result<(), GitHubError> {
+        Self::delete_token(self, client_id, client_secret, access_token)
+    }
+}
+
 impl ScopedTokenClient for GitHubClient {
     fn create_scoped_token(
         &self,
@@ -257,29 +263,11 @@ impl ScopedTokenClient for GitHubClient {
             permissions,
         )
     }
-
-    fn delete_token(
-        &self,
-        client_id: &str,
-        client_secret: &str,
-        access_token: &str,
-    ) -> Result<(), GitHubError> {
-        Self::delete_token(self, client_id, client_secret, access_token)
-    }
 }
 
 impl RootTokenClient for GitHubClient {
     fn get_user(&self, access_token: &str) -> Result<UserResponse, GitHubError> {
         Self::get_user(self, access_token)
-    }
-
-    fn delete_token(
-        &self,
-        client_id: &str,
-        client_secret: &str,
-        access_token: &str,
-    ) -> Result<(), GitHubError> {
-        Self::delete_token(self, client_id, client_secret, access_token)
     }
 }
 

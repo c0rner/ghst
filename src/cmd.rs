@@ -200,6 +200,25 @@ fn load_current_root_entry(
     }
 }
 
+pub fn revoke_with_context<C: crate::github::RevokeTokenClient + ?Sized>(
+    client: &C,
+    profile: &RootProfile,
+    token: &crate::cache::AccessToken,
+    context: CmdError,
+) -> CmdError {
+    match client.delete_token(
+        &profile.github_app.client_id,
+        &profile.github_app.client_secret,
+        token.as_ref(),
+    ) {
+        Ok(()) => context,
+        Err(source) => CmdError::RevocationFailed {
+            context: Box::new(context),
+            source,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

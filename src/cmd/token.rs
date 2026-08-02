@@ -5,7 +5,7 @@ use crate::cache::{
 };
 use crate::cmd::{
     CmdError, GhstCli, OutputFormat, RepositorySelection, TokenCmd, load_config,
-    load_current_root_entry, load_valid_root_entry, resolve_profile_name,
+    load_current_root_entry, load_valid_root_entry, resolve_profile_name, revoke_with_context,
 };
 use crate::config::{Config, DerivedProfile, ProfileConfig, RootProfile};
 use crate::github::{GitHubClient, ScopedTokenClient, ScopedTokenResponse};
@@ -427,25 +427,6 @@ fn validate_scoped_expiry(
     Ok(expiry)
 }
 
-fn revoke_with_context<C: ScopedTokenClient>(
-    client: &C,
-    profile: &RootProfile,
-    token: &AccessToken,
-    context: CmdError,
-) -> CmdError {
-    match client.delete_token(
-        &profile.github_app.client_id,
-        &profile.github_app.client_secret,
-        token.as_ref(),
-    ) {
-        Ok(()) => context,
-        Err(source) => CmdError::RevocationFailed {
-            context: Box::new(context),
-            source,
-        },
-    }
-}
-
 fn derived_token(entry: &CacheEntry) -> &AccessToken {
     match entry {
         CacheEntry::Derived(entry) => &entry.access_token,
@@ -520,7 +501,7 @@ mod tests {
         RootCacheEntry, authority_fingerprint, delete_cache_entry, save_cache_entry,
     };
     use crate::cmd::root_cache_key;
-    use crate::github::{GitHubError, ScopedTokenResponse};
+    use crate::github::{GitHubError, RevokeTokenClient, ScopedTokenResponse};
     use std::cell::RefCell;
     use time::Duration;
 
@@ -548,6 +529,25 @@ permissions = { contents = "read", pull_requests = "write" }
         revoke_error: bool,
     }
 
+    impl RevokeTokenClient for MockClient {
+        fn delete_token(
+            &self,
+            _client_id: &str,
+            _client_secret: &str,
+            access_token: &str,
+        ) -> Result<(), GitHubError> {
+            self.revoked.borrow_mut().push(access_token.to_owned());
+            if self.revoke_error {
+                Err(GitHubError::Http {
+                    status: 500,
+                    message: "revoke failed".into(),
+                })
+            } else {
+                Ok(())
+            }
+        }
+    }
+
     impl ScopedTokenClient for MockClient {
         fn create_scoped_token(
             &self,
@@ -567,23 +567,6 @@ permissions = { contents = "read", pull_requests = "write" }
                 "permissions": permissions,
             })));
             self.response.borrow_mut().take().unwrap()
-        }
-
-        fn delete_token(
-            &self,
-            _client_id: &str,
-            _client_secret: &str,
-            access_token: &str,
-        ) -> Result<(), GitHubError> {
-            self.revoked.borrow_mut().push(access_token.to_owned());
-            if self.revoke_error {
-                Err(GitHubError::Http {
-                    status: 500,
-                    message: "revoke failed".into(),
-                })
-            } else {
-                Ok(())
-            }
         }
     }
 
@@ -739,6 +722,18 @@ permissions = { contents = "read", pull_requests = "write" }
         revoked: RefCell<Vec<String>>,
     }
 
+    impl RevokeTokenClient for WinningClient<'_> {
+        fn delete_token(
+            &self,
+            _client_id: &str,
+            _client_secret: &str,
+            access_token: &str,
+        ) -> Result<(), GitHubError> {
+            self.revoked.borrow_mut().push(access_token.to_owned());
+            Ok(())
+        }
+    }
+
     impl ScopedTokenClient for WinningClient<'_> {
         fn create_scoped_token(
             &self,
@@ -773,16 +768,6 @@ permissions = { contents = "read", pull_requests = "write" }
                 permissions: None,
                 repositories: None,
             })
-        }
-
-        fn delete_token(
-            &self,
-            _client_id: &str,
-            _client_secret: &str,
-            access_token: &str,
-        ) -> Result<(), GitHubError> {
-            self.revoked.borrow_mut().push(access_token.to_owned());
-            Ok(())
         }
     }
 
@@ -835,6 +820,18 @@ permissions = { contents = "read", pull_requests = "write" }
         revoked: RefCell<Vec<String>>,
     }
 
+    impl RevokeTokenClient for GenerationChangingClient<'_> {
+        fn delete_token(
+            &self,
+            _client_id: &str,
+            _client_secret: &str,
+            access_token: &str,
+        ) -> Result<(), GitHubError> {
+            self.revoked.borrow_mut().push(access_token.to_owned());
+            Ok(())
+        }
+    }
+
     impl ScopedTokenClient for GenerationChangingClient<'_> {
         fn create_scoped_token(
             &self,
@@ -863,16 +860,6 @@ permissions = { contents = "read", pull_requests = "write" }
                 permissions: None,
                 repositories: None,
             })
-        }
-
-        fn delete_token(
-            &self,
-            _client_id: &str,
-            _client_secret: &str,
-            access_token: &str,
-        ) -> Result<(), GitHubError> {
-            self.revoked.borrow_mut().push(access_token.to_owned());
-            Ok(())
         }
     }
 

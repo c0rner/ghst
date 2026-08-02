@@ -200,7 +200,7 @@ fn load_current_root_entry(
     }
 }
 
-pub fn revoke_with_context<C: crate::github::RevokeTokenClient + ?Sized>(
+fn revoke_with_context<C: crate::github::RevokeTokenClient + ?Sized>(
     client: &C,
     profile: &RootProfile,
     token: &crate::cache::AccessToken,

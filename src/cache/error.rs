@@ -18,6 +18,13 @@ pub enum CacheError {
         expected: &'static str,
         actual: &'static str,
     },
+    MalformedEpoch,
+    EpochExhausted,
+    EpochChanged {
+        expected: u64,
+        actual: u64,
+    },
+    RootGenerationChanged,
     Platform(&'static str),
 }
 
@@ -43,6 +50,15 @@ impl fmt::Display for CacheError {
                     "unexpected cache entry kind '{actual}', expected '{expected}'"
                 )
             }
+            Self::MalformedEpoch => write!(f, "cache lock contains a malformed epoch"),
+            Self::EpochExhausted => write!(f, "cache epoch is exhausted"),
+            Self::EpochChanged { expected, actual } => write!(
+                f,
+                "cache epoch changed from {expected} to {actual} while issuing a token"
+            ),
+            Self::RootGenerationChanged => {
+                write!(f, "source root generation changed while issuing a token")
+            }
             Self::Platform(reason) => write!(f, "cache platform error: {reason}"),
         }
     }
@@ -57,6 +73,10 @@ impl std::error::Error for CacheError {
             | Self::InvalidKey(_)
             | Self::InconsistentMetadata { .. }
             | Self::UnexpectedKind { .. }
+            | Self::MalformedEpoch
+            | Self::EpochExhausted
+            | Self::EpochChanged { .. }
+            | Self::RootGenerationChanged
             | Self::Platform(_) => None,
         }
     }

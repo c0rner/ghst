@@ -248,8 +248,8 @@ fn legacy_and_stale_provenance_are_replaced_only_after_candidate_exists() {
     file.write_all(legacy.as_bytes()).unwrap();
     file.persist(&path).unwrap();
     assert!(matches!(
-        load_cache_entry(&directory, &root_key()).unwrap(),
-        Some(CacheEntry::Legacy(_))
+        load_cache_entry(&directory, &root_key()),
+        Err(CacheError::Json(_))
     ));
 
     let current = root_entry(
@@ -257,6 +257,11 @@ fn legacy_and_stale_provenance_are_replaced_only_after_candidate_exists() {
         OffsetDateTime::now_utc() + Duration::hours(1),
         "new-authority",
     );
+    assert!(matches!(
+        save_cache_entry(&directory, &root_key(), &current),
+        Err(CacheError::Json(_))
+    ));
+    fs::remove_file(&path).unwrap();
     assert!(matches!(
         save_cache_entry(&directory, &root_key(), &current).unwrap(),
         SaveCacheEntry::Saved
@@ -294,7 +299,7 @@ fn compatible_entry_is_retained_and_wrong_kind_fails_closed() {
             CacheEntry::Root(RootCacheEntry { access_token, .. }) => {
                 assert_eq!(access_token.as_ref(), "existing");
             }
-            _ => panic!("expected retained root entry"),
+            CacheEntry::Derived(_) => panic!("expected retained root entry"),
         },
         SaveCacheEntry::Saved => panic!("expected compatible entry to be retained"),
     }

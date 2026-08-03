@@ -24,11 +24,42 @@ impl fmt::Debug for Config {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileKind {
+    Root,
+    Derived,
+}
+
+impl fmt::Display for ProfileKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Root => f.write_str("root"),
+            Self::Derived => f.write_str("derived"),
+        }
+    }
+}
+
 #[derive(PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ProfileConfig {
     Root(RootProfile),
     Derived(DerivedProfile),
+}
+
+impl ProfileConfig {
+    pub const fn kind(&self) -> ProfileKind {
+        match self {
+            Self::Root(_) => ProfileKind::Root,
+            Self::Derived(_) => ProfileKind::Derived,
+        }
+    }
+
+    pub fn description(&self) -> Option<&str> {
+        match self {
+            Self::Root(r) => r.description.as_deref(),
+            Self::Derived(d) => d.description.as_deref(),
+        }
+    }
 }
 
 impl fmt::Debug for ProfileConfig {

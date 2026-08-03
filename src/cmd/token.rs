@@ -1,7 +1,7 @@
 use crate::cache::{
-    AccessToken, CACHE_SCHEMA_VERSION, CacheEntry, CacheKind, DerivedCacheEntry, LegacyCacheEntry,
-    SaveCacheEntry, TokenExpiry, compute_cache_key, format_rfc3339, load_cache_entry,
-    policy_fingerprint, save_cache_entry,
+    AccessToken, CACHE_SCHEMA_VERSION, CacheEntry, CacheKind, DerivedCacheEntry, SaveCacheEntry,
+    TokenExpiry, cache_epoch, compute_cache_key, format_rfc3339, load_cache_entry,
+    policy_fingerprint, save_cache_candidate,
 };
 use crate::cmd::{
     CmdError, GhstCli, OutputFormat, RepositorySelection, TokenCmd, load_config,
@@ -229,14 +229,11 @@ fn load_valid_derived_entry(
                 && entry.expires_at.is_usable_at(now);
             Ok(valid.then_some(entry))
         }
-        CacheEntry::Legacy(LegacyCacheEntry::Derived(_)) => Ok(None),
-        CacheEntry::Root(_) | CacheEntry::Legacy(LegacyCacheEntry::Root(_)) => {
-            Err(CmdError::UnexpectedCacheKind {
-                profile: provenance.profile_name.to_owned(),
-                expected: CacheKind::Derived,
-                actual: CacheKind::Root,
-            })
-        }
+        CacheEntry::Root(_) => Err(CmdError::UnexpectedCacheKind {
+            profile: provenance.profile_name.to_owned(),
+            expected: CacheKind::Derived,
+            actual: CacheKind::Root,
+        }),
     }
 }
 
@@ -270,6 +267,8 @@ fn mint_and_persist<C: ScopedTokenClient, W: Write>(
         root_entry,
         format,
     } = request;
+    let epoch = cache_epoch(context.cache_dir)?;
+    let expected_generation = root_entry.generation_fingerprint();
     let response = context.client.create_scoped_token(
         &source_profile.github_app.client_id,
         &source_profile.github_app.client_secret,
@@ -295,14 +294,6 @@ fn mint_and_persist<C: ScopedTokenClient, W: Write>(
         }
     };
 
-    ensure_root_generation(
-        context,
-        source_name,
-        source_profile,
-        &token,
-        &root_entry.generation_fingerprint(),
-    )?;
-
     let candidate = CacheEntry::Derived(DerivedCacheEntry {
         version: CACHE_SCHEMA_VERSION,
         profile: profile_name.to_owned(),
@@ -320,42 +311,21 @@ fn mint_and_persist<C: ScopedTokenClient, W: Write>(
         cache_key,
         profile_name,
         source_profile,
+        source_name,
+        expected_generation: &expected_generation,
+        epoch,
         format,
     };
     persist_scoped_candidate(context, &persistence, &candidate, writer)
-}
-
-fn ensure_root_generation<C: ScopedTokenClient>(
-    context: &TokenContext<'_, C>,
-    source_name: &str,
-    source_profile: &RootProfile,
-    token: &AccessToken,
-    expected_generation: &str,
-) -> Result<(), CmdError> {
-    let reread = load_current_root_entry(context.cache_dir, source_name, source_profile);
-    match reread {
-        Ok(Some(current)) if current.generation_fingerprint() == expected_generation => Ok(()),
-        Ok(Some(_) | None) => Err(revoke_with_context(
-            context.client,
-            source_profile,
-            token,
-            CmdError::RootGenerationChanged {
-                profile: source_name.to_owned(),
-            },
-        )),
-        Err(error) => Err(revoke_with_context(
-            context.client,
-            source_profile,
-            token,
-            error,
-        )),
-    }
 }
 
 struct PersistenceRequest<'a> {
     cache_key: &'a str,
     profile_name: &'a str,
     source_profile: &'a RootProfile,
+    source_name: &'a str,
+    expected_generation: &'a str,
+    epoch: u64,
     format: OutputFormat,
 }
 
@@ -365,15 +335,30 @@ fn persist_scoped_candidate<C: ScopedTokenClient, W: Write>(
     candidate: &CacheEntry,
     writer: &mut W,
 ) -> Result<(), CmdError> {
-    let save_result = match save_cache_entry(context.cache_dir, request.cache_key, candidate) {
+    let root_key = crate::cmd::root_cache_key(request.source_name);
+    let save_result = match save_cache_candidate(
+        context.cache_dir,
+        request.cache_key,
+        candidate,
+        request.epoch,
+        Some((&root_key, request.expected_generation)),
+    ) {
         Ok(result) => result,
         Err(error) => {
             let token = derived_token(candidate)?;
+            let failure_context = match error {
+                crate::cache::CacheError::RootGenerationChanged => {
+                    CmdError::RootGenerationChanged {
+                        profile: request.source_name.to_owned(),
+                    }
+                }
+                other => CmdError::Cache(other),
+            };
             return Err(revoke_with_context(
                 context.client,
                 request.source_profile,
                 token,
-                CmdError::Cache(error),
+                failure_context,
             ));
         }
     };
@@ -782,7 +767,7 @@ permissions = { contents = "read", pull_requests = "write" }
         let CacheEntry::Root(root) = root else {
             panic!("expected root entry");
         };
-        let permissions = BTreeMap::from([
+        let permissions: BTreeMap<String, String> = BTreeMap::from([
             ("contents".into(), "read".into()),
             ("pull_requests".into(), "write".into()),
         ]);
@@ -965,7 +950,7 @@ permissions = { contents = "read", pull_requests = "write" }
         let CacheEntry::Root(root) = root else {
             panic!("expected root entry");
         };
-        let permissions = BTreeMap::from([
+        let permissions: BTreeMap<String, String> = BTreeMap::from([
             ("contents".into(), "read".into()),
             ("pull_requests".into(), "write".into()),
         ]);

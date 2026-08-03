@@ -11,8 +11,8 @@ pub use error::CmdError;
 use repository::RepositorySelection;
 
 use crate::cache::{
-    CacheEntry, CacheKind, LegacyCacheEntry, RootCacheEntry, authority_fingerprint,
-    compute_cache_key, load_cache_entry,
+    CacheEntry, CacheKind, RootCacheEntry, authority_fingerprint, compute_cache_key,
+    load_cache_entry,
 };
 use crate::config::{Config, RootProfile};
 use argh::FromArgs;
@@ -189,14 +189,11 @@ fn load_current_root_entry(
                 Ok(None)
             }
         }
-        CacheEntry::Legacy(LegacyCacheEntry::Root(_)) => Ok(None),
-        CacheEntry::Derived(_) | CacheEntry::Legacy(LegacyCacheEntry::Derived(_)) => {
-            Err(CmdError::UnexpectedCacheKind {
-                profile: profile_name.to_owned(),
-                expected: CacheKind::Root,
-                actual: CacheKind::Derived,
-            })
-        }
+        CacheEntry::Derived(_) => Err(CmdError::UnexpectedCacheKind {
+            profile: profile_name.to_owned(),
+            expected: CacheKind::Root,
+            actual: CacheKind::Derived,
+        }),
     }
 }
 

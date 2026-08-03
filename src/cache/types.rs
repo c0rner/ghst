@@ -103,14 +103,13 @@ impl<'de> Deserialize<'de> for TokenExpiry {
 pub enum CacheEntry {
     Root(RootCacheEntry),
     Derived(DerivedCacheEntry),
-    Legacy(LegacyCacheEntry),
 }
 
 impl CacheEntry {
     pub const fn kind(&self) -> CacheKind {
         match self {
-            Self::Root(_) | Self::Legacy(LegacyCacheEntry::Root(_)) => CacheKind::Root,
-            Self::Derived(_) | Self::Legacy(LegacyCacheEntry::Derived(_)) => CacheKind::Derived,
+            Self::Root(_) => CacheKind::Root,
+            Self::Derived(_) => CacheKind::Derived,
         }
     }
 
@@ -118,16 +117,13 @@ impl CacheEntry {
         match self {
             Self::Root(entry) => &entry.profile,
             Self::Derived(entry) => &entry.profile,
-            Self::Legacy(LegacyCacheEntry::Root(entry)) => &entry.profile,
-            Self::Legacy(LegacyCacheEntry::Derived(entry)) => &entry.profile,
         }
     }
 
     pub fn repo_scope(&self) -> &str {
         match self {
-            Self::Root(_) | Self::Legacy(LegacyCacheEntry::Root(_)) => "all",
+            Self::Root(_) => "all",
             Self::Derived(entry) => &entry.repo_scope,
-            Self::Legacy(LegacyCacheEntry::Derived(entry)) => &entry.repo_scope,
         }
     }
 
@@ -135,7 +131,6 @@ impl CacheEntry {
         match self {
             Self::Root(entry) => entry.version == CACHE_SCHEMA_VERSION,
             Self::Derived(entry) => entry.version == CACHE_SCHEMA_VERSION,
-            Self::Legacy(_) => false,
         }
     }
 
@@ -143,7 +138,6 @@ impl CacheEntry {
         match self {
             Self::Root(entry) => entry.expires_at.is_usable_at(now),
             Self::Derived(entry) => entry.expires_at.is_usable_at(now),
-            Self::Legacy(_) => false,
         }
     }
 
@@ -171,14 +165,14 @@ impl CacheEntry {
     pub const fn as_root(&self) -> Option<&RootCacheEntry> {
         match self {
             Self::Root(entry) => Some(entry),
-            _ => None,
+            Self::Derived(_) => None,
         }
     }
 
     pub const fn as_derived(&self) -> Option<&DerivedCacheEntry> {
         match self {
             Self::Derived(entry) => Some(entry),
-            _ => None,
+            Self::Root(_) => None,
         }
     }
 }
@@ -188,7 +182,6 @@ impl fmt::Debug for CacheEntry {
         match self {
             Self::Root(entry) => f.debug_tuple("Root").field(entry).finish(),
             Self::Derived(entry) => f.debug_tuple("Derived").field(entry).finish(),
-            Self::Legacy(entry) => f.debug_tuple("Legacy").field(entry).finish(),
         }
     }
 }
@@ -272,70 +265,6 @@ impl fmt::Debug for DerivedCacheEntry {
     }
 }
 
-#[derive(PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum LegacyCacheEntry {
-    Root(LegacyRootCacheEntry),
-    Derived(LegacyDerivedCacheEntry),
-}
-
-impl fmt::Debug for LegacyCacheEntry {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Root(entry) => f.debug_tuple("Root").field(entry).finish(),
-            Self::Derived(entry) => f.debug_tuple("Derived").field(entry).finish(),
-        }
-    }
-}
-
-#[derive(PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LegacyRootCacheEntry {
-    pub profile: String,
-    pub github_user: String,
-    pub issued_at: String,
-    pub expires_at: String,
-    pub access_token: AccessToken,
-}
-
-impl fmt::Debug for LegacyRootCacheEntry {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("LegacyRootCacheEntry")
-            .field("profile", &self.profile)
-            .field("github_user", &self.github_user)
-            .field("issued_at", &self.issued_at)
-            .field("expires_at", &self.expires_at)
-            .field("access_token", &self.access_token)
-            .finish()
-    }
-}
-
-#[derive(PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct LegacyDerivedCacheEntry {
-    pub profile: String,
-    pub source_profile: String,
-    pub github_user: String,
-    pub repo_scope: String,
-    pub issued_at: String,
-    pub expires_at: String,
-    pub access_token: AccessToken,
-}
-
-impl fmt::Debug for LegacyDerivedCacheEntry {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("LegacyDerivedCacheEntry")
-            .field("profile", &self.profile)
-            .field("source_profile", &self.source_profile)
-            .field("github_user", &self.github_user)
-            .field("repo_scope", &self.repo_scope)
-            .field("issued_at", &self.issued_at)
-            .field("expires_at", &self.expires_at)
-            .field("access_token", &self.access_token)
-            .finish()
-    }
-}
-
 #[derive(Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum CurrentCacheEntryRef<'a> {
@@ -350,13 +279,6 @@ enum CurrentCacheEntry {
     Derived(DerivedCacheEntry),
 }
 
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum CacheEntryWire {
-    Current(CurrentCacheEntry),
-    Legacy(LegacyCacheEntry),
-}
-
 impl Serialize for CacheEntry {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -365,7 +287,6 @@ impl Serialize for CacheEntry {
         match self {
             Self::Root(entry) => CurrentCacheEntryRef::Root(entry).serialize(serializer),
             Self::Derived(entry) => CurrentCacheEntryRef::Derived(entry).serialize(serializer),
-            Self::Legacy(entry) => entry.serialize(serializer),
         }
     }
 }
@@ -375,10 +296,9 @@ impl<'de> Deserialize<'de> for CacheEntry {
     where
         D: Deserializer<'de>,
     {
-        match CacheEntryWire::deserialize(deserializer)? {
-            CacheEntryWire::Current(CurrentCacheEntry::Root(entry)) => Ok(Self::Root(entry)),
-            CacheEntryWire::Current(CurrentCacheEntry::Derived(entry)) => Ok(Self::Derived(entry)),
-            CacheEntryWire::Legacy(entry) => Ok(Self::Legacy(entry)),
+        match CurrentCacheEntry::deserialize(deserializer)? {
+            CurrentCacheEntry::Root(entry) => Ok(Self::Root(entry)),
+            CurrentCacheEntry::Derived(entry) => Ok(Self::Derived(entry)),
         }
     }
 }

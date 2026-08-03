@@ -1,7 +1,7 @@
 use crate::browser::{display_auth_instructions, open_auth_url};
 use crate::cache::{
     AccessToken, CACHE_SCHEMA_VERSION, CacheEntry, RootCacheEntry, SaveCacheEntry, TokenExpiry,
-    authority_fingerprint, format_rfc3339, save_cache_entry,
+    authority_fingerprint, cache_epoch, format_rfc3339, save_cache_candidate,
 };
 use crate::cmd::{
     CmdError, GhstCli, LoginCmd, load_config, load_valid_root_entry, resolve_profile_name,
@@ -50,6 +50,7 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
     }
 
     let client = GitHubClient::new();
+    let epoch = cache_epoch(&cache_dir)?;
     info!("Initiating OAuth Device Flow for profile '{profile_name}'...");
     let device = client.request_device_code(&root_profile.github_app.client_id)?;
     display_auth_instructions(
@@ -86,6 +87,7 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
         &cache_dir,
         response,
         OffsetDateTime::now_utc(),
+        epoch,
     )
 }
 
@@ -96,6 +98,7 @@ fn persist_root_response<C: RootTokenClient>(
     cache_dir: &std::path::Path,
     response: AccessTokenResponse,
     now: OffsetDateTime,
+    epoch: u64,
 ) -> Result<(), CmdError> {
     let AccessTokenResponse {
         access_token,
@@ -134,7 +137,7 @@ fn persist_root_response<C: RootTokenClient>(
         access_token,
     });
     let key = root_cache_key(profile_name);
-    let result = match save_cache_entry(cache_dir, &key, &candidate) {
+    let result = match save_cache_candidate(cache_dir, &key, &candidate, epoch, None) {
         Ok(result) => result,
         Err(error) => {
             return Err(revoke_with_context(
@@ -165,7 +168,7 @@ fn persist_root_response<C: RootTokenClient>(
                 }
                 report_existing(profile_name, &entry);
             }
-            entry => {
+            entry @ CacheEntry::Derived(_) => {
                 return Err(CmdError::UnexpectedCacheKind {
                     profile: profile_name.to_owned(),
                     expected: crate::cache::CacheKind::Root,
@@ -375,11 +378,16 @@ permissions = { contents = "read" }
             &temp.path().join("cache"),
             invalid_response(),
             OffsetDateTime::now_utc(),
+            cache_epoch(&temp.path().join("cache")).unwrap(),
         )
         .unwrap_err();
         assert!(matches!(error, CmdError::InvalidLifetime { .. }));
         assert_eq!(&*client.revoked.borrow(), &["new-root"]);
-        assert!(!temp.path().join("cache").exists());
+        assert!(
+            crate::cache::list_all_cache_entries(&temp.path().join("cache"))
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -400,6 +408,7 @@ permissions = { contents = "read" }
             &temp.path().join("cache"),
             invalid_response(),
             OffsetDateTime::now_utc(),
+            cache_epoch(&temp.path().join("cache")).unwrap(),
         )
         .unwrap_err();
         assert!(matches!(

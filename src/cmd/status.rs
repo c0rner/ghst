@@ -8,7 +8,6 @@ use time::OffsetDateTime;
 use tracing::info;
 
 pub fn run_status(args: &GhstCli, _cmd: &StatusCmd) -> Result<(), CmdError> {
-    info!("Command: status");
     let config = load_config(args.config.as_deref())?;
     let cache_dir = Config::cache_dir()?;
     print_status(
@@ -39,10 +38,7 @@ pub fn print_status<W: Write>(
         }
     }
     writeln!(writer, "Cached token(s):")?;
-    writeln!(
-        writer,
-        "No network request is made; remote revocation cannot be detected.\n"
-    )?;
+    info!("No network request is made; remote revocation cannot be detected.");
     for (name, profile) in &config.profiles {
         let marker = if config.default_profile.as_deref() == Some(name) {
             "*"

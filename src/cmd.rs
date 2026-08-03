@@ -11,8 +11,7 @@ pub use error::CmdError;
 use repository::RepositorySelection;
 
 use crate::cache::{
-    CacheEntry, CacheKind, RootCacheEntry, authority_fingerprint, compute_cache_key,
-    load_cache_entry,
+    CacheEntry, RootCacheEntry, authority_fingerprint, compute_cache_key, load_cache_entry,
 };
 use crate::config::{Config, RootProfile};
 use argh::FromArgs;
@@ -191,8 +190,8 @@ fn load_current_root_entry(
         }
         CacheEntry::Derived(_) => Err(CmdError::UnexpectedCacheKind {
             profile: profile_name.to_owned(),
-            expected: CacheKind::Root,
-            actual: CacheKind::Derived,
+            expected: "root",
+            actual: "derived",
         }),
     }
 }
@@ -203,11 +202,13 @@ fn revoke_with_context<C: crate::github::RevokeTokenClient + ?Sized>(
     token: &crate::cache::AccessToken,
     context: CmdError,
 ) -> CmdError {
-    match client.delete_token(
-        &profile.github_app.client_id,
-        &profile.github_app.client_secret,
-        token.as_ref(),
-    ) {
+    let Some(client_secret) = profile.github_app.client_secret.as_deref() else {
+        tracing::warn!(
+            "client secret unavailable; unused remote token could not be revoked and may remain active until GitHub invalidates it or it is manually revoked"
+        );
+        return context;
+    };
+    match client.delete_token(&profile.github_app.client_id, client_secret, token.as_ref()) {
         Ok(()) => context,
         Err(source) => CmdError::RevocationFailed {
             context: Box::new(context),

@@ -21,6 +21,6 @@ pub use storage::{
     inspect_cache, load_cache_entry, save_cache_candidate, save_cache_entry,
 };
 pub use types::{
-    AccessToken, CACHE_SCHEMA_VERSION, CacheEntry, CacheKind, DerivedCacheEntry, RootCacheEntry,
+    AccessToken, CACHE_SCHEMA_VERSION, CacheEntry, DerivedCacheEntry, RootCacheEntry,
     SaveCacheEntry, TokenExpiry, authority_fingerprint, format_rfc3339, policy_fingerprint,
 };

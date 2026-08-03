@@ -16,7 +16,7 @@
 ## Security Model & Risk Architecture
 
 ### 1. `client_secret` Storage & Filesystem Security
-Root profiles in `~/.config/ghst/profiles.toml` reference configured GitHub Apps and store `client_secret` credentials.
+Root profiles reference configured GitHub Apps. A `client_secret` is optional; it enables derived-token minting and remote revocation.
 - **Filesystem Permissions:** `profiles.toml` must be restricted to `0600` permissions (`chmod 600 ~/.config/ghst/profiles.toml`).
 - **Access Limits:** Possession of `client_secret` alone does **not** grant repository access or token minting privileges. Token issuance always requires interactive human user authorization via GitHub OAuth Device Flow.
 
@@ -50,6 +50,12 @@ github_app.account = "acme-corp"
 github_app.client_id = "Iv1.8888888888888888"
 github_app.client_secret = "secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
+# Secretless root (Device Flow login and raw root tokens only)
+[profile.automation]
+kind = "root"
+github_app.account = "acme-corp"
+github_app.client_id = "Iv1.9999999999999999"
+
 # Derived Profiles (Scoped subsets of root profiles)
 [profile.reader]
 kind = "derived"
@@ -59,7 +65,7 @@ repo = "auto"
 permissions = { contents = "read", pull_requests = "read", issues = "read" }
 ```
 
-Root profiles cannot define `repo`: they represent the GitHub App's complete authority ceiling and are cached under `profile|all`. A root token can be printed only by calling `ghst token` without `--repo`.
+Root profiles cannot define `repo`: they represent the GitHub App's complete authority ceiling and are cached under `profile|all`. A root token can be printed in text, JSON, or environment format only by calling `ghst token` without `--repo`. Derived profiles may reference only roots with a configured client secret. Removing a secret therefore also requires removing every derived profile that references that root.
 
 A derived profile's `repo` value is its default selection. Repeated CLI `--repo` values replace that default. `all` means “apply no additional repository narrowing”; it never widens the permissions or repositories GitHub allows for the root token. Explicit repositories must use `owner/repository`, and every owner must match the source root profile's `github_app.account`.
 
@@ -67,7 +73,7 @@ A derived profile's `repo` value is its default selection. Repeated CLI `--repo`
 
 GitHub issues a scoped token as a separate user access token with its own `expires_at` and the documented eight-hour lifetime for expiring GitHub App user tokens. Because GitHub serializes that expiry at whole-second precision while `ghst` records receipt time with subsecond precision, lifetime validation allows a one-second rounding tolerance. A scoped token may remain valid after the root token used to mint it has expired or been individually revoked. An expired root may validate an already-cached child but cannot mint a new one.
 
-Root-token expiration or individual revocation must not be treated as revoking its children. The planned `ghst clear` kill switch must explicitly revoke every cached live root and derived token before removing its cache entry. See GitHub's [scoped-token endpoint](https://docs.github.com/en/rest/apps/apps?apiVersion=2022-11-28#create-a-scoped-access-token) and [single-token revocation endpoint](https://docs.github.com/en/rest/apps/oauth-applications?apiVersion=2022-11-28#delete-an-app-token).
+Root-token expiration or individual revocation must not be treated as revoking its children. `ghst clear` explicitly revokes every cached live root and derived token when its root client secret is available before removing its cache entry. A live secretless root is deleted locally, reported as potentially active remotely, and makes `clear` return nonzero. See GitHub's [scoped-token endpoint](https://docs.github.com/en/rest/apps/apps?apiVersion=2022-11-28#create-a-scoped-access-token) and [single-token revocation endpoint](https://docs.github.com/en/rest/apps/oauth-applications?apiVersion=2022-11-28#delete-an-app-token).
 
 ---
 

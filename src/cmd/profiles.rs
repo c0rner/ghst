@@ -35,6 +35,12 @@ fn print_profiles<W: Write>(writer: &mut W, config: &Config, verbose: bool) -> i
                     writeln!(writer, "    Account:     {}", root.github_app.account)?;
                     writeln!(writer, "    Client ID:   {}", root.github_app.client_id)?;
                     writeln!(writer, "    Repo Scope:  all (root authority)")?;
+                    let capabilities = if root.github_app.client_secret.is_some() {
+                        "root tokens, derived tokens, remote revocation"
+                    } else {
+                        "root tokens only"
+                    };
+                    writeln!(writer, "    Capabilities: {capabilities}")?;
                 }
                 ProfileConfig::Derived(derived) => {
                     writeln!(writer, "    Source:      {}", derived.source)?;

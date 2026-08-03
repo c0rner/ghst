@@ -134,10 +134,10 @@ pub fn save_cache_entry(
         let cache_file = cache_file_path(cache_dir, hash_key);
         if let Some(existing) = read_cache_entry(&cache_file)? {
             validate_entry_key(hash_key, &existing)?;
-            if existing.kind() != entry.kind() {
+            if existing.kind_name() != entry.kind_name() {
                 return Err(CacheError::UnexpectedKind {
-                    expected: kind_name(entry),
-                    actual: kind_name(&existing),
+                    expected: entry.kind_name(),
+                    actual: existing.kind_name(),
                 });
             }
             if existing.compatible_with(entry, time::OffsetDateTime::now_utc()) {
@@ -145,19 +145,7 @@ pub fn save_cache_entry(
             }
         }
 
-        let mut temporary = create_private_tempfile(cache_dir)?;
-        temporary
-            .as_file_mut()
-            .write_all(&json_bytes)
-            .map_err(CacheError::Io)?;
-        temporary.as_file_mut().sync_all().map_err(CacheError::Io)?;
-        temporary
-            .persist(&cache_file)
-            .map_err(|err| CacheError::Io(err.error))?;
-        sync_cache_dir(cache_dir)?;
-
-        let metadata = fs::symlink_metadata(&cache_file).map_err(CacheError::Io)?;
-        validate_cache_file(&cache_file, &metadata)?;
+        persist_cache_file(cache_dir, &cache_file, &json_bytes)?;
 
         Ok(SaveCacheEntry::Saved)
     })
@@ -201,16 +189,25 @@ fn save_unlocked(
     let cache_file = cache_file_path(cache_dir, hash_key);
     if let Some(existing) = read_cache_entry(&cache_file)? {
         validate_entry_key(hash_key, &existing)?;
-        if existing.kind() != entry.kind() {
+        if existing.kind_name() != entry.kind_name() {
             return Err(CacheError::UnexpectedKind {
-                expected: kind_name(entry),
-                actual: kind_name(&existing),
+                expected: entry.kind_name(),
+                actual: existing.kind_name(),
             });
         }
         if existing.compatible_with(entry, time::OffsetDateTime::now_utc()) {
             return Ok(SaveCacheEntry::Retained(Box::new(existing)));
         }
     }
+    persist_cache_file(cache_dir, &cache_file, json_bytes)?;
+    Ok(SaveCacheEntry::Saved)
+}
+
+fn persist_cache_file(
+    cache_dir: &Path,
+    cache_file: &Path,
+    json_bytes: &[u8],
+) -> Result<(), CacheError> {
     let mut temporary = create_private_tempfile(cache_dir)?;
     temporary
         .as_file_mut()
@@ -218,10 +215,12 @@ fn save_unlocked(
         .map_err(CacheError::Io)?;
     temporary.as_file_mut().sync_all().map_err(CacheError::Io)?;
     temporary
-        .persist(&cache_file)
+        .persist(cache_file)
         .map_err(|error| CacheError::Io(error.error))?;
     sync_cache_dir(cache_dir)?;
-    Ok(SaveCacheEntry::Saved)
+
+    let metadata = fs::symlink_metadata(cache_file).map_err(CacheError::Io)?;
+    validate_cache_file(cache_file, &metadata)
 }
 
 fn validate_entry_key(hash_key: &str, entry: &CacheEntry) -> Result<(), CacheError> {
@@ -233,13 +232,6 @@ fn validate_entry_key(hash_key: &str, entry: &CacheEntry) -> Result<(), CacheErr
             expected_key: hash_key.to_owned(),
             actual_key,
         })
-    }
-}
-
-const fn kind_name(entry: &CacheEntry) -> &'static str {
-    match entry.kind() {
-        crate::cache::types::CacheKind::Root => "root",
-        crate::cache::types::CacheKind::Derived => "derived",
     }
 }
 

@@ -64,6 +64,9 @@ pub enum CmdError {
         context: Box<Self>,
         source: GitHubError,
     },
+    ClearIncomplete {
+        failures: usize,
+    },
     Io(std::io::Error),
 }
 
@@ -150,6 +153,9 @@ impl fmt::Display for CmdError {
                     "{context}; additionally failed to revoke the unused token: {source}"
                 )
             }
+            Self::ClearIncomplete { failures } => {
+                write!(f, "cache cleanup was incomplete ({failures} failure(s))")
+            }
             Self::Io(err) => write!(f, "IO error: {err}"),
         }
     }
@@ -180,7 +186,8 @@ impl std::error::Error for CmdError {
             | Self::RootGenerationChanged { .. }
             | Self::InvalidLifetime { .. }
             | Self::OAuthExpired
-            | Self::OAuthAccessDenied => None,
+            | Self::OAuthAccessDenied
+            | Self::ClearIncomplete { .. } => None,
         }
     }
 }

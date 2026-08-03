@@ -13,7 +13,6 @@ use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::Path;
 use time::OffsetDateTime;
-use tracing::info;
 
 const MAX_SCOPED_LIFETIME: time::Duration = time::Duration::hours(8);
 const SCOPED_EXPIRY_ROUNDING_TOLERANCE: time::Duration = time::Duration::seconds(1);
@@ -25,10 +24,6 @@ const SCOPED_EXPIRY_ROUNDING_TOLERANCE: time::Duration = time::Duration::seconds
 /// Returns `CmdError` if request resolution, cache validation, token minting,
 /// persistence, cleanup, or output fails.
 pub fn run_token(args: &GhstCli, cmd: &TokenCmd) -> Result<(), CmdError> {
-    info!(
-        "Command: token (profile: {:?}, repo: {:?}, format: {:?})",
-        cmd.profile, cmd.repo, cmd.format
-    );
     let config = load_config(args.config.as_deref())?;
     let profile_name = resolve_profile_name(cmd.profile.as_deref(), &config)?;
     let cache_dir = Config::cache_dir()?;
@@ -269,9 +264,16 @@ fn mint_and_persist<C: ScopedTokenClient, W: Write>(
     } = request;
     let epoch = cache_epoch(context.cache_dir)?;
     let expected_generation = root_entry.generation_fingerprint();
+    let client_secret = source_profile
+        .github_app
+        .client_secret
+        .as_deref()
+        .ok_or_else(|| CmdError::ClientSecretRequired {
+            profile: source_name.to_owned(),
+        })?;
     let response = context.client.create_scoped_token(
         &source_profile.github_app.client_id,
-        &source_profile.github_app.client_secret,
+        client_secret,
         root_entry.access_token.as_ref(),
         &source_profile.github_app.account,
         repositories,
@@ -367,9 +369,17 @@ fn persist_scoped_candidate<C: ScopedTokenClient, W: Write>(
         SaveCacheEntry::Saved => output_derived(writer, candidate, request.format),
         SaveCacheEntry::Retained(retained) => {
             let candidate_token = derived_token(candidate)?;
+            let client_secret = request
+                .source_profile
+                .github_app
+                .client_secret
+                .as_deref()
+                .ok_or_else(|| CmdError::ClientSecretRequired {
+                    profile: request.source_name.to_owned(),
+                })?;
             if let Err(source) = context.client.delete_token(
                 &request.source_profile.github_app.client_id,
-                &request.source_profile.github_app.client_secret,
+                client_secret,
                 candidate_token.as_ref(),
             ) {
                 return Err(CmdError::RevocationFailed {

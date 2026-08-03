@@ -19,6 +19,10 @@ pub enum ConfigError {
         profile: String,
         source: String,
     },
+    DerivedFromSecretlessRoot {
+        profile: String,
+        source: String,
+    },
     InvalidRootProfile {
         profile: String,
         reason: String,
@@ -51,6 +55,10 @@ impl fmt::Display for ConfigError {
             Self::DerivedFromNonRoot { profile, source } => write!(
                 f,
                 "derived profile '{profile}' references source profile '{source}' which is not a root profile"
+            ),
+            Self::DerivedFromSecretlessRoot { profile, source } => write!(
+                f,
+                "derived profile '{profile}' references secretless root profile '{source}'; derived tokens require a client secret"
             ),
             Self::InvalidRootProfile { profile, reason } => {
                 write!(f, "invalid root profile '{profile}': {reason}")

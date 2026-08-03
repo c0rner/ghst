@@ -11,7 +11,7 @@ use crate::config::ProfileConfig;
 use crate::github::{AccessTokenResponse, GitHubClient, GitHubError, RootTokenClient};
 use std::thread;
 use time::{Duration, OffsetDateTime};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 const MAX_ROOT_LIFETIME_SECONDS: u64 = 8 * 60 * 60;
 
@@ -39,12 +39,14 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
     };
 
     let cache_dir = crate::config::Config::cache_dir()?;
+    debug!("Resolved cache directory: {:?}", cache_dir);
     if let Some(entry) = load_valid_root_entry(
         &cache_dir,
         &profile_name,
         root_profile,
         OffsetDateTime::now_utc(),
     )? {
+        debug!("Found valid cached root token for profile '{profile_name}'");
         report_existing(&profile_name, &entry);
         return Ok(());
     }
@@ -153,18 +155,14 @@ fn persist_root_response<C: RootTokenClient>(
         SaveCacheEntry::Saved => report_saved(profile_name, root_entry(&candidate)?),
         SaveCacheEntry::Retained(entry) => match *entry {
             CacheEntry::Root(entry) => {
-                if let Err(source) = client.delete_token(
-                    &profile.github_app.client_id,
-                    &profile.github_app.client_secret,
-                    root_token(&candidate)?.as_ref(),
-                ) {
-                    return Err(CmdError::RevocationFailed {
-                        context: Box::new(CmdError::StaleProvenance {
-                            profile: profile_name.to_owned(),
-                            reason: "a compatible concurrent root cache winner was retained",
-                        }),
-                        source,
-                    });
+                let context = CmdError::StaleProvenance {
+                    profile: profile_name.to_owned(),
+                    reason: "a compatible concurrent root cache winner was retained",
+                };
+                let cleanup =
+                    revoke_with_context(client, profile, root_token(&candidate)?, context);
+                if matches!(cleanup, CmdError::RevocationFailed { .. }) {
+                    return Err(cleanup);
                 }
                 report_existing(profile_name, &entry);
             }
@@ -416,5 +414,45 @@ permissions = { contents = "read" }
             CmdError::RevocationFailed { context, .. }
                 if matches!(*context, CmdError::InvalidLifetime { .. })
         ));
+    }
+
+    #[test]
+    fn secretless_invalid_root_preserves_error_without_revocation() {
+        let config: crate::config::Config = CONFIG
+            .replace("github_app.client_secret = \"secret\"", "")
+            .replace(
+                "default_profile = \"reader\"",
+                "default_profile = \"developer\"",
+            )
+            .replace(
+                r#"[profile.reader]
+kind = "derived"
+source = "developer"
+permissions = { contents = "read" }"#,
+                "",
+            )
+            .parse()
+            .unwrap();
+        let ProfileConfig::Root(profile) = config.profiles.get("developer").unwrap() else {
+            panic!("expected root profile");
+        };
+        let client = MockRootClient {
+            revoked: RefCell::new(Vec::new()),
+            revoke_fails: false,
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let error = persist_root_response(
+            &client,
+            profile,
+            "developer",
+            &cache_dir,
+            invalid_response(),
+            OffsetDateTime::now_utc(),
+            cache_epoch(&cache_dir).unwrap(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, CmdError::InvalidLifetime { .. }));
+        assert!(client.revoked.borrow().is_empty());
     }
 }

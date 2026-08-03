@@ -29,11 +29,21 @@ pub fn validate_config(config: &Config) -> Result<(), ConfigError> {
             ProfileConfig::Root(root) => {
                 if root.github_app.account.trim().is_empty()
                     || root.github_app.client_id.trim().is_empty()
-                    || root.github_app.client_secret.trim().is_empty()
                 {
                     return Err(ConfigError::InvalidRootProfile {
                         profile: name.clone(),
-                        reason: "github_app credentials and account cannot be empty".into(),
+                        reason: "github_app client ID and account cannot be empty".into(),
+                    });
+                }
+                if root
+                    .github_app
+                    .client_secret
+                    .as_ref()
+                    .is_some_and(|secret| secret.trim().is_empty())
+                {
+                    return Err(ConfigError::InvalidRootProfile {
+                        profile: name.clone(),
+                        reason: "github_app client secret cannot be empty when configured".into(),
                     });
                 }
             }
@@ -53,7 +63,13 @@ pub fn validate_config(config: &Config) -> Result<(), ConfigError> {
                 })?;
 
                 match source_profile {
-                    ProfileConfig::Root(_) => {}
+                    ProfileConfig::Root(root) if root.github_app.client_secret.is_some() => {}
+                    ProfileConfig::Root(_) => {
+                        return Err(ConfigError::DerivedFromSecretlessRoot {
+                            profile: name.clone(),
+                            source: derived.source.clone(),
+                        });
+                    }
                     ProfileConfig::Derived(_) => {
                         return Err(ConfigError::DerivedFromNonRoot {
                             profile: name.clone(),

@@ -203,11 +203,13 @@ fn revoke_with_context<C: crate::github::RevokeTokenClient + ?Sized>(
     token: &crate::cache::AccessToken,
     context: CmdError,
 ) -> CmdError {
-    match client.delete_token(
-        &profile.github_app.client_id,
-        &profile.github_app.client_secret,
-        token.as_ref(),
-    ) {
+    let Some(client_secret) = profile.github_app.client_secret.as_deref() else {
+        tracing::warn!(
+            "client secret unavailable; unused remote token could not be revoked and may remain active until GitHub invalidates it or it is manually revoked"
+        );
+        return context;
+    };
+    match client.delete_token(&profile.github_app.client_id, client_secret, token.as_ref()) {
         Ok(()) => context,
         Err(source) => CmdError::RevocationFailed {
             context: Box::new(context),

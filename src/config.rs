@@ -128,8 +128,8 @@ permissions = { contents = "read", security_events = "read", vulnerabilities = "
                 assert_eq!(root.github_app.account, "acme-corp");
                 assert_eq!(root.github_app.client_id, "Iv1.8888888888888888");
                 assert_eq!(
-                    root.github_app.client_secret,
-                    "secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                    root.github_app.client_secret.as_deref(),
+                    Some("secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
                 );
             }
             ProfileConfig::Derived(_) => panic!("expected root profile"),
@@ -227,6 +227,48 @@ permissions = { contents = "read" }
         assert!(!debug_str.contains("secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"));
         assert!(!debug_str.contains("secret_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"));
         assert!(debug_str.contains("[REDACTED]"));
+    }
+
+    #[test]
+    fn standalone_secretless_root_can_be_default() {
+        let config: Config = r#"
+version = 1
+default_profile = "developer"
+
+[profile.developer]
+kind = "root"
+github_app.account = "acme"
+github_app.client_id = "id"
+"#
+        .parse()
+        .unwrap();
+        let ProfileConfig::Root(root) = config.profiles.get("developer").unwrap() else {
+            panic!("expected root profile");
+        };
+        assert_eq!(root.github_app.client_secret, None);
+        assert!(format!("{config:?}").contains("client_secret: None"));
+    }
+
+    #[test]
+    fn empty_configured_secret_is_invalid() {
+        let invalid = VALID_CONFIG.replace("secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "   ");
+        assert!(matches!(
+            invalid.parse::<Config>(),
+            Err(ConfigError::InvalidRootProfile { .. })
+        ));
+    }
+
+    #[test]
+    fn derived_profile_cannot_reference_secretless_root() {
+        let invalid = VALID_CONFIG.replace(
+            "github_app.client_secret = \"secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
+            "",
+        );
+        assert!(matches!(
+            invalid.parse::<Config>(),
+            Err(ConfigError::DerivedFromSecretlessRoot { profile, source })
+                if (profile == "contributor" || profile == "reader") && source == "developer"
+        ));
     }
 
     #[test]

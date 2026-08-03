@@ -91,7 +91,7 @@ impl fmt::Debug for RootProfile {
 pub struct GitHubAppConfig {
     pub account: String,
     pub client_id: String,
-    pub client_secret: String,
+    pub client_secret: Option<String>,
 }
 
 // Hand-written Debug for GitHubAppConfig to prevent secret leaks
@@ -100,7 +100,10 @@ impl fmt::Debug for GitHubAppConfig {
         f.debug_struct("GitHubAppConfig")
             .field("account", &self.account)
             .field("client_id", &self.client_id)
-            .field("client_secret", &"[REDACTED]")
+            .field(
+                "client_secret",
+                &self.client_secret.as_ref().map(|_| "[REDACTED]"),
+            )
             .finish()
     }
 }

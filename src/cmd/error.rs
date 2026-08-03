@@ -20,6 +20,9 @@ pub enum CmdError {
         profile: String,
         source: String,
     },
+    ClientSecretRequired {
+        profile: String,
+    },
     NoRootTokenCached {
         profile: String,
     },
@@ -91,6 +94,10 @@ impl fmt::Display for CmdError {
             Self::SourceProfileNotRoot { profile, source } => write!(
                 f,
                 "derived profile '{profile}' references non-root source profile '{source}'"
+            ),
+            Self::ClientSecretRequired { profile } => write!(
+                f,
+                "root profile '{profile}' has no client secret; derived token minting is unavailable"
             ),
             Self::NoRootTokenCached { profile } => write!(
                 f,
@@ -174,6 +181,7 @@ impl std::error::Error for CmdError {
             | Self::ProfileRequired
             | Self::DerivedLoginNotAllowed { .. }
             | Self::SourceProfileNotRoot { .. }
+            | Self::ClientSecretRequired { .. }
             | Self::NoRootTokenCached { .. }
             | Self::NoSourceTokenCached { .. }
             | Self::InvalidOutputFormat(_)

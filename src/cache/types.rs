@@ -46,7 +46,7 @@ impl fmt::Debug for AccessToken {
 }
 
 /// A parsed RFC 3339 token expiration timestamp.
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct TokenExpiry(OffsetDateTime);
 
 impl TokenExpiry {
@@ -71,12 +71,6 @@ impl fmt::Display for TokenExpiry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let value = self.0.format(&Rfc3339).map_err(|_| fmt::Error)?;
         f.write_str(&value)
-    }
-}
-
-impl fmt::Debug for TokenExpiry {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Display::fmt(self, f)
     }
 }
 

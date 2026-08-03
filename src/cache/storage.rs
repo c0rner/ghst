@@ -145,19 +145,7 @@ pub fn save_cache_entry(
             }
         }
 
-        let mut temporary = create_private_tempfile(cache_dir)?;
-        temporary
-            .as_file_mut()
-            .write_all(&json_bytes)
-            .map_err(CacheError::Io)?;
-        temporary.as_file_mut().sync_all().map_err(CacheError::Io)?;
-        temporary
-            .persist(&cache_file)
-            .map_err(|err| CacheError::Io(err.error))?;
-        sync_cache_dir(cache_dir)?;
-
-        let metadata = fs::symlink_metadata(&cache_file).map_err(CacheError::Io)?;
-        validate_cache_file(&cache_file, &metadata)?;
+        persist_cache_file(cache_dir, &cache_file, &json_bytes)?;
 
         Ok(SaveCacheEntry::Saved)
     })
@@ -211,6 +199,15 @@ fn save_unlocked(
             return Ok(SaveCacheEntry::Retained(Box::new(existing)));
         }
     }
+    persist_cache_file(cache_dir, &cache_file, json_bytes)?;
+    Ok(SaveCacheEntry::Saved)
+}
+
+fn persist_cache_file(
+    cache_dir: &Path,
+    cache_file: &Path,
+    json_bytes: &[u8],
+) -> Result<(), CacheError> {
     let mut temporary = create_private_tempfile(cache_dir)?;
     temporary
         .as_file_mut()
@@ -218,10 +215,12 @@ fn save_unlocked(
         .map_err(CacheError::Io)?;
     temporary.as_file_mut().sync_all().map_err(CacheError::Io)?;
     temporary
-        .persist(&cache_file)
+        .persist(cache_file)
         .map_err(|error| CacheError::Io(error.error))?;
     sync_cache_dir(cache_dir)?;
-    Ok(SaveCacheEntry::Saved)
+
+    let metadata = fs::symlink_metadata(cache_file).map_err(CacheError::Io)?;
+    validate_cache_file(cache_file, &metadata)
 }
 
 fn validate_entry_key(hash_key: &str, entry: &CacheEntry) -> Result<(), CacheError> {

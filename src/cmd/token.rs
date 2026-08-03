@@ -1,7 +1,7 @@
 use crate::cache::{
-    AccessToken, CACHE_SCHEMA_VERSION, CacheEntry, CacheKind, DerivedCacheEntry, SaveCacheEntry,
-    TokenExpiry, cache_epoch, compute_cache_key, format_rfc3339, load_cache_entry,
-    policy_fingerprint, save_cache_candidate,
+    AccessToken, CACHE_SCHEMA_VERSION, CacheEntry, DerivedCacheEntry, SaveCacheEntry, TokenExpiry,
+    cache_epoch, compute_cache_key, format_rfc3339, load_cache_entry, policy_fingerprint,
+    save_cache_candidate,
 };
 use crate::cmd::{
     CmdError, GhstCli, OutputFormat, RepositorySelection, TokenCmd, load_config,
@@ -226,8 +226,8 @@ fn load_valid_derived_entry(
         }
         CacheEntry::Root(_) => Err(CmdError::UnexpectedCacheKind {
             profile: provenance.profile_name.to_owned(),
-            expected: CacheKind::Derived,
-            actual: CacheKind::Root,
+            expected: "derived",
+            actual: "root",
         }),
     }
 }
@@ -427,8 +427,8 @@ fn derived_entry(entry: &CacheEntry) -> Result<&DerivedCacheEntry, CmdError> {
         .as_derived()
         .ok_or_else(|| CmdError::UnexpectedCacheKind {
             profile: entry.profile().to_owned(),
-            expected: CacheKind::Derived,
-            actual: entry.kind(),
+            expected: "derived",
+            actual: entry.kind_name(),
         })
 }
 

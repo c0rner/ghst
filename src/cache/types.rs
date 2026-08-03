@@ -100,10 +100,10 @@ pub enum CacheEntry {
 }
 
 impl CacheEntry {
-    pub const fn kind(&self) -> CacheKind {
+    pub const fn kind_name(&self) -> &'static str {
         match self {
-            Self::Root(_) => CacheKind::Root,
-            Self::Derived(_) => CacheKind::Derived,
+            Self::Root(_) => "root",
+            Self::Derived(_) => "derived",
         }
     }
 
@@ -176,21 +176,6 @@ impl fmt::Debug for CacheEntry {
         match self {
             Self::Root(entry) => f.debug_tuple("Root").field(entry).finish(),
             Self::Derived(entry) => f.debug_tuple("Derived").field(entry).finish(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CacheKind {
-    Root,
-    Derived,
-}
-
-impl fmt::Display for CacheKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Root => f.write_str("root"),
-            Self::Derived => f.write_str("derived"),
         }
     }
 }

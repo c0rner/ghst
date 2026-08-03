@@ -134,10 +134,10 @@ pub fn save_cache_entry(
         let cache_file = cache_file_path(cache_dir, hash_key);
         if let Some(existing) = read_cache_entry(&cache_file)? {
             validate_entry_key(hash_key, &existing)?;
-            if existing.kind() != entry.kind() {
+            if existing.kind_name() != entry.kind_name() {
                 return Err(CacheError::UnexpectedKind {
-                    expected: kind_name(entry),
-                    actual: kind_name(&existing),
+                    expected: entry.kind_name(),
+                    actual: existing.kind_name(),
                 });
             }
             if existing.compatible_with(entry, time::OffsetDateTime::now_utc()) {
@@ -189,10 +189,10 @@ fn save_unlocked(
     let cache_file = cache_file_path(cache_dir, hash_key);
     if let Some(existing) = read_cache_entry(&cache_file)? {
         validate_entry_key(hash_key, &existing)?;
-        if existing.kind() != entry.kind() {
+        if existing.kind_name() != entry.kind_name() {
             return Err(CacheError::UnexpectedKind {
-                expected: kind_name(entry),
-                actual: kind_name(&existing),
+                expected: entry.kind_name(),
+                actual: existing.kind_name(),
             });
         }
         if existing.compatible_with(entry, time::OffsetDateTime::now_utc()) {
@@ -232,13 +232,6 @@ fn validate_entry_key(hash_key: &str, entry: &CacheEntry) -> Result<(), CacheErr
             expected_key: hash_key.to_owned(),
             actual_key,
         })
-    }
-}
-
-const fn kind_name(entry: &CacheEntry) -> &'static str {
-    match entry.kind() {
-        crate::cache::types::CacheKind::Root => "root",
-        crate::cache::types::CacheKind::Derived => "derived",
     }
 }
 

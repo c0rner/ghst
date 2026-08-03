@@ -169,8 +169,8 @@ fn persist_root_response<C: RootTokenClient>(
             entry @ CacheEntry::Derived(_) => {
                 return Err(CmdError::UnexpectedCacheKind {
                     profile: profile_name.to_owned(),
-                    expected: crate::cache::CacheKind::Root,
-                    actual: entry.kind(),
+                    expected: "root",
+                    actual: entry.kind_name(),
                 });
             }
         },
@@ -219,8 +219,8 @@ fn root_entry(entry: &CacheEntry) -> Result<&RootCacheEntry, CmdError> {
         .as_root()
         .ok_or_else(|| CmdError::UnexpectedCacheKind {
             profile: entry.profile().to_owned(),
-            expected: crate::cache::CacheKind::Root,
-            actual: entry.kind(),
+            expected: "root",
+            actual: entry.kind_name(),
         })
 }
 

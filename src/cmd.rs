@@ -11,8 +11,7 @@ pub use error::CmdError;
 use repository::RepositorySelection;
 
 use crate::cache::{
-    CacheEntry, CacheKind, RootCacheEntry, authority_fingerprint, compute_cache_key,
-    load_cache_entry,
+    CacheEntry, RootCacheEntry, authority_fingerprint, compute_cache_key, load_cache_entry,
 };
 use crate::config::{Config, RootProfile};
 use argh::FromArgs;
@@ -191,8 +190,8 @@ fn load_current_root_entry(
         }
         CacheEntry::Derived(_) => Err(CmdError::UnexpectedCacheKind {
             profile: profile_name.to_owned(),
-            expected: CacheKind::Root,
-            actual: CacheKind::Derived,
+            expected: "root",
+            actual: "derived",
         }),
     }
 }

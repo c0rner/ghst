@@ -1,4 +1,4 @@
-use crate::cache::{CacheError, CacheKind};
+use crate::cache::CacheError;
 use crate::config::ConfigError;
 use crate::git::GitError;
 use crate::github::GitHubError;
@@ -43,8 +43,8 @@ pub enum CmdError {
     },
     UnexpectedCacheKind {
         profile: String,
-        expected: CacheKind,
-        actual: CacheKind,
+        expected: &'static str,
+        actual: &'static str,
     },
     InconsistentCacheMetadata {
         profile: String,

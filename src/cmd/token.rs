@@ -4,8 +4,8 @@ use crate::cache::{
     save_cache_candidate,
 };
 use crate::cmd::{
-    CmdError, GhstCli, OutputFormat, RepositorySelection, TokenCmd, load_config,
-    load_current_root_entry, load_valid_root_entry, resolve_profile_name, revoke_with_context,
+    CmdError, GhstCli, OutputFormat, RepositorySelection, TokenCmd, load_current_root_entry,
+    load_valid_root_entry, resolve_profile_name, revoke_with_context,
 };
 use crate::config::{Config, DerivedProfile, ProfileConfig, RootProfile};
 use crate::github::{GitHubClient, ScopedTokenClient, ScopedTokenResponse};
@@ -24,9 +24,9 @@ const SCOPED_EXPIRY_ROUNDING_TOLERANCE: time::Duration = time::Duration::seconds
 /// Returns `CmdError` if request resolution, cache validation, token minting,
 /// persistence, cleanup, or output fails.
 pub fn run_token(args: &GhstCli, cmd: &TokenCmd) -> Result<(), CmdError> {
-    let config = load_config(args.config.as_deref())?;
+    let config = crate::config::load(args.config.as_deref())?;
     let profile_name = resolve_profile_name(cmd.profile.as_deref(), &config)?;
-    let cache_dir = Config::cache_dir()?;
+    let cache_dir = crate::config::cache_dir()?;
     let client = GitHubClient::new();
     let mut stdout = io::stdout().lock();
     let context = TokenContext {
@@ -504,13 +504,11 @@ version = 1
 default_profile = "reader"
 
 [profile.developer]
-kind = "root"
 github_app.account = "acme"
 github_app.client_id = "id"
 github_app.client_secret = "secret"
 
 [profile.reader]
-kind = "derived"
 source = "developer"
 repo = "acme/api"
 permissions = { contents = "read", pull_requests = "write" }

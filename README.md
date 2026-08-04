@@ -44,7 +44,6 @@ default_profile = "reader"
 
 # Root Profiles (Backed directly by GitHub Apps)
 [profile.developer]
-kind = "root"
 description = "Full developer privilege ceiling"
 github_app.account = "acme-corp"
 github_app.client_id = "Iv1.8888888888888888"
@@ -52,18 +51,18 @@ github_app.client_secret = "secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
 # Secretless root (Device Flow login and raw root tokens only)
 [profile.automation]
-kind = "root"
 github_app.account = "acme-corp"
 github_app.client_id = "Iv1.9999999999999999"
 
 # Derived Profiles (Scoped subsets of root profiles)
 [profile.reader]
-kind = "derived"
 source = "developer"
 description = "Read-only access to contents, pull requests, and issues"
 repo = "auto"
 permissions = { contents = "read", pull_requests = "read", issues = "read" }
 ```
+
+Profile type is inferred from its fields: roots define `github_app`, while derived profiles define `source`. Profiles cannot mix both shapes or declare a separate `kind` field. Unknown fields are rejected.
 
 Root profiles cannot define `repo`: they represent the GitHub App's complete authority ceiling and are cached under `profile|all`. A root token can be printed in text, JSON, or environment format only by calling `ghst token` without `--repo`. Derived profiles may reference only roots with a configured client secret. Removing a secret therefore also requires removing every derived profile that references that root.
 

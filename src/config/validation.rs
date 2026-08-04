@@ -10,7 +10,7 @@ use crate::config::types::{Config, ProfileConfig};
 /// - `default_profile` is specified but does not exist in `profiles`.
 /// - Root profile has empty credentials or account.
 /// - Derived profile source does not exist or points to another derived profile (chaining).
-pub fn validate_config(config: &Config) -> Result<(), ConfigError> {
+pub(super) fn validate_config(config: &Config) -> Result<(), ConfigError> {
     // 1. Version check (must be 1)
     if config.version != 1 {
         return Err(ConfigError::UnsupportedVersion(config.version));

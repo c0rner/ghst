@@ -1,5 +1,5 @@
 use crate::cache::{CacheEntry, CacheInspectionState, clear_transaction};
-use crate::cmd::{ClearCmd, CmdError, GhstCli, load_config};
+use crate::cmd::{ClearCmd, CmdError, GhstCli};
 use crate::config::{Config, ProfileConfig, RootProfile};
 use crate::github::{GitHubClient, GitHubError, RevokeTokenClient};
 use std::io::{self, Write};
@@ -70,8 +70,8 @@ pub struct ClearReport {
 }
 
 pub fn run_clear(args: &GhstCli, _cmd: &ClearCmd) -> Result<(), CmdError> {
-    let config = load_config(args.config.as_deref())?;
-    let cache_dir = Config::cache_dir()?;
+    let config = crate::config::load(args.config.as_deref())?;
+    let cache_dir = crate::config::cache_dir()?;
     let mut stdout = io::stdout().lock();
     clear_tokens_to(&GitHubClient::new(), &config, &cache_dir, &mut stdout)
 }
@@ -227,7 +227,6 @@ mod tests {
 version = 1
 default_profile = "developer"
 [profile.developer]
-kind = "root"
 github_app.account = "acme"
 github_app.client_id = "id"
 "#

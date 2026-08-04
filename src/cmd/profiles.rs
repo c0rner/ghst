@@ -8,10 +8,7 @@ use std::io::{self, Write};
 ///
 /// Returns `CmdError` if loading configuration or printing profiles fails.
 pub fn run_profiles(args: &GhstCli, cmd: &ProfilesCmd) -> Result<(), CmdError> {
-    let config = args
-        .config
-        .as_ref()
-        .map_or_else(Config::load, |path| Config::load_from_path(path))?;
+    let config = crate::config::load(args.config.as_deref())?;
 
     print_profiles(&mut io::stdout(), &config, cmd.verbose)?;
     Ok(())
@@ -26,7 +23,7 @@ fn print_profiles<W: Write>(writer: &mut W, config: &Config, verbose: bool) -> i
         let is_default = config.default_profile.as_deref() == Some(name.as_str());
         let marker = if is_default { "*" } else { " " };
         let default_suffix = if is_default { " (default)" } else { "" };
-        let kind = profile.kind();
+        let kind = profile.kind_name();
 
         if verbose {
             writeln!(writer, "{marker} {name} [{kind}]{default_suffix}")?;
@@ -83,14 +80,12 @@ version = 1
 default_profile = "reader"
 
 [profile.developer]
-kind = "root"
 description = "Full developer privilege ceiling backed by the Dev GitHub App"
 github_app.account = "acme-corp"
 github_app.client_id = "Iv1.8888888888888888"
 github_app.client_secret = "secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
 [profile.reader]
-kind = "derived"
 source = "developer"
 description = "Read-only access to repository contents, pull requests, and issues"
 repo = "auto"

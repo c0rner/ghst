@@ -4,8 +4,8 @@ use crate::cache::{
     authority_fingerprint, cache_epoch, format_rfc3339, save_cache_candidate,
 };
 use crate::cmd::{
-    CmdError, GhstCli, LoginCmd, load_config, load_valid_root_entry, resolve_profile_name,
-    revoke_with_context, root_cache_key,
+    CmdError, GhstCli, LoginCmd, load_valid_root_entry, resolve_profile_name, revoke_with_context,
+    root_cache_key,
 };
 use crate::config::ProfileConfig;
 use crate::github::{AccessTokenResponse, GitHubClient, GitHubError, RootTokenClient};
@@ -22,7 +22,7 @@ const MAX_ROOT_LIFETIME_SECONDS: u64 = 8 * 60 * 60;
 /// Returns `CmdError` if configuration loading, profile resolution,
 /// OAuth execution, lifetime validation, persistence, or cleanup fails.
 pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
-    let config = load_config(args.config.as_deref())?;
+    let config = crate::config::load(args.config.as_deref())?;
     let profile_name = resolve_profile_name(cmd.profile.as_deref(), &config)?;
     let profile = config
         .profiles
@@ -38,7 +38,7 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
         }
     };
 
-    let cache_dir = crate::config::Config::cache_dir()?;
+    let cache_dir = crate::config::cache_dir()?;
     debug!("Resolved cache directory: {:?}", cache_dir);
     if let Some(entry) = load_valid_root_entry(
         &cache_dir,
@@ -62,7 +62,7 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
     );
     open_auth_url(
         &device.verification_uri,
-        cmd.no_browser || config.no_browser.unwrap_or(false),
+        cmd.no_browser || config.no_browser,
     );
     println!("Waiting for authorization in browser...");
 
@@ -255,13 +255,11 @@ version = 1
 default_profile = "reader"
 
 [profile.developer]
-kind = "root"
 github_app.account = "acme"
 github_app.client_id = "id"
 github_app.client_secret = "secret"
 
 [profile.reader]
-kind = "derived"
 source = "developer"
 permissions = { contents = "read" }
 "#;
@@ -426,7 +424,6 @@ permissions = { contents = "read" }
             )
             .replace(
                 r#"[profile.reader]
-kind = "derived"
 source = "developer"
 permissions = { contents = "read" }"#,
                 "",

@@ -1,5 +1,5 @@
 use crate::cache::{CacheEntry, CacheInspectionState, format_rfc3339, inspect_cache};
-use crate::cmd::{CmdError, GhstCli, StatusCmd, load_config};
+use crate::cmd::{CmdError, GhstCli, StatusCmd};
 use crate::config::Config;
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -8,8 +8,8 @@ use time::OffsetDateTime;
 use tracing::info;
 
 pub fn run_status(args: &GhstCli, _cmd: &StatusCmd) -> Result<(), CmdError> {
-    let config = load_config(args.config.as_deref())?;
-    let cache_dir = Config::cache_dir()?;
+    let config = crate::config::load(args.config.as_deref())?;
+    let cache_dir = crate::config::cache_dir()?;
     print_status(
         &mut io::stdout().lock(),
         &config,
@@ -45,7 +45,7 @@ pub fn print_status<W: Write>(
         } else {
             " "
         };
-        writeln!(writer, "{marker} {name} [{}]", profile.kind())?;
+        writeln!(writer, "{marker} {name} [{}]", profile.kind_name())?;
         match grouped.remove(name.as_str()) {
             Some(indices) => {
                 for index in indices {

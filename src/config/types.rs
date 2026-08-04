@@ -1,14 +1,14 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::fmt;
-use std::str::FromStr;
 
-#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
     pub version: u32,
     pub default_profile: Option<String>,
     #[serde(default)]
-    pub no_browser: Option<bool>,
+    pub no_browser: bool,
     #[serde(rename = "profile", default)]
     pub profiles: BTreeMap<String, ProfileConfig>,
 }
@@ -24,33 +24,18 @@ impl fmt::Debug for Config {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ProfileKind {
-    Root,
-    Derived,
-}
-
-impl fmt::Display for ProfileKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Root => f.write_str("root"),
-            Self::Derived => f.write_str("derived"),
-        }
-    }
-}
-
-#[derive(PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[derive(PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
 pub enum ProfileConfig {
     Root(RootProfile),
     Derived(DerivedProfile),
 }
 
 impl ProfileConfig {
-    pub const fn kind(&self) -> ProfileKind {
+    pub const fn kind_name(&self) -> &'static str {
         match self {
-            Self::Root(_) => ProfileKind::Root,
-            Self::Derived(_) => ProfileKind::Derived,
+            Self::Root(_) => "root",
+            Self::Derived(_) => "derived",
         }
     }
 
@@ -71,7 +56,7 @@ impl fmt::Debug for ProfileConfig {
     }
 }
 
-#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RootProfile {
     pub description: Option<String>,
@@ -87,7 +72,8 @@ impl fmt::Debug for RootProfile {
     }
 }
 
-#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct GitHubAppConfig {
     pub account: String,
     pub client_id: String,
@@ -108,15 +94,12 @@ impl fmt::Debug for GitHubAppConfig {
     }
 }
 
-const fn default_derived_repo() -> RepoScope {
-    RepoScope::Auto
-}
-
-#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DerivedProfile {
     pub description: Option<String>,
     pub source: String,
-    #[serde(default = "default_derived_repo")]
+    #[serde(default)]
     pub repo: RepoScope,
     #[serde(default)]
     pub permissions: BTreeMap<String, PermissionLevel>,
@@ -133,10 +116,11 @@ impl fmt::Debug for DerivedProfile {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RepoScope {
     All,
+    #[default]
     Auto,
     #[serde(untagged)]
     Specific(String),
@@ -152,19 +136,7 @@ impl fmt::Display for RepoScope {
     }
 }
 
-impl FromStr for RepoScope {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "all" => Ok(Self::All),
-            "auto" => Ok(Self::Auto),
-            _ => Ok(Self::Specific(s.to_string())),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PermissionLevel {
     Read,

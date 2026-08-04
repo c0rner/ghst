@@ -4,6 +4,7 @@ use std::path::PathBuf;
 #[derive(Debug)]
 pub enum ConfigError {
     ConfigDirNotFound,
+    CacheDirNotFound,
     Io {
         path: PathBuf,
         source: std::io::Error,
@@ -37,6 +38,7 @@ impl fmt::Display for ConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::ConfigDirNotFound => write!(f, "could not determine user config directory"),
+            Self::CacheDirNotFound => write!(f, "could not determine user cache directory"),
             Self::Io { path, source } => {
                 write!(f, "IO error reading '{}': {source}", path.display())
             }
@@ -77,5 +79,22 @@ impl std::error::Error for ConfigError {
             Self::Parse(err) => Some(err),
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ConfigError;
+
+    #[test]
+    fn directory_resolution_errors_are_distinct() {
+        assert_eq!(
+            ConfigError::ConfigDirNotFound.to_string(),
+            "could not determine user config directory"
+        );
+        assert_eq!(
+            ConfigError::CacheDirNotFound.to_string(),
+            "could not determine user cache directory"
+        );
     }
 }

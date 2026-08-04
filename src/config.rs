@@ -3,7 +3,7 @@ mod types;
 mod validation;
 
 pub use error::ConfigError;
-pub use types::*;
+pub use types::{Config, DerivedProfile, PermissionLevel, ProfileConfig, RepoScope, RootProfile};
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -19,57 +19,39 @@ impl FromStr for Config {
     }
 }
 
-impl Config {
-    /// Returns the configuration file path.
-    /// Priority: `GHST_CONFIG` environment variable -> `sysdirs::config_dir()/ghst/profiles.toml`.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ConfigError::ConfigDirNotFound` if `GHST_CONFIG` is unset and user config directory cannot be resolved.
-    pub fn default_path() -> Result<PathBuf, ConfigError> {
-        if let Some(val) = std::env::var_os("GHST_CONFIG") {
-            return Ok(PathBuf::from(val));
-        }
-        let config_dir = sysdirs::config_dir().ok_or(ConfigError::ConfigDirNotFound)?;
-        Ok(config_dir.join("ghst").join("profiles.toml"))
-    }
+/// Loads and validates configuration from an explicit path or the default location.
+///
+/// # Errors
+///
+/// Returns `ConfigError` if path resolution, file IO, TOML parsing, or validation fails.
+pub fn load(path: Option<&Path>) -> Result<Config, ConfigError> {
+    let path = match path {
+        Some(path) => path.to_path_buf(),
+        None => config_path()?,
+    };
+    let content = fs::read_to_string(&path).map_err(|source| ConfigError::Io { path, source })?;
+    content.parse()
+}
 
-    /// Returns the cache directory path.
-    /// Priority: `GHST_CACHE_DIR` environment variable -> `sysdirs::cache_dir()/ghst/`.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ConfigError::ConfigDirNotFound` if `GHST_CACHE_DIR` is unset and user cache directory cannot be resolved.
-    pub fn cache_dir() -> Result<PathBuf, ConfigError> {
-        if let Some(val) = std::env::var_os("GHST_CACHE_DIR") {
-            return Ok(PathBuf::from(val));
-        }
-        let cache_dir = sysdirs::cache_dir().ok_or(ConfigError::ConfigDirNotFound)?;
-        Ok(cache_dir.join("ghst"))
+fn config_path() -> Result<PathBuf, ConfigError> {
+    if let Some(value) = std::env::var_os("GHST_CONFIG") {
+        return Ok(PathBuf::from(value));
     }
+    let config_dir = sysdirs::config_dir().ok_or(ConfigError::ConfigDirNotFound)?;
+    Ok(config_dir.join("ghst").join("profiles.toml"))
+}
 
-    /// Loads and validates configuration from the default path.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ConfigError` if directory resolution, file IO, TOML parsing, or validation fails.
-    pub fn load() -> Result<Self, ConfigError> {
-        let path = Self::default_path()?;
-        Self::load_from_path(&path)
+/// Returns the cache directory path.
+///
+/// # Errors
+///
+/// Returns `ConfigError::CacheDirNotFound` if `GHST_CACHE_DIR` is unset and the user cache directory cannot be resolved.
+pub fn cache_dir() -> Result<PathBuf, ConfigError> {
+    if let Some(value) = std::env::var_os("GHST_CACHE_DIR") {
+        return Ok(PathBuf::from(value));
     }
-
-    /// Loads and validates configuration from an explicit file path.
-    ///
-    /// # Errors
-    ///
-    /// Returns `ConfigError` if file IO, TOML parsing, or validation fails.
-    pub fn load_from_path(path: &Path) -> Result<Self, ConfigError> {
-        let content = fs::read_to_string(path).map_err(|err| ConfigError::Io {
-            path: path.to_path_buf(),
-            source: err,
-        })?;
-        content.parse()
-    }
+    let cache_dir = sysdirs::cache_dir().ok_or(ConfigError::CacheDirNotFound)?;
+    Ok(cache_dir.join("ghst"))
 }
 
 #[cfg(test)]
@@ -81,35 +63,30 @@ version = 1
 default_profile = "reader"
 
 [profile.developer]
-kind = "root"
 description = "Full developer privilege ceiling backed by the Dev GitHub App"
 github_app.account = "acme-corp"
 github_app.client_id = "Iv1.8888888888888888"
 github_app.client_secret = "secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 
 [profile.security-admin]
-kind = "root"
 description = "Security engineering privilege ceiling with vulnerability access"
 github_app.account = "acme-corp"
 github_app.client_id = "Iv1.7777777777777777"
 github_app.client_secret = "secret_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
 
 [profile.reader]
-kind = "derived"
 description = "Read-only access to repository contents, pull requests, and issues"
 source = "developer"
 repo = "auto"
 permissions = { contents = "read", pull_requests = "read", issues = "read" }
 
 [profile.contributor]
-kind = "derived"
 description = "Write access to code and pull requests"
 source = "developer"
 repo = "auto"
 permissions = { contents = "write", pull_requests = "write", issues = "write" }
 
 [profile.security-reviewer]
-kind = "derived"
 description = "Read access focused on vulnerability alerts and security events"
 source = "security-admin"
 repo = "octo-org/api"
@@ -195,18 +172,15 @@ version = 1
 default_profile = "reader"
 
 [profile.developer]
-kind = "root"
 github_app.account = "acme"
 github_app.client_id = "id"
 github_app.client_secret = "secret"
 
 [profile.reader]
-kind = "derived"
 source = "developer"
 permissions = { contents = "read" }
 
 [profile.sub_reader]
-kind = "derived"
 source = "reader"
 permissions = { contents = "read" }
 "#;
@@ -236,7 +210,6 @@ version = 1
 default_profile = "developer"
 
 [profile.developer]
-kind = "root"
 github_app.account = "acme"
 github_app.client_id = "id"
 "#
@@ -277,13 +250,11 @@ github_app.client_id = "id"
 version = 1
 
 [profile.developer]
-kind = "root"
 github_app.account = "acme"
 github_app.client_id = "id"
 github_app.client_secret = "secret"
 
 [profile.reader]
-kind = "derived"
 source = "developer"
 permissions = { contents = "read" }
 "#;
@@ -303,7 +274,6 @@ permissions = { contents = "read" }
 version = 1
 
 [profile.developer]
-kind = "root"
 repo = "all"
 github_app.account = "acme"
 github_app.client_id = "id"
@@ -316,22 +286,71 @@ github_app.client_secret = "secret"
     }
 
     #[test]
+    fn profile_shape_is_strict_and_unambiguous() {
+        let invalid_profiles = [
+            r#"
+version = 1
+[profile.developer]
+kind = "root"
+github_app.account = "acme"
+github_app.client_id = "id"
+"#,
+            r#"
+version = 1
+[profile.mixed]
+source = "developer"
+permissions = { contents = "read" }
+github_app.account = "acme"
+github_app.client_id = "id"
+"#,
+            r#"
+version = 1
+[profile.incomplete]
+description = "neither root nor derived"
+"#,
+            r"
+version = 1
+unexpected = true
+",
+            r#"
+version = 1
+[profile.developer]
+github_app.account = "acme"
+github_app.client_id = "id"
+github_app.unknown = "value"
+"#,
+            r#"
+version = 1
+[profile.reader]
+source = "developer"
+permission = { contents = "read" }
+"#,
+        ];
+
+        for config in invalid_profiles {
+            assert!(matches!(
+                config.parse::<Config>(),
+                Err(ConfigError::Parse(_))
+            ));
+        }
+    }
+
+    #[test]
     fn test_no_browser_config_parsing() {
         let config_str = r#"
 version = 1
 no_browser = true
 
 [profile.developer]
-kind = "root"
 github_app.account = "acme"
 github_app.client_id = "id"
 github_app.client_secret = "secret"
 "#;
         let config: Config = config_str.parse().unwrap();
-        assert_eq!(config.no_browser, Some(true));
+        assert!(config.no_browser);
 
         let default_config: Config = VALID_CONFIG.parse().unwrap();
-        assert_eq!(default_config.no_browser, None);
+        assert!(!default_config.no_browser);
     }
 
     #[test]
@@ -340,13 +359,11 @@ github_app.client_secret = "secret"
 version = 1
 
 [profile.developer]
-kind = "root"
 github_app.account = "acme"
 github_app.client_id = "id"
 github_app.client_secret = "secret"
 
 [profile.reader]
-kind = "derived"
 source = "developer"
 permissions = {}
 "#;

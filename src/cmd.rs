@@ -124,11 +124,6 @@ impl FromStr for OutputFormat {
     }
 }
 
-fn load_config(path: Option<&Path>) -> Result<Config, CmdError> {
-    path.map_or_else(Config::load, Config::load_from_path)
-        .map_err(CmdError::Config)
-}
-
 fn resolve_profile_name(cli_profile: Option<&str>, config: &Config) -> Result<String, CmdError> {
     if let Some(profile) = cli_profile {
         return Ok(profile.to_owned());

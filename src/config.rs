@@ -45,12 +45,12 @@ fn config_path() -> Result<PathBuf, ConfigError> {
 ///
 /// # Errors
 ///
-/// Returns `ConfigError::ConfigDirNotFound` if `GHST_CACHE_DIR` is unset and the user cache directory cannot be resolved.
+/// Returns `ConfigError::CacheDirNotFound` if `GHST_CACHE_DIR` is unset and the user cache directory cannot be resolved.
 pub fn cache_dir() -> Result<PathBuf, ConfigError> {
     if let Some(value) = std::env::var_os("GHST_CACHE_DIR") {
         return Ok(PathBuf::from(value));
     }
-    let cache_dir = sysdirs::cache_dir().ok_or(ConfigError::ConfigDirNotFound)?;
+    let cache_dir = sysdirs::cache_dir().ok_or(ConfigError::CacheDirNotFound)?;
     Ok(cache_dir.join("ghst"))
 }
 

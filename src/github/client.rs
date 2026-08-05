@@ -4,14 +4,18 @@ use crate::github::types::{
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
+use serde::de::DeserializeOwned;
 use std::collections::BTreeMap;
 use std::fmt;
 use tracing::debug;
 
+const USER_AGENT: &str = concat!("ghst/", env!("CARGO_PKG_VERSION"));
+const GITHUB_ACCEPT: &str = "application/vnd.github+json";
+
 pub struct GitHubClient {
     base_url: String,
     api_url: String,
-    user_agent: String,
+    agent: ureq::Agent,
 }
 
 pub trait RevokeTokenClient {
@@ -39,12 +43,13 @@ pub trait RootTokenClient: RevokeTokenClient {
     fn get_user(&self, access_token: &str) -> Result<UserResponse, GitHubError>;
 }
 
+#[allow(clippy::missing_fields_in_debug)]
 impl fmt::Debug for GitHubClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("GitHubClient")
             .field("base_url", &self.base_url)
             .field("api_url", &self.api_url)
-            .field("user_agent", &self.user_agent)
+            .field("user_agent", &USER_AGENT)
             .finish()
     }
 }
@@ -63,10 +68,14 @@ impl GitHubClient {
 
     /// Creates a `GitHubClient` with custom base and API URLs (useful for testing or GHES).
     pub fn with_urls(base_url: impl Into<String>, api_url: impl Into<String>) -> Self {
+        let config = ureq::Agent::config_builder()
+            .user_agent(USER_AGENT)
+            .accept(GITHUB_ACCEPT)
+            .build();
         Self {
             base_url: base_url.into(),
             api_url: api_url.into(),
-            user_agent: format!("ghst/{}", env!("CARGO_PKG_VERSION")),
+            agent: ureq::Agent::new_with_config(config),
         }
     }
 
@@ -79,13 +88,14 @@ impl GitHubClient {
         let url = format!("{}/login/device/code", self.base_url);
         let body = serde_json::json!({ "client_id": client_id });
 
-        let mut res = ureq::post(&url)
+        let res = self
+            .agent
+            .post(&url)
             .header("Accept", "application/json")
-            .header("User-Agent", &self.user_agent)
             .send_json(&body)
             .map_err(map_ureq_error)?;
 
-        res.body_mut().read_json().map_err(map_ureq_error)
+        decode_response(res)
     }
 
     /// 2. Poll for token (`POST /login/oauth/access_token`).
@@ -105,9 +115,10 @@ impl GitHubClient {
             "grant_type": "urn:ietf:params:oauth:grant-type:device_code"
         });
 
-        let mut res = ureq::post(&url)
+        let mut res = self
+            .agent
+            .post(&url)
             .header("Accept", "application/json")
-            .header("User-Agent", &self.user_agent)
             .send_json(&body)
             .map_err(map_ureq_error)?;
 
@@ -128,14 +139,14 @@ impl GitHubClient {
     pub fn get_user(&self, access_token: &str) -> Result<UserResponse, GitHubError> {
         let url = format!("{}/user", self.api_url);
 
-        let mut res = ureq::get(&url)
+        let res = self
+            .agent
+            .get(&url)
             .header("Authorization", &format!("Bearer {access_token}"))
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", &self.user_agent)
             .call()
             .map_err(map_ureq_error)?;
 
-        res.body_mut().read_json().map_err(map_ureq_error)
+        decode_response(res)
     }
 
     /// 4. Create scoped access token (`POST /applications/{client_id}/token/scoped`).
@@ -163,14 +174,14 @@ impl GitHubClient {
         debug!("Creating scoped token with request body: {:?}", req_body);
         let auth = basic_auth_header(client_id, client_secret);
 
-        let mut res = ureq::post(&url)
+        let res = self
+            .agent
+            .post(&url)
             .header("Authorization", &auth)
-            .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", &self.user_agent)
             .send_json(&req_body)
             .map_err(map_ureq_error)?;
 
-        res.body_mut().read_json().map_err(map_ureq_error)
+        decode_response(res)
     }
 
     /// 5. Delete an app token (`DELETE /applications/{client_id}/token`).
@@ -193,17 +204,20 @@ impl GitHubClient {
             .method("DELETE")
             .uri(&url)
             .header("Authorization", &auth)
-            .header("Accept", "application/vnd.github+json")
             .header("Content-Type", "application/json")
-            .header("User-Agent", &self.user_agent)
             .body(body_bytes)
             .map_err(|e| GitHubError::Io(std::io::Error::other(e)))?;
 
-        let agent = ureq::Agent::new_with_defaults();
-        let _res = agent.run(req).map_err(map_ureq_error)?;
+        let _res = self.agent.run(req).map_err(map_ureq_error)?;
 
         Ok(())
     }
+}
+
+fn decode_response<T: DeserializeOwned>(
+    mut response: ureq::http::Response<ureq::Body>,
+) -> Result<T, GitHubError> {
+    response.body_mut().read_json().map_err(map_ureq_error)
 }
 
 fn oauth_error_from_value(value: &serde_json::Value) -> GitHubError {
@@ -289,6 +303,20 @@ fn basic_auth_header(client_id: &str, client_secret: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn configured_agent_has_github_defaults() {
+        let client = GitHubClient::new();
+
+        assert!(matches!(
+            client.agent.config().user_agent(),
+            ureq::config::AutoHeaderValue::Provided(value) if value.as_str() == USER_AGENT
+        ));
+        assert!(matches!(
+            client.agent.config().accept(),
+            ureq::config::AutoHeaderValue::Provided(value) if value.as_str() == GITHUB_ACCEPT
+        ));
+    }
 
     #[test]
     fn test_device_code_response_deserialization() {

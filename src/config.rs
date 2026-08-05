@@ -3,7 +3,9 @@ mod types;
 mod validation;
 
 pub use error::ConfigError;
-pub use types::{Config, DerivedProfile, PermissionLevel, ProfileConfig, RepoScope, RootProfile};
+pub use types::{
+    Config, DerivedProfile, GitHubAppConfig, PermissionLevel, ProfileConfig, RepoScope, RootProfile,
+};
 
 use std::fs;
 use std::path::{Path, PathBuf};

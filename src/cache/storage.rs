@@ -131,23 +131,7 @@ pub fn save_cache_entry(
     let json_bytes = serde_json::to_vec_pretty(entry).map_err(CacheError::Json)?;
 
     with_cache_lock(cache_dir, LockMode::Exclusive, || {
-        let cache_file = cache_file_path(cache_dir, hash_key);
-        if let Some(existing) = read_cache_entry(&cache_file)? {
-            validate_entry_key(hash_key, &existing)?;
-            if existing.kind_name() != entry.kind_name() {
-                return Err(CacheError::UnexpectedKind {
-                    expected: entry.kind_name(),
-                    actual: existing.kind_name(),
-                });
-            }
-            if existing.compatible_with(entry, time::OffsetDateTime::now_utc()) {
-                return Ok(SaveCacheEntry::Retained(Box::new(existing)));
-            }
-        }
-
-        persist_cache_file(cache_dir, &cache_file, &json_bytes)?;
-
-        Ok(SaveCacheEntry::Saved)
+        save_unlocked(cache_dir, hash_key, entry, &json_bytes)
     })
 }
 

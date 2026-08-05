@@ -18,6 +18,25 @@ pub enum GitHubError {
     },
 }
 
+impl GitHubError {
+    pub const fn kind(&self) -> &'static str {
+        match self {
+            Self::Io(_) => "io",
+            Self::Json(_) => "json",
+            Self::Http { .. } => "http",
+            Self::OAuthPending => "oauth_pending",
+            Self::OAuthSlowDown => "oauth_slow_down",
+            Self::OAuthExpired => "oauth_expired",
+            Self::OAuthAccessDenied => "oauth_access_denied",
+            Self::OAuthError { .. } => "oauth_error",
+        }
+    }
+
+    pub const fn is_not_found(&self) -> bool {
+        matches!(self, Self::Http { status: 404, .. })
+    }
+}
+
 impl fmt::Display for GitHubError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

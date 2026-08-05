@@ -90,15 +90,11 @@ pub fn clear_tokens_to<C: RevokeTokenClient, W: Write>(
             let revocation = match &transaction.entries()[index].state {
                 CacheInspectionState::Current(entry) if entry.is_usable_at(now) => {
                     if let Some(app) = app_for_entry(config, entry) {
-                        let token = match entry {
-                            CacheEntry::Root(value) => &value.access_token,
-                            CacheEntry::Derived(value) => &value.access_token,
-                        };
                         if let Some(client_secret) = app.github_app.client_secret.as_deref() {
                             match client.delete_token(
                                 &app.github_app.client_id,
                                 client_secret,
-                                token.as_ref(),
+                                entry.access_token().as_ref(),
                             ) {
                                 Ok(()) | Err(GitHubError::Http { status: 404, .. }) => true,
                                 Err(source) => {

@@ -121,6 +121,13 @@ impl CacheEntry {
         }
     }
 
+    pub const fn access_token(&self) -> &AccessToken {
+        match self {
+            Self::Root(entry) => &entry.access_token,
+            Self::Derived(entry) => &entry.access_token,
+        }
+    }
+
     pub const fn is_current(&self) -> bool {
         match self {
             Self::Root(entry) => entry.version == CACHE_SCHEMA_VERSION,

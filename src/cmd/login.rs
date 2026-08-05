@@ -1,6 +1,6 @@
 use crate::browser::{display_auth_instructions, open_auth_url};
 use crate::cache::{
-    AccessToken, CACHE_SCHEMA_VERSION, CacheEntry, RootCacheEntry, SaveCacheEntry, TokenExpiry,
+    CACHE_SCHEMA_VERSION, CacheEntry, RootCacheEntry, SaveCacheEntry, TokenExpiry,
     authority_fingerprint, cache_epoch, format_rfc3339, save_cache_candidate,
 };
 use crate::cmd::{
@@ -145,7 +145,7 @@ fn persist_root_response<C: RootTokenClient>(
             return Err(revoke_with_context(
                 client,
                 profile,
-                root_token(&candidate)?,
+                candidate.access_token(),
                 CmdError::Cache(error),
             ));
         }
@@ -160,7 +160,7 @@ fn persist_root_response<C: RootTokenClient>(
                     reason: "a compatible concurrent root cache winner was retained",
                 };
                 let cleanup =
-                    revoke_with_context(client, profile, root_token(&candidate)?, context);
+                    revoke_with_context(client, profile, candidate.access_token(), context);
                 if matches!(cleanup, CmdError::RevocationFailed { .. }) {
                     return Err(cleanup);
                 }
@@ -222,10 +222,6 @@ fn root_entry(entry: &CacheEntry) -> Result<&RootCacheEntry, CmdError> {
             expected: "root",
             actual: entry.kind_name(),
         })
-}
-
-fn root_token(entry: &CacheEntry) -> Result<&AccessToken, CmdError> {
-    root_entry(entry).map(|root| &root.access_token)
 }
 
 fn report_saved(profile_name: &str, entry: &RootCacheEntry) {

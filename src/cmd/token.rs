@@ -347,7 +347,6 @@ fn persist_scoped_candidate<C: ScopedTokenClient, W: Write>(
     ) {
         Ok(result) => result,
         Err(error) => {
-            let token = derived_token(candidate)?;
             let failure_context = match error {
                 crate::cache::CacheError::RootGenerationChanged => {
                     CmdError::RootGenerationChanged {
@@ -359,7 +358,7 @@ fn persist_scoped_candidate<C: ScopedTokenClient, W: Write>(
             return Err(revoke_with_context(
                 context.client,
                 request.source_profile,
-                token,
+                candidate.access_token(),
                 failure_context,
             ));
         }
@@ -368,7 +367,6 @@ fn persist_scoped_candidate<C: ScopedTokenClient, W: Write>(
     match save_result {
         SaveCacheEntry::Saved => output_derived(writer, candidate, request.format),
         SaveCacheEntry::Retained(retained) => {
-            let candidate_token = derived_token(candidate)?;
             let client_secret = request
                 .source_profile
                 .github_app
@@ -380,7 +378,7 @@ fn persist_scoped_candidate<C: ScopedTokenClient, W: Write>(
             if let Err(source) = context.client.delete_token(
                 &request.source_profile.github_app.client_id,
                 client_secret,
-                candidate_token.as_ref(),
+                candidate.access_token().as_ref(),
             ) {
                 return Err(CmdError::RevocationFailed {
                     context: Box::new(CmdError::StaleProvenance {
@@ -430,10 +428,6 @@ fn derived_entry(entry: &CacheEntry) -> Result<&DerivedCacheEntry, CmdError> {
             expected: "derived",
             actual: entry.kind_name(),
         })
-}
-
-fn derived_token(entry: &CacheEntry) -> Result<&AccessToken, CmdError> {
-    derived_entry(entry).map(|derived| &derived.access_token)
 }
 
 fn output_derived<W: Write>(

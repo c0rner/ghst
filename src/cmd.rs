@@ -13,7 +13,7 @@ use repository::RepositorySelection;
 use crate::cache::{
     CacheEntry, RootCacheEntry, authority_fingerprint, compute_cache_key, load_cache_entry,
 };
-use crate::config::{Config, RootProfile};
+use crate::config::{Config, GitHubAppConfig, RootProfile};
 use argh::FromArgs;
 use std::env;
 use std::path::Path;
@@ -150,14 +150,16 @@ fn load_valid_root_entry(
     profile: &RootProfile,
     now: time::OffsetDateTime,
 ) -> Result<Option<RootCacheEntry>, CmdError> {
-    Ok(load_current_root_entry(cache_dir, profile_name, profile)?
-        .filter(|entry| entry.expires_at.is_usable_at(now)))
+    Ok(
+        load_current_root_entry(cache_dir, profile_name, &profile.github_app)?
+            .filter(|entry| entry.expires_at.is_usable_at(now)),
+    )
 }
 
 fn load_current_root_entry(
     cache_dir: &Path,
     profile_name: &str,
-    profile: &RootProfile,
+    github_app: &GitHubAppConfig,
 ) -> Result<Option<RootCacheEntry>, CmdError> {
     let key = root_cache_key(profile_name);
     let Some(entry) = load_cache_entry(cache_dir, &key)? else {
@@ -174,7 +176,7 @@ fn load_current_root_entry(
     match entry {
         CacheEntry::Root(entry) => {
             let expected_authority =
-                authority_fingerprint(&profile.github_app.client_id, &profile.github_app.account);
+                authority_fingerprint(&github_app.client_id, &github_app.account);
             if entry.version == crate::cache::CACHE_SCHEMA_VERSION
                 && entry.authority_fingerprint == expected_authority
             {

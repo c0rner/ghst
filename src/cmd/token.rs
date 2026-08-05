@@ -118,10 +118,11 @@ fn handle_derived<C: ScopedTokenClient, W: Write>(
         &permissions,
     );
 
-    let root_entry = load_current_root_entry(context.cache_dir, source_name, source_profile)?
-        .ok_or_else(|| CmdError::NoSourceTokenCached {
-            profile: source_name.clone(),
-        })?;
+    let root_entry =
+        load_current_root_entry(context.cache_dir, source_name, &source_profile.github_app)?
+            .ok_or_else(|| CmdError::NoSourceTokenCached {
+                profile: source_name.clone(),
+            })?;
     let parent_generation = root_entry.generation_fingerprint();
     let cache_key = compute_cache_key(profile_name, &canonical_scope);
 

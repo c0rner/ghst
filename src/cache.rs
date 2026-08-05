@@ -1,3 +1,4 @@
+mod digest;
 mod error;
 mod fs;
 mod key;

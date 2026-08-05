@@ -39,7 +39,10 @@ fn cache_key_is_profile_and_canonical_scope_hash() {
     let first = compute_cache_key("developer", "all");
     let second = compute_cache_key("reader", "c0rner/ghst");
     assert_ne!(first, second);
-    assert_eq!(first.len(), 64);
+    assert_eq!(
+        first,
+        "44e9b443f6a49a44a6a5588f3be3923a3c1ec1c1f2bfd419addebcde4d598411"
+    );
 }
 
 #[test]

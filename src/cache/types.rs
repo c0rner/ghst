@@ -1,8 +1,8 @@
+use crate::cache::digest::encode_hex;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt;
-use std::fmt::Write as _;
 use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
 use zeroize::Zeroizing;
@@ -318,9 +318,5 @@ fn fingerprint(parts: &[&str]) -> String {
         hasher.update(part.as_bytes());
     }
     let digest = hasher.finalize();
-    let mut result = String::with_capacity(digest.len() * 2);
-    for byte in digest {
-        let _ = write!(result, "{byte:02x}");
-    }
-    result
+    encode_hex(&digest)
 }

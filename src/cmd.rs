@@ -3,20 +3,13 @@ pub mod error;
 pub mod login;
 pub mod profiles;
 pub mod proxy;
-mod repository;
 pub mod status;
 pub mod token;
 
-pub use error::CmdError;
-use repository::RepositorySelection;
-
-use crate::cache::{
-    CacheEntry, RootCacheEntry, authority_fingerprint, compute_cache_key, load_cache_entry,
-};
-use crate::config::{Config, GitHubAppConfig, RootProfile};
+use crate::config::Config;
 use argh::FromArgs;
+pub use error::CmdError;
 use std::env;
-use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -138,80 +131,6 @@ fn resolve_profile_name(cli_profile: Option<&str>, config: &Config) -> Result<St
         .default_profile
         .clone()
         .ok_or(CmdError::ProfileRequired)
-}
-
-fn root_cache_key(profile_name: &str) -> String {
-    compute_cache_key(profile_name, "all")
-}
-
-fn load_valid_root_entry(
-    cache_dir: &Path,
-    profile_name: &str,
-    profile: &RootProfile,
-    now: time::OffsetDateTime,
-) -> Result<Option<RootCacheEntry>, CmdError> {
-    Ok(
-        load_current_root_entry(cache_dir, profile_name, &profile.github_app)?
-            .filter(|entry| entry.expires_at.is_usable_at(now)),
-    )
-}
-
-fn load_current_root_entry(
-    cache_dir: &Path,
-    profile_name: &str,
-    github_app: &GitHubAppConfig,
-) -> Result<Option<RootCacheEntry>, CmdError> {
-    let key = root_cache_key(profile_name);
-    let Some(entry) = load_cache_entry(cache_dir, &key)? else {
-        return Ok(None);
-    };
-
-    if entry.profile() != profile_name {
-        return Err(CmdError::InconsistentCacheMetadata {
-            profile: profile_name.to_owned(),
-            found: entry.profile().to_owned(),
-        });
-    }
-
-    match entry {
-        CacheEntry::Root(entry) => {
-            let expected_authority =
-                authority_fingerprint(&github_app.client_id, &github_app.account);
-            if entry.version == crate::cache::CACHE_SCHEMA_VERSION
-                && entry.authority_fingerprint == expected_authority
-            {
-                Ok(Some(entry))
-            } else {
-                Ok(None)
-            }
-        }
-        CacheEntry::Derived(_) => Err(CmdError::UnexpectedCacheKind {
-            profile: profile_name.to_owned(),
-            expected: "root",
-            actual: "derived",
-        }),
-    }
-}
-
-fn revoke_with_context<C: crate::github::RevokeTokenClient + ?Sized>(
-    client: &C,
-    profile: &RootProfile,
-    token: &crate::cache::AccessToken,
-    context: CmdError,
-) -> CmdError {
-    let Some(client_secret) = profile.github_app.client_secret.as_deref() else {
-        tracing::warn!(
-            "client secret unavailable; unused remote token could not be revoked and may remain active until GitHub invalidates it or it is manually revoked"
-        );
-        return context;
-    };
-    match client.delete_token(&profile.github_app.client_id, client_secret, token.as_ref()) {
-        Ok(()) => context,
-        Err(source) => CmdError::RevocationFailed {
-            context: Box::new(context),
-            source,
-        },
-    }
 }
 
 #[cfg(test)]

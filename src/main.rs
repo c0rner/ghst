@@ -4,6 +4,8 @@ mod cmd;
 mod config;
 mod git;
 mod github;
+mod repository;
+mod token;
 
 use cmd::{GhstCli, SubCommand};
 use tracing_subscriber::EnvFilter;

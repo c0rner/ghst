@@ -2,6 +2,7 @@ use crate::cache::CacheError;
 use crate::config::ConfigError;
 use crate::git::GitError;
 use crate::github::GitHubError;
+use crate::token::TokenError;
 use std::fmt;
 
 #[derive(Debug)]
@@ -10,66 +11,14 @@ pub enum CmdError {
     Cache(CacheError),
     Git(GitError),
     GitHub(GitHubError),
+    Token(TokenError),
     ProfileNotFound(String),
     ProfileRequired,
-    DerivedLoginNotAllowed {
-        profile: String,
-        source: String,
-    },
-    SourceProfileNotRoot {
-        profile: String,
-        source: String,
-    },
-    ClientSecretRequired {
-        profile: String,
-    },
-    NoRootTokenCached {
-        profile: String,
-    },
-    NoSourceTokenCached {
-        profile: String,
-    },
+    DerivedLoginNotAllowed { profile: String, source: String },
     InvalidOutputFormat(String),
-    InvalidRepositoryScope {
-        value: String,
-        reason: &'static str,
-    },
-    RepositoryOwnerMismatch {
-        repository: String,
-        account: String,
-    },
-    RootScopeRejected {
-        profile: String,
-    },
-    UnexpectedCacheKind {
-        profile: String,
-        expected: &'static str,
-        actual: &'static str,
-    },
-    InconsistentCacheMetadata {
-        profile: String,
-        found: String,
-    },
-    StaleProvenance {
-        profile: String,
-        reason: &'static str,
-    },
-    RootGenerationChanged {
-        profile: String,
-    },
-    InvalidLifetime {
-        token_kind: &'static str,
-        reason: String,
-    },
     OAuthExpired,
     OAuthAccessDenied,
-    RevocationFailed {
-        context: Box<Self>,
-        source: GitHubError,
-    },
-    ClearIncomplete {
-        failures: usize,
-    },
+    ClearIncomplete { failures: usize },
     Io(std::io::Error),
 }
 
@@ -80,6 +29,19 @@ impl fmt::Display for CmdError {
             Self::Cache(err) => write!(f, "cache error: {err}"),
             Self::Git(err) => write!(f, "git error: {err}"),
             Self::GitHub(err) => write!(f, "github error: {err}"),
+            Self::Token(TokenError::NoRootTokenCached(profile)) => write!(
+                f,
+                "No valid cached token found for root profile '{profile}'. Please log in first: ghst login -p {profile}"
+            ),
+            Self::Token(TokenError::NoSourceTokenCached(profile)) => write!(
+                f,
+                "No valid cached token found for root source profile '{profile}'. Please log in to the root profile first: ghst login -p {profile}"
+            ),
+            Self::Token(TokenError::RootScopeRejected(profile)) => write!(
+                f,
+                "root profile '{profile}' cannot be repository-scoped; omit --repo to return its raw root token"
+            ),
+            Self::Token(err) => err.fmt(f),
             Self::ProfileNotFound(profile) => {
                 write!(f, "profile '{profile}' is not defined in configuration")
             }
@@ -91,75 +53,14 @@ impl fmt::Display for CmdError {
                 f,
                 "profile '{profile}' is derived; log in to its root source instead: ghst login -p {source}"
             ),
-            Self::SourceProfileNotRoot { profile, source } => write!(
-                f,
-                "derived profile '{profile}' references non-root source profile '{source}'"
-            ),
-            Self::ClientSecretRequired { profile } => write!(
-                f,
-                "root profile '{profile}' has no client secret; derived token minting is unavailable"
-            ),
-            Self::NoRootTokenCached { profile } => write!(
-                f,
-                "No valid cached token found for root profile '{profile}'. Please log in first: ghst login -p {profile}"
-            ),
-            Self::NoSourceTokenCached { profile } => write!(
-                f,
-                "No valid cached token found for root source profile '{profile}'. Please log in to the root profile first: ghst login -p {profile}"
-            ),
             Self::InvalidOutputFormat(value) => write!(
                 f,
                 "invalid output format '{value}', expected 'text', 'json', or 'env'"
             ),
-            Self::InvalidRepositoryScope { value, reason } => {
-                write!(f, "invalid repository scope '{value}': {reason}")
-            }
-            Self::RepositoryOwnerMismatch {
-                repository,
-                account,
-            } => write!(
-                f,
-                "repository '{repository}' is not owned by configured target account '{account}'"
-            ),
-            Self::RootScopeRejected { profile } => write!(
-                f,
-                "root profile '{profile}' cannot be repository-scoped; omit --repo to return its raw root token"
-            ),
-            Self::UnexpectedCacheKind {
-                profile,
-                expected,
-                actual,
-            } => write!(
-                f,
-                "cache entry for profile '{profile}' has kind '{actual}', expected '{expected}'"
-            ),
-            Self::InconsistentCacheMetadata { profile, found } => write!(
-                f,
-                "cache entry for profile '{profile}' contains inconsistent profile metadata '{found}'"
-            ),
-            Self::StaleProvenance { profile, reason } => {
-                write!(
-                    f,
-                    "cached token for profile '{profile}' has stale provenance: {reason}"
-                )
-            }
-            Self::RootGenerationChanged { profile } => write!(
-                f,
-                "root token for profile '{profile}' changed while minting; retry the token request"
-            ),
-            Self::InvalidLifetime { token_kind, reason } => {
-                write!(f, "invalid {token_kind} token lifetime: {reason}")
-            }
             Self::OAuthExpired => {
                 write!(f, "device code expired; run `ghst login` again")
             }
             Self::OAuthAccessDenied => write!(f, "authorization request was denied by the user"),
-            Self::RevocationFailed { context, source } => {
-                write!(
-                    f,
-                    "{context}; additionally failed to revoke the unused token: {source}"
-                )
-            }
             Self::ClearIncomplete { failures } => {
                 write!(f, "cache cleanup was incomplete ({failures} failure(s))")
             }
@@ -175,24 +76,12 @@ impl std::error::Error for CmdError {
             Self::Cache(err) => Some(err),
             Self::Git(err) => Some(err),
             Self::GitHub(err) => Some(err),
+            Self::Token(err) => Some(err),
             Self::Io(err) => Some(err),
-            Self::RevocationFailed { source, .. } => Some(source),
             Self::ProfileNotFound(_)
             | Self::ProfileRequired
             | Self::DerivedLoginNotAllowed { .. }
-            | Self::SourceProfileNotRoot { .. }
-            | Self::ClientSecretRequired { .. }
-            | Self::NoRootTokenCached { .. }
-            | Self::NoSourceTokenCached { .. }
             | Self::InvalidOutputFormat(_)
-            | Self::InvalidRepositoryScope { .. }
-            | Self::RepositoryOwnerMismatch { .. }
-            | Self::RootScopeRejected { .. }
-            | Self::UnexpectedCacheKind { .. }
-            | Self::InconsistentCacheMetadata { .. }
-            | Self::StaleProvenance { .. }
-            | Self::RootGenerationChanged { .. }
-            | Self::InvalidLifetime { .. }
             | Self::OAuthExpired
             | Self::OAuthAccessDenied
             | Self::ClearIncomplete { .. } => None,
@@ -218,6 +107,12 @@ impl From<GitError> for CmdError {
     }
 }
 
+impl From<TokenError> for CmdError {
+    fn from(error: TokenError) -> Self {
+        Self::Token(error)
+    }
+}
+
 impl From<GitHubError> for CmdError {
     fn from(err: GitHubError) -> Self {
         Self::GitHub(err)
@@ -227,5 +122,26 @@ impl From<GitHubError> for CmdError {
 impl From<std::io::Error> for CmdError {
     fn from(err: std::io::Error) -> Self {
         Self::Io(err)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_errors_gain_cli_specific_guidance() {
+        assert_eq!(
+            CmdError::Token(TokenError::NoRootTokenCached("developer".into())).to_string(),
+            "No valid cached token found for root profile 'developer'. Please log in first: ghst login -p developer"
+        );
+        assert_eq!(
+            CmdError::Token(TokenError::NoSourceTokenCached("developer".into())).to_string(),
+            "No valid cached token found for root source profile 'developer'. Please log in to the root profile first: ghst login -p developer"
+        );
+        assert_eq!(
+            CmdError::Token(TokenError::RootScopeRejected("developer".into())).to_string(),
+            "root profile 'developer' cannot be repository-scoped; omit --repo to return its raw root token"
+        );
     }
 }

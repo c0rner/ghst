@@ -1,17 +1,56 @@
-use crate::cmd::CmdError;
 use crate::config::RepoScope;
 use crate::git::GitError;
 use std::collections::BTreeSet;
 use std::fmt;
 
+#[derive(Debug)]
+pub enum RepositoryError {
+    Git(GitError),
+    InvalidScope { value: String, reason: &'static str },
+    OwnerMismatch { repository: String, account: String },
+}
+
+impl fmt::Display for RepositoryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Git(error) => write!(f, "{error}"),
+            Self::InvalidScope { value, reason } => {
+                write!(f, "invalid repository scope '{value}': {reason}")
+            }
+            Self::OwnerMismatch {
+                repository,
+                account,
+            } => write!(
+                f,
+                "repository '{repository}' is not owned by configured target account '{account}'"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RepositoryError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Git(error) => Some(error),
+            Self::InvalidScope { .. } | Self::OwnerMismatch { .. } => None,
+        }
+    }
+}
+
+impl From<GitError> for RepositoryError {
+    fn from(error: GitError) -> Self {
+        Self::Git(error)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) struct Repository {
+struct Repository {
     owner: String,
     name: String,
 }
 
 impl Repository {
-    fn parse(value: &str) -> Result<Self, CmdError> {
+    fn parse(value: &str) -> Result<Self, RepositoryError> {
         let Some((owner, name)) = value.split_once('/') else {
             return Err(invalid(value, "expected owner/repository"));
         };
@@ -44,17 +83,22 @@ impl Repository {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum RepositorySelection {
+enum Selection {
     All,
     Selected(BTreeSet<Repository>),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RepositorySelection {
+    selection: Selection,
+}
+
 impl RepositorySelection {
-    pub(super) fn resolve(
+    pub fn resolve(
         cli_values: &[String],
         configured: &RepoScope,
         mut resolve_auto: impl FnMut() -> Result<String, GitError>,
-    ) -> Result<Self, CmdError> {
+    ) -> Result<Self, RepositoryError> {
         let configured_value;
         let values = if cli_values.is_empty() {
             configured_value = configured.to_string();
@@ -63,15 +107,16 @@ impl RepositorySelection {
             cli_values
         };
 
-        let has_all = values.iter().any(|value| value == "all");
-        if has_all {
+        if values.iter().any(|value| value == "all") {
             if values.iter().any(|value| value != "all") {
                 return Err(invalid(
                     &values.join(","),
                     "'all' cannot be combined with another repository selection",
                 ));
             }
-            return Ok(Self::All);
+            return Ok(Self {
+                selection: Selection::All,
+            });
         }
 
         let mut repositories = BTreeSet::new();
@@ -94,13 +139,15 @@ impl RepositorySelection {
         if repositories.is_empty() {
             return Err(invalid("", "at least one repository is required"));
         }
-        Ok(Self::Selected(repositories))
+        Ok(Self {
+            selection: Selection::Selected(repositories),
+        })
     }
 
-    pub(super) fn canonical(&self) -> String {
-        match self {
-            Self::All => "all".to_owned(),
-            Self::Selected(repositories) => repositories
+    pub fn canonical(&self) -> String {
+        match &self.selection {
+            Selection::All => "all".to_owned(),
+            Selection::Selected(repositories) => repositories
                 .iter()
                 .map(Repository::full_name)
                 .collect::<Vec<_>>()
@@ -108,16 +155,16 @@ impl RepositorySelection {
         }
     }
 
-    pub(super) fn repository_names(&self, account: &str) -> Result<Option<Vec<String>>, CmdError> {
-        match self {
-            Self::All => Ok(None),
-            Self::Selected(repositories) => repositories
+    pub fn repository_names(&self, account: &str) -> Result<Option<Vec<String>>, RepositoryError> {
+        match &self.selection {
+            Selection::All => Ok(None),
+            Selection::Selected(repositories) => repositories
                 .iter()
                 .map(|repository| {
                     if repository.owner.eq_ignore_ascii_case(account) {
                         Ok(repository.name.clone())
                     } else {
-                        Err(CmdError::RepositoryOwnerMismatch {
+                        Err(RepositoryError::OwnerMismatch {
                             repository: repository.full_name(),
                             account: account.to_owned(),
                         })
@@ -135,8 +182,8 @@ impl fmt::Display for RepositorySelection {
     }
 }
 
-fn invalid(value: &str, reason: &'static str) -> CmdError {
-    CmdError::InvalidRepositoryScope {
+fn invalid(value: &str, reason: &'static str) -> RepositoryError {
+    RepositoryError::InvalidScope {
         value: value.to_owned(),
         reason,
     }
@@ -153,8 +200,10 @@ mod tests {
     #[test]
     fn resolves_all_and_rejects_mixed_all() {
         assert_eq!(
-            RepositorySelection::resolve(&["all".into()], &RepoScope::Auto, no_auto).unwrap(),
-            RepositorySelection::All
+            RepositorySelection::resolve(&["all".into()], &RepoScope::Auto, no_auto)
+                .unwrap()
+                .canonical(),
+            "all"
         );
         assert!(matches!(
             RepositorySelection::resolve(
@@ -162,7 +211,7 @@ mod tests {
                 &RepoScope::Auto,
                 no_auto
             ),
-            Err(CmdError::InvalidRepositoryScope { .. })
+            Err(RepositoryError::InvalidScope { .. })
         ));
     }
 
@@ -192,7 +241,7 @@ mod tests {
         ] {
             assert!(matches!(
                 RepositorySelection::resolve(&[value.into()], &RepoScope::All, no_auto),
-                Err(CmdError::InvalidRepositoryScope { .. })
+                Err(RepositoryError::InvalidScope { .. })
             ));
         }
     }
@@ -214,7 +263,7 @@ mod tests {
             RepositorySelection::resolve(&["other/api".into()], &RepoScope::All, no_auto).unwrap();
         assert!(matches!(
             other.repository_names("acme"),
-            Err(CmdError::RepositoryOwnerMismatch { .. })
+            Err(RepositoryError::OwnerMismatch { .. })
         ));
     }
 }

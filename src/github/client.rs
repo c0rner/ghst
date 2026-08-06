@@ -130,88 +130,6 @@ impl GitHubClient {
 
         serde_json::from_value(value).map_err(GitHubError::Json)
     }
-
-    /// 3. Get authenticated user (`GET /user`).
-    ///
-    /// # Errors
-    ///
-    /// Returns `GitHubError` if request or deserialization fails.
-    pub fn get_user(&self, access_token: &str) -> Result<UserResponse, GitHubError> {
-        let url = format!("{}/user", self.api_url);
-
-        let res = self
-            .agent
-            .get(&url)
-            .header("Authorization", &format!("Bearer {access_token}"))
-            .call()
-            .map_err(map_ureq_error)?;
-
-        decode_response(res)
-    }
-
-    /// 4. Create scoped access token (`POST /applications/{client_id}/token/scoped`).
-    ///
-    /// # Errors
-    ///
-    /// Returns `GitHubError` if token scoping request fails.
-    pub fn create_scoped_token(
-        &self,
-        client_id: &str,
-        client_secret: &str,
-        root_token: &str,
-        target: &str,
-        repositories: Option<&[String]>,
-        permissions: &BTreeMap<String, String>,
-    ) -> Result<ScopedTokenResponse, GitHubError> {
-        let url = format!("{}/applications/{client_id}/token/scoped", self.api_url);
-        let req_body = ScopedTokenRequest {
-            access_token: root_token,
-            target,
-            repositories,
-            permissions,
-        };
-
-        debug!("Creating scoped token with request body: {:?}", req_body);
-        let auth = basic_auth_header(client_id, client_secret);
-
-        let res = self
-            .agent
-            .post(&url)
-            .header("Authorization", &auth)
-            .send_json(&req_body)
-            .map_err(map_ureq_error)?;
-
-        decode_response(res)
-    }
-
-    /// 5. Delete an app token (`DELETE /applications/{client_id}/token`).
-    ///
-    /// # Errors
-    ///
-    /// Returns `GitHubError` if token revocation fails.
-    pub fn delete_token(
-        &self,
-        client_id: &str,
-        client_secret: &str,
-        access_token: &str,
-    ) -> Result<(), GitHubError> {
-        let url = format!("{}/applications/{client_id}/token", self.api_url);
-        let body = serde_json::json!({ "access_token": access_token });
-        let auth = basic_auth_header(client_id, client_secret);
-        let body_bytes = serde_json::to_vec(&body).map_err(GitHubError::Json)?;
-
-        let req = ureq::http::Request::builder()
-            .method("DELETE")
-            .uri(&url)
-            .header("Authorization", &auth)
-            .header("Content-Type", "application/json")
-            .body(body_bytes)
-            .map_err(|e| GitHubError::Io(std::io::Error::other(e)))?;
-
-        let _res = self.agent.run(req).map_err(map_ureq_error)?;
-
-        Ok(())
-    }
 }
 
 fn decode_response<T: DeserializeOwned>(
@@ -253,7 +171,21 @@ impl RevokeTokenClient for GitHubClient {
         client_secret: &str,
         access_token: &str,
     ) -> Result<(), GitHubError> {
-        Self::delete_token(self, client_id, client_secret, access_token)
+        let url = format!("{}/applications/{client_id}/token", self.api_url);
+        let body = serde_json::json!({ "access_token": access_token });
+        let auth = basic_auth_header(client_id, client_secret);
+        let body_bytes = serde_json::to_vec(&body).map_err(GitHubError::Json)?;
+
+        let request = ureq::http::Request::builder()
+            .method("DELETE")
+            .uri(&url)
+            .header("Authorization", &auth)
+            .header("Content-Type", "application/json")
+            .body(body_bytes)
+            .map_err(|error| GitHubError::Io(std::io::Error::other(error)))?;
+
+        self.agent.run(request).map_err(map_ureq_error)?;
+        Ok(())
     }
 }
 
@@ -267,21 +199,40 @@ impl ScopedTokenClient for GitHubClient {
         repositories: Option<&[String]>,
         permissions: &BTreeMap<String, String>,
     ) -> Result<ScopedTokenResponse, GitHubError> {
-        Self::create_scoped_token(
-            self,
-            client_id,
-            client_secret,
-            root_token,
+        let url = format!("{}/applications/{client_id}/token/scoped", self.api_url);
+        let body = ScopedTokenRequest {
+            access_token: root_token,
             target,
             repositories,
             permissions,
-        )
+        };
+
+        debug!("Creating scoped token with request body: {body:?}");
+        let response = self
+            .agent
+            .post(&url)
+            .header(
+                "Authorization",
+                &basic_auth_header(client_id, client_secret),
+            )
+            .send_json(&body)
+            .map_err(map_ureq_error)?;
+
+        decode_response(response)
     }
 }
 
 impl RootTokenClient for GitHubClient {
     fn get_user(&self, access_token: &str) -> Result<UserResponse, GitHubError> {
-        Self::get_user(self, access_token)
+        let url = format!("{}/user", self.api_url);
+        let response = self
+            .agent
+            .get(&url)
+            .header("Authorization", &format!("Bearer {access_token}"))
+            .call()
+            .map_err(map_ureq_error)?;
+
+        decode_response(response)
     }
 }
 

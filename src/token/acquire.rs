@@ -197,7 +197,7 @@ fn mint_and_persist<C: ScopedTokenClient>(
         mint.repositories,
         mint.permissions,
     )?;
-    let received = OffsetDateTime::now_utc();
+    let received = request.now;
     let expiry = match validate_scoped_expiry(expires_at.as_deref(), received) {
         Ok(expiry) => expiry,
         Err(error) => {

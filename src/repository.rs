@@ -1,19 +1,40 @@
 use crate::config::RepoScope;
-use crate::git::GitError;
 use std::collections::BTreeSet;
 use std::fmt;
 
 #[derive(Debug)]
 pub enum RepositoryError {
-    Git(GitError),
+    NotFound,
+    OriginNotFound,
+    MissingOriginUrl,
+    UnsupportedRemote(String),
+    InvalidOriginUrl(String),
     InvalidScope { value: String, reason: &'static str },
     OwnerMismatch { repository: String, account: String },
+    Io(std::io::Error),
 }
 
 impl fmt::Display for RepositoryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Git(error) => write!(f, "{error}"),
+            Self::NotFound => write!(
+                f,
+                "could not find .git repository in current or parent directories"
+            ),
+            Self::OriginNotFound => write!(f, "'origin' remote is not defined in .git/config"),
+            Self::MissingOriginUrl => {
+                write!(f, "'origin' remote in .git/config is missing a URL")
+            }
+            Self::UnsupportedRemote(url) => write!(
+                f,
+                "origin remote '{url}' is not a GitHub repository. ghst is tailored for GitHub only"
+            ),
+            Self::InvalidOriginUrl(url) => {
+                write!(
+                    f,
+                    "could not parse owner/repository from origin URL '{url}'"
+                )
+            }
             Self::InvalidScope { value, reason } => {
                 write!(f, "invalid repository scope '{value}': {reason}")
             }
@@ -24,6 +45,7 @@ impl fmt::Display for RepositoryError {
                 f,
                 "repository '{repository}' is not owned by configured target account '{account}'"
             ),
+            Self::Io(error) => write!(f, "git IO error: {error}"),
         }
     }
 }
@@ -31,15 +53,21 @@ impl fmt::Display for RepositoryError {
 impl std::error::Error for RepositoryError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Git(error) => Some(error),
-            Self::InvalidScope { .. } | Self::OwnerMismatch { .. } => None,
+            Self::Io(error) => Some(error),
+            Self::NotFound
+            | Self::OriginNotFound
+            | Self::MissingOriginUrl
+            | Self::UnsupportedRemote(_)
+            | Self::InvalidOriginUrl(_)
+            | Self::InvalidScope { .. }
+            | Self::OwnerMismatch { .. } => None,
         }
     }
 }
 
-impl From<GitError> for RepositoryError {
-    fn from(error: GitError) -> Self {
-        Self::Git(error)
+impl From<std::io::Error> for RepositoryError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
     }
 }
 
@@ -97,7 +125,8 @@ impl RepositorySelection {
     pub fn resolve(
         cli_values: &[String],
         configured: &RepoScope,
-        mut resolve_auto: impl FnMut() -> Result<String, GitError>,
+        account: &str,
+        mut resolve_auto: impl FnMut() -> Result<String, RepositoryError>,
     ) -> Result<Self, RepositoryError> {
         let configured_value;
         let values = if cli_values.is_empty() {
@@ -120,20 +149,27 @@ impl RepositorySelection {
         }
 
         let mut repositories = BTreeSet::new();
-        let mut automatic = None;
+        let mut automatic_resolved = false;
         for value in values {
             if value.is_empty() {
                 return Err(invalid(value, "repository selection cannot be empty"));
             }
+            if value == "auto" && automatic_resolved {
+                continue;
+            }
             let repository = if value == "auto" {
-                if automatic.is_none() {
-                    automatic = Some(Repository::parse(&resolve_auto()?)?);
-                }
-                automatic.as_ref().expect("automatic repository is set")
+                automatic_resolved = true;
+                Repository::parse(&resolve_auto()?)?
             } else {
-                &Repository::parse(value)?
+                Repository::parse(value)?
             };
-            repositories.insert(repository.clone());
+            if !repository.owner.eq_ignore_ascii_case(account) {
+                return Err(RepositoryError::OwnerMismatch {
+                    repository: repository.full_name(),
+                    account: account.to_owned(),
+                });
+            }
+            repositories.insert(repository);
         }
 
         if repositories.is_empty() {
@@ -155,30 +191,16 @@ impl RepositorySelection {
         }
     }
 
-    pub fn repository_names(&self, account: &str) -> Result<Option<Vec<String>>, RepositoryError> {
+    pub fn repository_names(&self) -> Option<Vec<String>> {
         match &self.selection {
-            Selection::All => Ok(None),
-            Selection::Selected(repositories) => repositories
-                .iter()
-                .map(|repository| {
-                    if repository.owner.eq_ignore_ascii_case(account) {
-                        Ok(repository.name.clone())
-                    } else {
-                        Err(RepositoryError::OwnerMismatch {
-                            repository: repository.full_name(),
-                            account: account.to_owned(),
-                        })
-                    }
-                })
-                .collect::<Result<Vec<_>, _>>()
-                .map(Some),
+            Selection::All => None,
+            Selection::Selected(repositories) => Some(
+                repositories
+                    .iter()
+                    .map(|repository| repository.name.clone())
+                    .collect(),
+            ),
         }
-    }
-}
-
-impl fmt::Display for RepositorySelection {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.canonical())
     }
 }
 
@@ -193,14 +215,14 @@ fn invalid(value: &str, reason: &'static str) -> RepositoryError {
 mod tests {
     use super::*;
 
-    fn no_auto() -> Result<String, GitError> {
+    fn no_auto() -> Result<String, RepositoryError> {
         panic!("auto resolver should not be called")
     }
 
     #[test]
     fn resolves_all_and_rejects_mixed_all() {
         assert_eq!(
-            RepositorySelection::resolve(&["all".into()], &RepoScope::Auto, no_auto)
+            RepositorySelection::resolve(&["all".into()], &RepoScope::Auto, "acme", no_auto)
                 .unwrap()
                 .canonical(),
             "all"
@@ -209,6 +231,7 @@ mod tests {
             RepositorySelection::resolve(
                 &["all".into(), "acme/api".into()],
                 &RepoScope::Auto,
+                "acme",
                 no_auto
             ),
             Err(RepositoryError::InvalidScope { .. })
@@ -220,13 +243,18 @@ mod tests {
         let values = [
             "acme/zeta".into(),
             "auto".into(),
+            "auto".into(),
             "acme/zeta".into(),
             "acme/alpha".into(),
         ];
-        let selection =
-            RepositorySelection::resolve(&values, &RepoScope::All, || Ok("acme/middle".into()))
-                .unwrap();
+        let auto_calls = std::cell::Cell::new(0);
+        let selection = RepositorySelection::resolve(&values, &RepoScope::All, "acme", || {
+            auto_calls.set(auto_calls.get() + 1);
+            Ok("acme/middle".into())
+        })
+        .unwrap();
         assert_eq!(selection.canonical(), "acme/alpha,acme/middle,acme/zeta");
+        assert_eq!(auto_calls.get(), 1);
     }
 
     #[test]
@@ -240,7 +268,7 @@ mod tests {
             "bad owner/repo",
         ] {
             assert!(matches!(
-                RepositorySelection::resolve(&[value.into()], &RepoScope::All, no_auto),
+                RepositorySelection::resolve(&[value.into()], &RepoScope::All, "owner", no_auto),
                 Err(RepositoryError::InvalidScope { .. })
             ));
         }
@@ -251,18 +279,17 @@ mod tests {
         let selection = RepositorySelection::resolve(
             &["acme/api".into(), "ACME/web".into()],
             &RepoScope::All,
+            "acme",
             no_auto,
         )
         .unwrap();
         assert_eq!(
-            selection.repository_names("acme").unwrap(),
+            selection.repository_names(),
             Some(vec!["api".into(), "web".into()])
         );
 
-        let other =
-            RepositorySelection::resolve(&["other/api".into()], &RepoScope::All, no_auto).unwrap();
         assert!(matches!(
-            other.repository_names("acme"),
+            RepositorySelection::resolve(&["other/api".into()], &RepoScope::All, "acme", no_auto),
             Err(RepositoryError::OwnerMismatch { .. })
         ));
     }

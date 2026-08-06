@@ -73,8 +73,8 @@ fn write_token(
                 &serde_json::json!({
                     "token": token.access_token.as_ref(),
                     "expires_at": token.expires_at.to_string(),
-                    "profile": token.profile,
-                    "repo": token.repo_scope,
+                    "profile": token.profile.as_str(),
+                    "repo": token.repo_scope.as_str(),
                 }),
             )
             .map_err(io::Error::other)?;

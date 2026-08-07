@@ -25,14 +25,14 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
 
     let cache_dir = crate::config::cache_dir()?;
     debug!("Resolved cache directory: {:?}", cache_dir);
-    if let Some(entry) = crate::token::load_valid_root_entry(
+    if let Some(status) = crate::token::load_valid_root_status(
         &cache_dir,
         &profile_name,
         root_profile,
         OffsetDateTime::now_utc(),
     )? {
         debug!("Found valid cached root token for profile '{profile_name}'");
-        report_existing(&profile_name, &entry);
+        report_existing(&profile_name, &status);
         return Ok(());
     }
 
@@ -82,16 +82,16 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
     Ok(())
 }
 
-fn report_saved(profile_name: &str, entry: &crate::cache::RootCacheEntry) {
+fn report_saved(profile_name: &str, status: &crate::token::RootTokenStatus) {
     println!(
         "Successfully authenticated as @{} for profile '{profile_name}'. Root token cached until {}.",
-        entry.github_user, entry.expires_at
+        status.github_user, status.expires_at
     );
 }
 
-fn report_existing(profile_name: &str, entry: &crate::cache::RootCacheEntry) {
+fn report_existing(profile_name: &str, status: &crate::token::RootTokenStatus) {
     println!(
         "Profile '{profile_name}' already has a valid cached root token for @{} (valid until {}).",
-        entry.github_user, entry.expires_at
+        status.github_user, status.expires_at
     );
 }

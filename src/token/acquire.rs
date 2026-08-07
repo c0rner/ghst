@@ -9,7 +9,7 @@ use crate::cache::{
 };
 use crate::config::{Config, ProfileConfig, RootProfile};
 use crate::github::{ScopedTokenClient, ScopedTokenResponse};
-use crate::repository::RepositorySelection;
+use crate::repository::{RepositoryError, RepositorySelection};
 use std::collections::BTreeMap;
 use std::path::Path;
 use time::OffsetDateTime;
@@ -17,7 +17,7 @@ use time::OffsetDateTime;
 pub fn acquire<C: ScopedTokenClient>(
     client: &C,
     request: &AcquireRequest<'_>,
-    resolve_auto: impl FnMut() -> Result<String, crate::git::GitError>,
+    resolve_auto: impl FnMut() -> Result<String, RepositoryError>,
 ) -> Result<AcquiredToken, TokenError> {
     match request.config.profiles.get(request.profile_name) {
         Some(ProfileConfig::Root(profile)) => acquire_root(request, profile),
@@ -56,13 +56,17 @@ fn acquire_derived<C: ScopedTokenClient>(
     client: &C,
     request: &AcquireRequest<'_>,
     profile: &crate::config::DerivedProfile,
-    resolve_auto: impl FnMut() -> Result<String, crate::git::GitError>,
+    resolve_auto: impl FnMut() -> Result<String, RepositoryError>,
 ) -> Result<AcquiredToken, TokenError> {
-    let selection =
-        RepositorySelection::resolve(request.repositories, &profile.repo, resolve_auto)?;
-    let scope = selection.canonical();
     let source = resolve_source_profile(request.config, request.profile_name, &profile.source)?;
-    let repositories = selection.repository_names(&source.github_app.account)?;
+    let selection = RepositorySelection::resolve(
+        request.repositories,
+        &profile.repo,
+        &source.github_app.account,
+        resolve_auto,
+    )?;
+    let scope = selection.canonical();
+    let repositories = selection.repository_names();
     let permissions = permission_request(&profile.permissions);
     let policy = policy_fingerprint(&source.github_app.account, &scope, &permissions);
     let root = load_current_root_entry(request.cache_dir, &profile.source, &source.github_app)?

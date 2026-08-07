@@ -120,7 +120,7 @@ fn inspect_unlocked(cache_dir: &Path) -> Result<Vec<CacheInspection>, CacheError
 /// A compatible current entry is retained. A legacy, expired, or same-kind
 /// stale-provenance entry is atomically replaced. Malformed, inconsistent, or
 /// wrong-kind entries fail closed.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub fn save_cache_entry(
     cache_dir: &Path,
     hash_key: &str,
@@ -235,7 +235,7 @@ pub fn load_cache_entry(
 }
 
 /// Deletes a cache entry file `cache_dir/<hash_key>.json`.
-#[cfg_attr(not(test), allow(dead_code))]
+#[cfg(test)]
 pub fn delete_cache_entry(cache_dir: &Path, hash_key: &str) -> Result<bool, CacheError> {
     if !cache_dir_exists(cache_dir)? {
         return Ok(false);
@@ -257,7 +257,6 @@ pub fn delete_cache_entry(cache_dir: &Path, hash_key: &str) -> Result<bool, Cach
 }
 
 /// Lists all `(hash_key, CacheEntry)` pairs stored in `cache_dir`.
-#[allow(dead_code)]
 #[cfg(test)]
 pub fn list_cache_entries(cache_dir: &Path) -> Result<Vec<(String, CacheEntry)>, CacheError> {
     let raw = list_all_cache_entries(cache_dir)?;

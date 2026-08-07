@@ -1,5 +1,6 @@
 use crate::cmd::{CmdError, GhstCli, OutputFormat, TokenCmd, resolve_profile_name};
 use crate::github::{GitHubClient, ScopedTokenClient};
+use crate::repository::RepositoryError;
 use crate::token::{AcquireRequest, AcquiredToken};
 use std::io::{self, Write};
 use std::path::Path;
@@ -38,7 +39,7 @@ fn execute_token<C: ScopedTokenClient, W: Write>(
     profile_name: &str,
     cmd: &TokenCmd,
     writer: &mut W,
-    resolve_auto: impl FnMut() -> Result<String, crate::git::GitError>,
+    resolve_auto: impl FnMut() -> Result<String, RepositoryError>,
 ) -> Result<(), CmdError> {
     let token = crate::token::acquire(
         context.client,

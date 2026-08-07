@@ -1,4 +1,4 @@
-use crate::cache::{RootCacheEntry, TokenExpiry};
+use crate::cache::TokenExpiry;
 use crate::config::Config;
 use std::fmt;
 use std::path::Path;
@@ -23,8 +23,13 @@ impl fmt::Debug for AcquiredToken {
 }
 
 pub enum RootPersistence {
-    Saved(RootCacheEntry),
-    Retained(RootCacheEntry),
+    Saved(RootTokenStatus),
+    Retained(RootTokenStatus),
+}
+
+pub struct RootTokenStatus {
+    pub github_user: String,
+    pub expires_at: TokenExpiry,
 }
 
 pub struct AcquireRequest<'a> {

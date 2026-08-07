@@ -1,4 +1,6 @@
-use super::{RootPersistence, TokenError, revoke_with_context, validate_root_expiry};
+use super::{
+    RootPersistence, RootTokenStatus, TokenError, revoke_with_context, validate_root_expiry,
+};
 use crate::cache::{
     CACHE_SCHEMA_VERSION, CacheEntry, RootCacheEntry, SaveCacheEntry, authority_fingerprint,
     compute_cache_key, format_rfc3339, load_cache_entry, save_cache_candidate,
@@ -22,6 +24,15 @@ pub fn load_valid_root_entry(
         load_current_root_entry(cache_dir, profile_name, &profile.github_app)?
             .filter(|entry| entry.expires_at.is_usable_at(now)),
     )
+}
+
+pub fn load_valid_root_status(
+    cache_dir: &Path,
+    profile_name: &str,
+    profile: &RootProfile,
+    now: OffsetDateTime,
+) -> Result<Option<RootTokenStatus>, TokenError> {
+    load_valid_root_entry(cache_dir, profile_name, profile, now).map(|entry| entry.map(root_status))
 }
 
 pub fn load_current_root_entry(
@@ -117,7 +128,7 @@ pub fn persist_root_response<C: RootTokenClient>(
     };
     match result {
         SaveCacheEntry::Saved => match candidate {
-            CacheEntry::Root(entry) => Ok(RootPersistence::Saved(entry)),
+            CacheEntry::Root(entry) => Ok(RootPersistence::Saved(root_status(entry))),
             CacheEntry::Derived(_) => unreachable!("candidate is root"),
         },
         SaveCacheEntry::Retained(entry) => match *entry {
@@ -134,7 +145,7 @@ pub fn persist_root_response<C: RootTokenClient>(
                 if matches!(cleanup, TokenError::RevocationFailed { .. }) {
                     Err(cleanup)
                 } else {
-                    Ok(RootPersistence::Retained(entry))
+                    Ok(RootPersistence::Retained(root_status(entry)))
                 }
             }
             entry @ CacheEntry::Derived(_) => Err(TokenError::UnexpectedCacheKind {
@@ -143,5 +154,12 @@ pub fn persist_root_response<C: RootTokenClient>(
                 actual: entry.kind_name(),
             }),
         },
+    }
+}
+
+fn root_status(entry: RootCacheEntry) -> RootTokenStatus {
+    RootTokenStatus {
+        github_user: entry.github_user,
+        expires_at: entry.expires_at,
     }
 }

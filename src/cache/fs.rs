@@ -6,13 +6,13 @@ use std::path::{Path, PathBuf};
 const CACHE_LOCK_FILE: &str = ".cache.lock";
 
 #[derive(Clone, Copy)]
-pub enum LockMode {
+pub(super) enum LockMode {
     Shared,
     Exclusive,
 }
 
 /// Ensures that the cache directory exists and has private permissions.
-pub fn ensure_cache_dir(cache_dir: &Path) -> Result<(), CacheError> {
+pub(super) fn ensure_cache_dir(cache_dir: &Path) -> Result<(), CacheError> {
     #[cfg(not(unix))]
     return Err(unsupported_platform(cache_dir));
 
@@ -32,7 +32,7 @@ pub fn ensure_cache_dir(cache_dir: &Path) -> Result<(), CacheError> {
     }
 }
 
-pub fn cache_dir_exists(cache_dir: &Path) -> Result<bool, CacheError> {
+pub(super) fn cache_dir_exists(cache_dir: &Path) -> Result<bool, CacheError> {
     #[cfg(not(unix))]
     return Err(unsupported_platform(cache_dir));
 
@@ -48,11 +48,11 @@ pub fn cache_dir_exists(cache_dir: &Path) -> Result<bool, CacheError> {
     }
 }
 
-pub fn cache_file_path(cache_dir: &Path, hash_key: &str) -> PathBuf {
+pub(super) fn cache_file_path(cache_dir: &Path, hash_key: &str) -> PathBuf {
     cache_dir.join(format!("{hash_key}.json"))
 }
 
-pub fn with_cache_lock<T>(
+pub(super) fn with_cache_lock<T>(
     cache_dir: &Path,
     lock_mode: LockMode,
     operation: impl FnOnce() -> Result<T, CacheError>,
@@ -68,7 +68,9 @@ pub fn with_cache_lock<T>(
     operation()
 }
 
-pub fn create_private_tempfile(cache_dir: &Path) -> Result<tempfile::NamedTempFile, CacheError> {
+pub(super) fn create_private_tempfile(
+    cache_dir: &Path,
+) -> Result<tempfile::NamedTempFile, CacheError> {
     let mut builder = tempfile::Builder::new();
     builder.prefix(".ghst-").suffix(".tmp");
 
@@ -82,7 +84,7 @@ pub fn create_private_tempfile(cache_dir: &Path) -> Result<tempfile::NamedTempFi
     builder.tempfile_in(cache_dir).map_err(CacheError::Io)
 }
 
-pub fn open_private_file(path: &Path, create: bool) -> Result<File, CacheError> {
+pub(super) fn open_private_file(path: &Path, create: bool) -> Result<File, CacheError> {
     let mut options = OpenOptions::new();
     options.read(true).write(create).create(create);
 
@@ -98,7 +100,7 @@ pub fn open_private_file(path: &Path, create: bool) -> Result<File, CacheError> 
     options.open(path).map_err(CacheError::Io)
 }
 
-pub fn validate_cache_file(path: &Path, metadata: &fs::Metadata) -> Result<(), CacheError> {
+pub(super) fn validate_cache_file(path: &Path, metadata: &fs::Metadata) -> Result<(), CacheError> {
     if metadata.file_type().is_symlink() {
         return Err(insecure_path(path, "symbolic links are not permitted"));
     }
@@ -118,7 +120,7 @@ pub fn validate_cache_file(path: &Path, metadata: &fs::Metadata) -> Result<(), C
     validate_unix_metadata(path, metadata, 0o600)
 }
 
-pub fn sync_cache_dir(cache_dir: &Path) -> Result<(), CacheError> {
+pub(super) fn sync_cache_dir(cache_dir: &Path) -> Result<(), CacheError> {
     #[cfg(not(unix))]
     return Err(unsupported_platform(cache_dir));
 
@@ -167,7 +169,7 @@ pub fn cache_epoch(cache_dir: &Path) -> Result<u64, CacheError> {
     with_locked_file(cache_dir, LockMode::Shared, read_epoch)
 }
 
-pub fn with_locked_file<T>(
+pub(super) fn with_locked_file<T>(
     cache_dir: &Path,
     mode: LockMode,
     operation: impl FnOnce(&mut File) -> Result<T, CacheError>,
@@ -181,7 +183,7 @@ pub fn with_locked_file<T>(
     operation(&mut file)
 }
 
-pub fn read_epoch(file: &mut File) -> Result<u64, CacheError> {
+pub(super) fn read_epoch(file: &mut File) -> Result<u64, CacheError> {
     file.seek(SeekFrom::Start(0)).map_err(CacheError::Io)?;
     let mut value = String::new();
     file.read_to_string(&mut value).map_err(CacheError::Io)?;
@@ -191,7 +193,7 @@ pub fn read_epoch(file: &mut File) -> Result<u64, CacheError> {
     value.trim().parse().map_err(|_| CacheError::MalformedEpoch)
 }
 
-pub fn increment_epoch(file: &mut File) -> Result<u64, CacheError> {
+pub(super) fn increment_epoch(file: &mut File) -> Result<u64, CacheError> {
     let epoch = read_epoch(file)?
         .checked_add(1)
         .ok_or(CacheError::EpochExhausted)?;

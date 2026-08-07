@@ -1,6 +1,5 @@
 use crate::cache::CacheError;
 use crate::config::ConfigError;
-use crate::git::GitError;
 use crate::github::GitHubError;
 use crate::token::TokenError;
 use std::fmt;
@@ -9,7 +8,6 @@ use std::fmt;
 pub enum CmdError {
     Config(ConfigError),
     Cache(CacheError),
-    Git(GitError),
     GitHub(GitHubError),
     Token(TokenError),
     ProfileNotFound(String),
@@ -27,7 +25,6 @@ impl fmt::Display for CmdError {
         match self {
             Self::Config(err) => write!(f, "configuration error: {err}"),
             Self::Cache(err) => write!(f, "cache error: {err}"),
-            Self::Git(err) => write!(f, "git error: {err}"),
             Self::GitHub(err) => write!(f, "github error: {err}"),
             Self::Token(TokenError::NoRootTokenCached(profile)) => write!(
                 f,
@@ -74,7 +71,6 @@ impl std::error::Error for CmdError {
         match self {
             Self::Config(err) => Some(err),
             Self::Cache(err) => Some(err),
-            Self::Git(err) => Some(err),
             Self::GitHub(err) => Some(err),
             Self::Token(err) => Some(err),
             Self::Io(err) => Some(err),
@@ -98,12 +94,6 @@ impl From<ConfigError> for CmdError {
 impl From<CacheError> for CmdError {
     fn from(err: CacheError) -> Self {
         Self::Cache(err)
-    }
-}
-
-impl From<GitError> for CmdError {
-    fn from(err: GitError) -> Self {
-        Self::Git(err)
     }
 }
 

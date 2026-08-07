@@ -1,4 +1,3 @@
-use super::validation::MAX_ROOT_LIFETIME_SECONDS;
 use super::*;
 use crate::cache::{
     CACHE_SCHEMA_VERSION, CacheEntry, RootCacheEntry, TokenExpiry, authority_fingerprint,
@@ -112,41 +111,38 @@ fn cache_root(cache_dir: &Path, now: OffsetDateTime, token: &str) {
 }
 
 #[test]
-fn root_lifetime_requires_positive_bounded_value_and_margin() {
+fn root_lifetime_requires_a_representable_value_beyond_the_margin() {
     let now = OffsetDateTime::now_utc();
-    for value in [None, Some(0), Some(30), Some(MAX_ROOT_LIFETIME_SECONDS + 1)] {
+    for value in [None, Some(0), Some(30), Some(u64::MAX)] {
         assert!(matches!(
             validate_root_expiry(value, now),
             Err(TokenError::InvalidLifetime { .. })
         ));
     }
+    let lifetime = 24 * 60 * 60;
     assert_eq!(
-        validate_root_expiry(Some(MAX_ROOT_LIFETIME_SECONDS), now)
-            .unwrap()
-            .value(),
-        now + Duration::hours(8)
+        validate_root_expiry(Some(lifetime), now).unwrap().value(),
+        now + Duration::hours(24)
     );
 }
 
 #[test]
-fn scoped_lifetime_enforces_margin_maximum_and_rounding_tolerance() {
+fn scoped_lifetime_requires_a_valid_timestamp_beyond_the_margin() {
     let now = OffsetDateTime::now_utc();
     for value in [
         Some("not-a-timestamp".to_owned()),
         Some(TokenExpiry::new(now + Duration::seconds(30)).to_string()),
-        Some(TokenExpiry::new(now + Duration::hours(8) + Duration::seconds(2)).to_string()),
     ] {
         assert!(matches!(
             validate_scoped_expiry(value.as_deref(), now),
             Err(TokenError::InvalidLifetime { .. })
         ));
     }
-    let issued = OffsetDateTime::parse(
-        "2026-08-01T17:20:25.889841154Z",
-        &time::format_description::well_known::Rfc3339,
-    )
-    .unwrap();
-    assert!(validate_scoped_expiry(Some("2026-08-02T01:20:26.000Z"), issued).is_ok());
+    let expiry = TokenExpiry::new(now + Duration::hours(24));
+    assert_eq!(
+        validate_scoped_expiry(Some(&expiry.to_string()), now).unwrap(),
+        expiry
+    );
 }
 
 #[test]

@@ -58,11 +58,13 @@ pub fn load_current_root_entry(
                     .then_some(entry),
             )
         }
-        CacheEntry::Derived(_) => Err(TokenError::UnexpectedCacheKind {
-            profile: profile_name.to_owned(),
-            expected: "root",
-            actual: "derived",
-        }),
+        other @ (CacheEntry::Derived(_) | CacheEntry::Run(_)) => {
+            Err(TokenError::UnexpectedCacheKind {
+                profile: profile_name.to_owned(),
+                expected: "root",
+                actual: other.kind_name(),
+            })
+        }
     }
 }
 
@@ -129,7 +131,7 @@ pub fn persist_root_response<C: RootTokenClient>(
     match result {
         SaveCacheEntry::Saved => match candidate {
             CacheEntry::Root(entry) => Ok(RootPersistence::Saved(root_status(entry))),
-            CacheEntry::Derived(_) => unreachable!("candidate is root"),
+            CacheEntry::Derived(_) | CacheEntry::Run(_) => unreachable!("candidate is root"),
         },
         SaveCacheEntry::Retained(entry) => match *entry {
             CacheEntry::Root(entry) => {
@@ -148,11 +150,13 @@ pub fn persist_root_response<C: RootTokenClient>(
                     Ok(RootPersistence::Retained(root_status(entry)))
                 }
             }
-            entry @ CacheEntry::Derived(_) => Err(TokenError::UnexpectedCacheKind {
-                profile: profile_name.to_owned(),
-                expected: "root",
-                actual: entry.kind_name(),
-            }),
+            entry @ (CacheEntry::Derived(_) | CacheEntry::Run(_)) => {
+                Err(TokenError::UnexpectedCacheKind {
+                    profile: profile_name.to_owned(),
+                    expected: "root",
+                    actual: entry.kind_name(),
+                })
+            }
         },
     }
 }

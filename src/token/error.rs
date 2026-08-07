@@ -16,6 +16,8 @@ pub enum TokenError {
     NoRootTokenCached(String),
     NoSourceTokenCached(String),
     RootScopeRejected(String),
+    RunRequiresDerived(String),
+    Random(getrandom::Error),
     UnexpectedCacheKind {
         profile: String,
         expected: &'static str,
@@ -69,6 +71,13 @@ impl fmt::Display for TokenError {
             Self::RootScopeRejected(profile) => {
                 write!(f, "root profile '{profile}' cannot be repository-scoped")
             }
+            Self::RunRequiresDerived(profile) => {
+                write!(
+                    f,
+                    "profile '{profile}' is a root profile; run requires a derived profile"
+                )
+            }
+            Self::Random(error) => write!(f, "operating-system randomness unavailable: {error}"),
             Self::UnexpectedCacheKind {
                 profile,
                 expected,
@@ -127,6 +136,12 @@ impl From<GitHubError> for TokenError {
 impl From<RepositoryError> for TokenError {
     fn from(error: RepositoryError) -> Self {
         Self::Repository(error)
+    }
+}
+
+impl From<getrandom::Error> for TokenError {
+    fn from(error: getrandom::Error) -> Self {
+        Self::Random(error)
     }
 }
 

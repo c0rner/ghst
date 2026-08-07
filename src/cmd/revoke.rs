@@ -1,12 +1,15 @@
-use crate::cmd::{ClearCmd, CmdError, GhstCli};
+use crate::cmd::{CmdError, GhstCli, RevokeCmd};
 use crate::github::GitHubClient;
-use crate::token::clear::{ClearFailure, ClearReport};
+use crate::token::revoke::{RevokeFailure, RevokeReport};
 use std::io::{self, Write};
 
-pub fn run_clear(args: &GhstCli, _cmd: &ClearCmd) -> Result<(), CmdError> {
+pub fn run_revoke(args: &GhstCli, cmd: &RevokeCmd) -> Result<(), CmdError> {
+    if !cmd.all {
+        return Err(CmdError::RevokeAllRequired);
+    }
     let config = crate::config::load(args.config.as_deref())?;
     let cache_dir = crate::config::cache_dir()?;
-    let report = crate::token::clear::clear(
+    let report = crate::token::revoke::revoke_all(
         &GitHubClient::new(),
         &config,
         &cache_dir,
@@ -16,14 +19,14 @@ pub fn run_clear(args: &GhstCli, _cmd: &ClearCmd) -> Result<(), CmdError> {
     if report.failures.is_empty() {
         Ok(())
     } else {
-        Err(CmdError::ClearIncomplete {
+        Err(CmdError::RevokeIncomplete {
             failures: report.failures.len(),
         })
     }
 }
 
-fn write_report(writer: &mut impl Write, report: &ClearReport) -> io::Result<()> {
-    writeln!(writer, "Cache clear report:")?;
+fn write_report(writer: &mut impl Write, report: &RevokeReport) -> io::Result<()> {
+    writeln!(writer, "Credential revocation report:")?;
     writeln!(
         writer,
         "  Remotely revoked or already inactive: {}",
@@ -34,18 +37,18 @@ fn write_report(writer: &mut impl Write, report: &ClearReport) -> io::Result<()>
     writeln!(writer, "  Failures: {}", report.failures.len())?;
     for failure in &report.failures {
         match failure {
-            ClearFailure::MissingAppCredentials { entry } => writeln!(
+            RevokeFailure::MissingAppCredentials { entry } => writeln!(
                 writer,
                 "  - {entry}: configured root unavailable; deleted locally and token may remain active remotely"
             )?,
-            ClearFailure::ClientSecretUnavailable { entry } => writeln!(
+            RevokeFailure::ClientSecretUnavailable { entry } => writeln!(
                 writer,
                 "  - {entry}: client secret unavailable; deleted locally and token may remain active remotely"
             )?,
-            ClearFailure::GitHubRevocation { entry, source: _ } => {
+            RevokeFailure::GitHubRevocation { entry, source: _ } => {
                 writeln!(writer, "  - {entry}: remote revocation failed")?;
             }
-            ClearFailure::CacheDeletion { entry, source } => {
+            RevokeFailure::CacheDeletion { entry, source } => {
                 writeln!(writer, "  - {entry}: local deletion failed: {source}")?;
             }
         }
@@ -59,7 +62,7 @@ mod tests {
 
     #[test]
     fn report_format_is_stable() {
-        let report = ClearReport {
+        let report = RevokeReport {
             remotely_inactive: 1,
             local_only: 2,
             retained: 0,
@@ -69,7 +72,17 @@ mod tests {
         write_report(&mut output, &report).unwrap();
         assert_eq!(
             String::from_utf8(output).unwrap(),
-            "Cache clear report:\n  Remotely revoked or already inactive: 1\n  Deleted locally only: 2\n  Retained for retry: 0\n  Failures: 0\n"
+            "Credential revocation report:\n  Remotely revoked or already inactive: 1\n  Deleted locally only: 2\n  Retained for retry: 0\n  Failures: 0\n"
         );
+    }
+
+    #[test]
+    fn all_acknowledgement_is_required_before_loading_configuration() {
+        let args = GhstCli {
+            config: Some("missing.toml".into()),
+            command: crate::cmd::SubCommand::Revoke(RevokeCmd { all: false }),
+        };
+        let error = run_revoke(&args, &RevokeCmd { all: false }).unwrap_err();
+        assert!(matches!(error, CmdError::RevokeAllRequired));
     }
 }

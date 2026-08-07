@@ -9,6 +9,17 @@ pub fn compute_cache_key(profile_name: &str, canonical_repo_scope: &str) -> Stri
     encode_hex(&digest)
 }
 
+/// Compute a domain-separated SHA-256 cache key for a one-off run identifier.
+pub fn compute_run_cache_key(run_id: &str) -> String {
+    let mut hasher = Sha256::new();
+    for part in ["ghst-cache-key-v1", "run", run_id] {
+        hasher.update(part.len().to_string().as_bytes());
+        hasher.update(b":");
+        hasher.update(part.as_bytes());
+    }
+    encode_hex(&hasher.finalize())
+}
+
 pub fn validate_cache_key(hash_key: &str) -> Result<(), CacheError> {
     if hash_key.len() == 64 && hash_key.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         Ok(())

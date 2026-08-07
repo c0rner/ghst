@@ -96,7 +96,7 @@ Each root profile may contain a client secret or omit it. Neither mode is univer
 | Mode | Security boundary | Capabilities | Tradeoffs |
 | --- | --- | --- | --- |
 | **Secret-bearing root** | GitHub App grant, user access, and local derived profiles | Repository and permission narrowing; remote token revocation | The secret must be isolated. A party holding both it and a live non-scoped root token can request a scoped token with an independent lifetime. |
-| **Secretless root** | GitHub App grant and user access | Device Flow login and bounded root-token delivery | No derived profiles and no App-authenticated remote revocation. Live tokens cleared locally may remain active until GitHub invalidates them or they are manually revoked. |
+| **Secretless root** | GitHub App grant and user access | Device Flow login and bounded root-token delivery | No derived profiles and no App-authenticated remote revocation. Live tokens removed locally may remain active until GitHub invalidates them or they are manually revoked. |
 
 An enterprise that does not want to distribute client secrets can provide multiple narrowly configured GitHub Apps for different roles or repository sets and distribute only their public client IDs. This moves policy enforcement into GitHub App installation grants. It increases App administration and loses the flexibility of local derived profiles, but avoids placing App client secrets on developer workstations.
 

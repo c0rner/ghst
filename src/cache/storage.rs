@@ -4,8 +4,8 @@ use crate::cache::fs::{
     increment_epoch, open_private_file, read_epoch, sync_cache_dir, validate_cache_file,
     with_cache_lock, with_locked_file,
 };
-use crate::cache::key::{compute_cache_key, validate_cache_key};
-use crate::cache::types::{CacheEntry, SaveCacheEntry};
+use crate::cache::key::{compute_cache_key, compute_run_cache_key, validate_cache_key};
+use crate::cache::types::{CacheEntry, RunCacheEntry, RunState, SaveCacheEntry};
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{Read, Write};
@@ -20,15 +20,16 @@ pub enum CacheInspectionState {
 pub struct CacheInspection {
     path: PathBuf,
     pub label: String,
+    pub cache_key: Option<String>,
     pub state: CacheInspectionState,
 }
 
-pub struct ClearTransaction {
+pub struct RevokeTransaction {
     entries: Vec<CacheInspection>,
     deleted: bool,
 }
 
-impl ClearTransaction {
+impl RevokeTransaction {
     pub fn entries(&self) -> &[CacheInspection] {
         &self.entries
     }
@@ -54,14 +55,14 @@ pub fn inspect_cache(cache_dir: &Path) -> Result<Vec<CacheInspection>, CacheErro
     with_cache_lock(cache_dir, LockMode::Shared, || inspect_unlocked(cache_dir))
 }
 
-pub fn clear_transaction<T>(
+pub fn revoke_transaction<T>(
     cache_dir: &Path,
-    operation: impl FnOnce(&mut ClearTransaction) -> T,
+    operation: impl FnOnce(&mut RevokeTransaction) -> T,
 ) -> Result<T, CacheError> {
     with_locked_file(cache_dir, LockMode::Exclusive, |lock| {
         increment_epoch(lock)?;
         let entries = inspect_unlocked(cache_dir)?;
-        let mut transaction = ClearTransaction {
+        let mut transaction = RevokeTransaction {
             entries,
             deleted: false,
         };
@@ -93,12 +94,16 @@ fn inspect_unlocked(cache_dir: &Path) -> Result<Vec<CacheInspection>, CacheError
                 }
             })
             .collect();
+        let cache_key = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .filter(|value| validate_cache_key(value).is_ok())
+            .map(str::to_owned);
         let state = match read_cache_entry(&path) {
             Ok(Some(entry)) => {
-                let key = path.file_stem().and_then(|value| value.to_str());
-                let consistent = key.is_some_and(|key| {
-                    validate_cache_key(key).is_ok() && validate_entry_key(key, &entry).is_ok()
-                });
+                let consistent = cache_key
+                    .as_deref()
+                    .is_some_and(|key| validate_entry_key(key, &entry).is_ok());
                 if !consistent {
                     CacheInspectionState::Invalid
                 } else if entry.is_current() {
@@ -109,7 +114,12 @@ fn inspect_unlocked(cache_dir: &Path) -> Result<Vec<CacheInspection>, CacheError
             }
             Ok(None) | Err(_) => CacheInspectionState::Invalid,
         };
-        entries.push(CacheInspection { path, label, state });
+        entries.push(CacheInspection {
+            path,
+            label,
+            cache_key,
+            state,
+        });
     }
     entries.sort_by(|left, right| left.label.cmp(&right.label));
     Ok(entries)
@@ -173,6 +183,9 @@ fn save_unlocked(
     let cache_file = cache_file_path(cache_dir, hash_key);
     if let Some(existing) = read_cache_entry(&cache_file)? {
         validate_entry_key(hash_key, &existing)?;
+        if matches!(&existing, CacheEntry::Run(_)) {
+            return Err(CacheError::RunCollision(hash_key.to_owned()));
+        }
         if existing.kind_name() != entry.kind_name() {
             return Err(CacheError::UnexpectedKind {
                 expected: entry.kind_name(),
@@ -208,7 +221,12 @@ fn persist_cache_file(
 }
 
 fn validate_entry_key(hash_key: &str, entry: &CacheEntry) -> Result<(), CacheError> {
-    let actual_key = compute_cache_key(entry.profile(), entry.repo_scope());
+    let actual_key = match entry {
+        CacheEntry::Root(_) | CacheEntry::Derived(_) => {
+            compute_cache_key(entry.profile(), entry.repo_scope())
+        }
+        CacheEntry::Run(entry) => compute_run_cache_key(&entry.run_id),
+    };
     if actual_key == hash_key {
         Ok(())
     } else {
@@ -217,6 +235,183 @@ fn validate_entry_key(hash_key: &str, entry: &CacheEntry) -> Result<(), CacheErr
             actual_key,
         })
     }
+}
+
+pub fn transition_run_to_running(
+    cache_dir: &Path,
+    cache_key: &str,
+    run_id: &str,
+    wrapper_pid: u32,
+    child_pid: u32,
+) -> Result<RunCacheEntry, CacheError> {
+    update_run(cache_dir, cache_key, |entry| {
+        if entry.run_id != run_id
+            || entry.wrapper_pid != wrapper_pid
+            || entry.child_pid.is_some()
+            || entry.state != RunState::Pending
+        {
+            return Err(CacheError::InvalidRunTransition(
+                "pending run ownership did not match",
+            ));
+        }
+        entry.child_pid = Some(child_pid);
+        entry.state = RunState::Running;
+        Ok(())
+    })
+}
+
+pub fn mark_pending_run_for_cleanup(
+    cache_dir: &Path,
+    cache_key: &str,
+    run_id: &str,
+    wrapper_pid: u32,
+    child_pid: Option<u32>,
+) -> Result<RunCacheEntry, CacheError> {
+    update_run(cache_dir, cache_key, |entry| {
+        if entry.run_id != run_id
+            || entry.wrapper_pid != wrapper_pid
+            || entry.child_pid.is_some()
+            || entry.state != RunState::Pending
+        {
+            return Err(CacheError::InvalidRunTransition(
+                "pending run ownership did not match",
+            ));
+        }
+        entry.child_pid = child_pid;
+        entry.state = RunState::CleanupPending;
+        Ok(())
+    })
+}
+
+pub fn claim_released_run(
+    cache_dir: &Path,
+    cache_key: &str,
+    run_id: &str,
+    wrapper_pid: u32,
+    child_pid: u32,
+) -> Result<RunCacheEntry, CacheError> {
+    update_run(cache_dir, cache_key, |entry| {
+        if entry.run_id != run_id
+            || entry.wrapper_pid != wrapper_pid
+            || entry.child_pid != Some(child_pid)
+            || entry.state != RunState::Running
+        {
+            return Err(CacheError::InvalidRunTransition(
+                "released run ownership did not match",
+            ));
+        }
+        entry.state = RunState::CleanupPending;
+        Ok(())
+    })
+}
+
+pub fn claim_abandoned_run(
+    cache_dir: &Path,
+    cache_key: &str,
+    expected: &RunCacheEntry,
+) -> Result<RunCacheEntry, CacheError> {
+    update_run(cache_dir, cache_key, |entry| {
+        if entry != expected || !matches!(entry.state, RunState::Pending | RunState::Running) {
+            return Err(CacheError::InvalidRunTransition(
+                "abandoned run changed while checking liveness",
+            ));
+        }
+        entry.state = RunState::CleanupPending;
+        Ok(())
+    })
+}
+
+pub fn delete_run_after_cleanup(
+    cache_dir: &Path,
+    cache_key: &str,
+    expected: &RunCacheEntry,
+) -> Result<bool, CacheError> {
+    if !cache_dir_exists(cache_dir)? {
+        return Ok(false);
+    }
+    validate_cache_key(cache_key)?;
+    with_cache_lock(cache_dir, LockMode::Exclusive, || {
+        let path = cache_file_path(cache_dir, cache_key);
+        let Some(entry) = read_cache_entry(&path)? else {
+            return Ok(false);
+        };
+        validate_entry_key(cache_key, &entry)?;
+        match entry {
+            CacheEntry::Run(entry)
+                if entry == *expected && entry.state == RunState::CleanupPending =>
+            {
+                fs::remove_file(path).map_err(CacheError::Io)?;
+                sync_cache_dir(cache_dir)?;
+                Ok(true)
+            }
+            CacheEntry::Run(_) => Err(CacheError::InvalidRunTransition(
+                "cleanup deletion ownership did not match",
+            )),
+            other => Err(CacheError::UnexpectedKind {
+                expected: "run",
+                actual: other.kind_name(),
+            }),
+        }
+    })
+}
+
+pub fn delete_entry_if_unchanged(
+    cache_dir: &Path,
+    cache_key: &str,
+    expected: &CacheEntry,
+) -> Result<bool, CacheError> {
+    if !cache_dir_exists(cache_dir)? {
+        return Ok(false);
+    }
+    validate_cache_key(cache_key)?;
+    with_cache_lock(cache_dir, LockMode::Exclusive, || {
+        let path = cache_file_path(cache_dir, cache_key);
+        let Some(entry) = read_cache_entry(&path)? else {
+            return Ok(false);
+        };
+        validate_entry_key(cache_key, &entry)?;
+        if &entry != expected {
+            return Ok(false);
+        }
+        fs::remove_file(path).map_err(CacheError::Io)?;
+        sync_cache_dir(cache_dir)?;
+        Ok(true)
+    })
+}
+
+fn update_run(
+    cache_dir: &Path,
+    cache_key: &str,
+    operation: impl FnOnce(&mut RunCacheEntry) -> Result<(), CacheError>,
+) -> Result<RunCacheEntry, CacheError> {
+    ensure_cache_dir(cache_dir)?;
+    validate_cache_key(cache_key)?;
+    with_cache_lock(cache_dir, LockMode::Exclusive, || {
+        let path = cache_file_path(cache_dir, cache_key);
+        let entry = read_cache_entry(&path)?.ok_or(CacheError::InvalidRunTransition(
+            "run recovery entry is missing",
+        ))?;
+        validate_entry_key(cache_key, &entry)?;
+        let mut entry = match entry {
+            CacheEntry::Run(entry) => entry,
+            other => {
+                return Err(CacheError::UnexpectedKind {
+                    expected: "run",
+                    actual: other.kind_name(),
+                });
+            }
+        };
+        operation(&mut entry)?;
+        let bytes = serde_json::to_vec_pretty(&CacheEntry::Run(entry)).map_err(CacheError::Json)?;
+        persist_cache_file(cache_dir, &path, &bytes)?;
+        let CacheEntry::Run(entry) = read_cache_entry(&path)?.ok_or(
+            CacheError::InvalidRunTransition("run recovery entry disappeared after transition"),
+        )?
+        else {
+            unreachable!("persisted run entry changed kind")
+        };
+        Ok(entry)
+    })
 }
 
 /// Loads a `CacheEntry` from `cache_dir/<hash_key>.json`.

@@ -8,6 +8,7 @@ use time::{Duration, OffsetDateTime};
 use zeroize::Zeroizing;
 
 pub const CACHE_SCHEMA_VERSION: u32 = 2;
+pub const RUN_CACHE_SCHEMA_VERSION: u32 = 1;
 pub const TOKEN_SAFETY_MARGIN: Duration = Duration::seconds(30);
 
 /// A secret access token that is zeroized on drop and never exposed by `Debug`.
@@ -97,6 +98,7 @@ impl<'de> Deserialize<'de> for TokenExpiry {
 pub enum CacheEntry {
     Root(RootCacheEntry),
     Derived(DerivedCacheEntry),
+    Run(RunCacheEntry),
 }
 
 impl CacheEntry {
@@ -104,6 +106,7 @@ impl CacheEntry {
         match self {
             Self::Root(_) => "root",
             Self::Derived(_) => "derived",
+            Self::Run(_) => "run",
         }
     }
 
@@ -111,6 +114,7 @@ impl CacheEntry {
         match self {
             Self::Root(entry) => &entry.profile,
             Self::Derived(entry) => &entry.profile,
+            Self::Run(entry) => &entry.profile,
         }
     }
 
@@ -118,6 +122,7 @@ impl CacheEntry {
         match self {
             Self::Root(_) => "all",
             Self::Derived(entry) => &entry.repo_scope,
+            Self::Run(entry) => &entry.repo_scope,
         }
     }
 
@@ -125,6 +130,7 @@ impl CacheEntry {
         match self {
             Self::Root(entry) => &entry.access_token,
             Self::Derived(entry) => &entry.access_token,
+            Self::Run(entry) => &entry.access_token,
         }
     }
 
@@ -132,6 +138,7 @@ impl CacheEntry {
         match self {
             Self::Root(entry) => entry.version == CACHE_SCHEMA_VERSION,
             Self::Derived(entry) => entry.version == CACHE_SCHEMA_VERSION,
+            Self::Run(entry) => entry.version == RUN_CACHE_SCHEMA_VERSION,
         }
     }
 
@@ -139,6 +146,7 @@ impl CacheEntry {
         match self {
             Self::Root(entry) => entry.expires_at.is_usable_at(now),
             Self::Derived(entry) => entry.expires_at.is_usable_at(now),
+            Self::Run(entry) => entry.expires_at.is_usable_at(now),
         }
     }
 
@@ -169,6 +177,7 @@ impl fmt::Debug for CacheEntry {
         match self {
             Self::Root(entry) => f.debug_tuple("Root").field(entry).finish(),
             Self::Derived(entry) => f.debug_tuple("Derived").field(entry).finish(),
+            Self::Run(entry) => f.debug_tuple("Run").field(entry).finish(),
         }
     }
 }
@@ -220,6 +229,55 @@ pub struct DerivedCacheEntry {
     pub access_token: AccessToken,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RunState {
+    Pending,
+    Running,
+    CleanupPending,
+}
+
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RunCacheEntry {
+    pub version: u32,
+    pub run_id: String,
+    pub state: RunState,
+    pub wrapper_pid: u32,
+    pub child_pid: Option<u32>,
+    pub profile: String,
+    pub source_profile: String,
+    pub source_authority_fingerprint: String,
+    pub github_user: String,
+    pub repo_scope: String,
+    pub issued_at: String,
+    pub expires_at: TokenExpiry,
+    pub access_token: AccessToken,
+}
+
+impl fmt::Debug for RunCacheEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RunCacheEntry")
+            .field("version", &self.version)
+            .field("run_id", &self.run_id)
+            .field("state", &self.state)
+            .field("wrapper_pid", &self.wrapper_pid)
+            .field("child_pid", &self.child_pid)
+            .field("profile", &self.profile)
+            .field("source_profile", &self.source_profile)
+            .field(
+                "source_authority_fingerprint",
+                &self.source_authority_fingerprint,
+            )
+            .field("github_user", &self.github_user)
+            .field("repo_scope", &self.repo_scope)
+            .field("issued_at", &self.issued_at)
+            .field("expires_at", &self.expires_at)
+            .field("access_token", &self.access_token)
+            .finish()
+    }
+}
+
 impl fmt::Debug for DerivedCacheEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DerivedCacheEntry")
@@ -242,6 +300,7 @@ impl fmt::Debug for DerivedCacheEntry {
 enum CurrentCacheEntryRef<'a> {
     Root(&'a RootCacheEntry),
     Derived(&'a DerivedCacheEntry),
+    Run(&'a RunCacheEntry),
 }
 
 #[derive(Deserialize)]
@@ -249,6 +308,7 @@ enum CurrentCacheEntryRef<'a> {
 enum CurrentCacheEntry {
     Root(RootCacheEntry),
     Derived(DerivedCacheEntry),
+    Run(RunCacheEntry),
 }
 
 impl Serialize for CacheEntry {
@@ -259,6 +319,7 @@ impl Serialize for CacheEntry {
         match self {
             Self::Root(entry) => CurrentCacheEntryRef::Root(entry).serialize(serializer),
             Self::Derived(entry) => CurrentCacheEntryRef::Derived(entry).serialize(serializer),
+            Self::Run(entry) => CurrentCacheEntryRef::Run(entry).serialize(serializer),
         }
     }
 }
@@ -271,6 +332,7 @@ impl<'de> Deserialize<'de> for CacheEntry {
         match CurrentCacheEntry::deserialize(deserializer)? {
             CurrentCacheEntry::Root(entry) => Ok(Self::Root(entry)),
             CurrentCacheEntry::Derived(entry) => Ok(Self::Derived(entry)),
+            CurrentCacheEntry::Run(entry) => Ok(Self::Run(entry)),
         }
     }
 }

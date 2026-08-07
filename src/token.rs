@@ -1,7 +1,9 @@
 mod acquire;
-pub mod clear;
+pub mod cleanup;
 mod error;
+pub mod revoke;
 mod root;
+pub mod run;
 mod types;
 mod validation;
 

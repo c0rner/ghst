@@ -25,11 +25,18 @@ If a `client_secret` were exposed, an attacker could attempt to initiate OAuth D
 - **Interactive Verification Banner:** `ghst` prints a prominent `DEVICE AUTHORIZATION REQUIRED` banner explicitly showing the target GitHub App name. Users are warned to verify the App name before authorizing.
 - **Prohibition of Pre-filled Verification URLs:** `ghst` **never** opens or outputs pre-filled verification URLs containing `?user_code=...`. The browser strictly navigates to `https://github.com/login/device`, forcing the user to manually copy and enter the user code. This prevents 1-click phishing attacks.
 
-### 3. Credential Isolation & Sandboxing (Host IPC Proxy Mode)
-When running untrusted AI tools inside kernel sandboxes (e.g. `nono`, `landlock`, or container namespaces):
-- The sandboxed AI process is **denied access** to `~/.config/ghst/profiles.toml` and local token caches.
-- The host user runs `ghst proxy` in the trusted zone, exposing a restricted Unix domain socket (`GHST_SOCKET`).
-- `ghst proxy` enforces host privilege ceilings (`--allow-profile`), serving scoped tokens over IPC without exposing refresh tokens, `client_secret`s, or parent credentials.
+### 3. One-Off Command Tokens and Sandboxing
+
+`ghst run` always mints a fresh token from a derived profile and launches one command directly,
+without a shell. It sets both `GH_TOKEN` and `GITHUB_TOKEN`, removes the GitHub Enterprise token
+variables, and preserves all other environment variables and command arguments. The token is
+revoked after the command exits. Cleanup never replaces the command's exit result.
+
+The token is recorded in a private recovery entry before the child can use it. If the wrapper or
+GitHub fails during cleanup, `ghst prune` retries abandoned tokens; active recorded processes are
+skipped conservatively. `ghst run` is a credential-lifetime tool, not a sandbox. Use a kernel
+sandbox separately to restrict configuration/cache access and fallback credentials such as GitHub
+CLI storage, Git credential helpers, and SSH keys.
 
 ---
 
@@ -70,9 +77,9 @@ A derived profile's `repo` value is its default selection. Repeated CLI `--repo`
 
 ### Independent Token Lifetimes
 
-GitHub issues a scoped token as a separate user access token with its own `expires_at` and the documented eight-hour lifetime for expiring GitHub App user tokens. Because GitHub serializes that expiry at whole-second precision while `ghst` records receipt time with subsecond precision, lifetime validation allows a one-second rounding tolerance. A scoped token may remain valid after the root token used to mint it has expired or been individually revoked. An expired root may validate an already-cached child but cannot mint a new one.
+GitHub issues a scoped token as a separate user access token with its own `expires_at`. `ghst` takes this GitHub-issued expiry at face value and only requires the token to remain usable beyond its 30-second safety margin; it does not impose a local maximum lifetime. A scoped token may remain valid after the root token used to mint it has expired or been individually revoked. An expired root may validate an already-cached child but cannot mint a new one.
 
-Root-token expiration or individual revocation must not be treated as revoking its children. `ghst clear` explicitly revokes every cached live root and derived token when its root client secret is available before removing its cache entry. A live secretless root is deleted locally, reported as potentially active remotely, and makes `clear` return nonzero. See GitHub's [scoped-token endpoint](https://docs.github.com/en/rest/apps/apps?apiVersion=2022-11-28#create-a-scoped-access-token) and [single-token revocation endpoint](https://docs.github.com/en/rest/apps/oauth-applications?apiVersion=2022-11-28#delete-an-app-token).
+Root-token expiration or individual revocation must not be treated as revoking its children. `ghst revoke --all` attempts to revoke every cached live root, derived, and run token when its root client secret is available before removing its cache entry. A live secretless root is deleted locally, reported as potentially active remotely, and makes `revoke` return nonzero. See GitHub's [scoped-token endpoint](https://docs.github.com/en/rest/apps/apps?apiVersion=2022-11-28#create-a-scoped-access-token) and [single-token revocation endpoint](https://docs.github.com/en/rest/apps/oauth-applications?apiVersion=2022-11-28#delete-an-app-token).
 
 ---
 
@@ -92,12 +99,21 @@ ghst token [--profile name] [--repo all|auto|owner/repo]... [--format text|json|
 # Display active token status
 ghst status
 
-# Clear cached tokens
-ghst clear
+# Revoke all cached credentials and remove their local entries
+ghst revoke --all
 
-# Run Host IPC Proxy daemon for AI sandboxes (v2)
-ghst proxy [--socket path] [--allow-profile name]
+# Run one command with a fresh derived token
+ghst run [--profile name] [--repo all|auto|owner/repo]... -- <command> [args...]
+
+# Recover abandoned run tokens and remove issuer-expired entries
+ghst prune
 ```
+
+`run` accepts derived profiles only and never reuses the token returned by `ghst token`. After
+handoff, a normal child exit is returned unchanged and Unix signal termination maps to
+`128 + signal`. Pre-handoff `ghst` failures return `1`. Revocation failures print a redacted warning,
+leave the entry in `cleanup_pending`, and still return the child's result. `prune` processes global
+recovery explicitly; post-run cleanup targets only that run.
 
 ---
 

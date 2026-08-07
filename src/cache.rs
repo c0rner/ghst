@@ -10,14 +10,17 @@ mod tests;
 
 pub use error::CacheError;
 pub use fs::cache_epoch;
-pub use key::compute_cache_key;
+pub use key::{compute_cache_key, compute_run_cache_key};
 pub use storage::{
-    CacheInspection, CacheInspectionState, clear_transaction, inspect_cache, load_cache_entry,
-    save_cache_candidate,
+    CacheInspection, CacheInspectionState, claim_abandoned_run, claim_released_run,
+    delete_entry_if_unchanged, delete_run_after_cleanup, inspect_cache, load_cache_entry,
+    mark_pending_run_for_cleanup, revoke_transaction, save_cache_candidate,
+    transition_run_to_running,
 };
 #[cfg(test)]
 pub use storage::{delete_cache_entry, list_all_cache_entries, save_cache_entry};
 pub use types::{
-    AccessToken, CACHE_SCHEMA_VERSION, CacheEntry, DerivedCacheEntry, RootCacheEntry,
-    SaveCacheEntry, TokenExpiry, authority_fingerprint, format_rfc3339, policy_fingerprint,
+    AccessToken, CACHE_SCHEMA_VERSION, CacheEntry, DerivedCacheEntry, RUN_CACHE_SCHEMA_VERSION,
+    RootCacheEntry, RunCacheEntry, RunState, SaveCacheEntry, TokenExpiry, authority_fingerprint,
+    format_rfc3339, policy_fingerprint,
 };

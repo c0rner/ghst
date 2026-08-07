@@ -159,11 +159,13 @@ fn load_valid_derived_entry(
             && entry.parent_generation == provenance.parent_generation
             && entry.expires_at.is_usable_at(now))
         .then_some(entry)),
-        CacheEntry::Root(_) => Err(TokenError::UnexpectedCacheKind {
-            profile: provenance.profile_name.to_owned(),
-            expected: "derived",
-            actual: "root",
-        }),
+        other @ (CacheEntry::Root(_) | CacheEntry::Run(_)) => {
+            Err(TokenError::UnexpectedCacheKind {
+                profile: provenance.profile_name.to_owned(),
+                expected: "derived",
+                actual: other.kind_name(),
+            })
+        }
     }
 }
 
@@ -254,7 +256,7 @@ fn mint_and_persist<C: ScopedTokenClient>(
     match saved {
         SaveCacheEntry::Saved => match candidate {
             CacheEntry::Derived(entry) => Ok(acquired_derived(entry)),
-            CacheEntry::Root(_) => unreachable!("candidate is derived"),
+            CacheEntry::Root(_) | CacheEntry::Run(_) => unreachable!("candidate is derived"),
         },
         SaveCacheEntry::Retained(retained) => {
             if let Err(source) = client.delete_token(
@@ -272,11 +274,13 @@ fn mint_and_persist<C: ScopedTokenClient>(
             }
             match *retained {
                 CacheEntry::Derived(entry) => Ok(acquired_derived(entry)),
-                CacheEntry::Root(entry) => Err(TokenError::UnexpectedCacheKind {
-                    profile: entry.profile,
-                    expected: "derived",
-                    actual: "root",
-                }),
+                other @ (CacheEntry::Root(_) | CacheEntry::Run(_)) => {
+                    Err(TokenError::UnexpectedCacheKind {
+                        profile: other.profile().to_owned(),
+                        expected: "derived",
+                        actual: other.kind_name(),
+                    })
+                }
             }
         }
     }

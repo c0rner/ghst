@@ -1,12 +1,13 @@
 use crate::cache::error::CacheError;
 use crate::cache::fs::{cache_file_path, create_private_tempfile, ensure_cache_dir};
-use crate::cache::key::compute_cache_key;
+use crate::cache::key::{compute_cache_key, compute_run_cache_key};
 use crate::cache::storage::{
-    delete_cache_entry, list_cache_entries, load_cache_entry, save_cache_entry,
+    claim_abandoned_run, claim_released_run, delete_cache_entry, delete_run_after_cleanup,
+    list_cache_entries, load_cache_entry, save_cache_entry, transition_run_to_running,
 };
 use crate::cache::types::{
-    CACHE_SCHEMA_VERSION, CacheEntry, DerivedCacheEntry, RootCacheEntry, SaveCacheEntry,
-    TokenExpiry, authority_fingerprint, format_rfc3339,
+    CACHE_SCHEMA_VERSION, CacheEntry, DerivedCacheEntry, RUN_CACHE_SCHEMA_VERSION, RootCacheEntry,
+    RunCacheEntry, RunState, SaveCacheEntry, TokenExpiry, authority_fingerprint, format_rfc3339,
 };
 use std::fs;
 use std::io::Write;
@@ -34,6 +35,24 @@ fn cache_dir() -> tempfile::TempDir {
     tempfile::tempdir().unwrap()
 }
 
+fn run_entry(run_id: &str, state: RunState) -> CacheEntry {
+    CacheEntry::Run(RunCacheEntry {
+        version: RUN_CACHE_SCHEMA_VERSION,
+        run_id: run_id.into(),
+        state,
+        wrapper_pid: 100,
+        child_pid: None,
+        profile: "reader".into(),
+        source_profile: "developer".into(),
+        source_authority_fingerprint: authority_fingerprint("id", "acme"),
+        github_user: "octocat".into(),
+        repo_scope: "acme/api".into(),
+        issued_at: format_rfc3339(OffsetDateTime::now_utc()),
+        expires_at: TokenExpiry::new(OffsetDateTime::now_utc() + Duration::hours(1)),
+        access_token: "run-token".into(),
+    })
+}
+
 #[test]
 fn cache_key_is_profile_and_canonical_scope_hash() {
     let first = compute_cache_key("developer", "all");
@@ -43,6 +62,69 @@ fn cache_key_is_profile_and_canonical_scope_hash() {
         first,
         "44e9b443f6a49a44a6a5588f3be3923a3c1ec1c1f2bfd419addebcde4d598411"
     );
+}
+
+#[test]
+fn run_keys_are_unique_domain_separated_and_reject_collisions() {
+    let first = compute_run_cache_key("first");
+    let second = compute_run_cache_key("second");
+    assert_ne!(first, second);
+    assert_ne!(first, compute_cache_key("run", "first"));
+
+    let temp = cache_dir();
+    let directory = temp.path().join("cache");
+    let entry = run_entry("first", RunState::Pending);
+    assert!(matches!(
+        save_cache_entry(&directory, &first, &entry).unwrap(),
+        SaveCacheEntry::Saved
+    ));
+    assert!(matches!(
+        save_cache_entry(&directory, &first, &entry),
+        Err(CacheError::RunCollision(_))
+    ));
+    assert!(matches!(
+        save_cache_entry(&directory, &second, &entry),
+        Err(CacheError::InconsistentMetadata { .. })
+    ));
+}
+
+#[test]
+fn run_lifecycle_transitions_require_exact_ownership() {
+    let temp = cache_dir();
+    let directory = temp.path().join("cache");
+    let key = compute_run_cache_key("owned-run");
+    save_cache_entry(&directory, &key, &run_entry("owned-run", RunState::Pending)).unwrap();
+    assert!(matches!(
+        transition_run_to_running(&directory, &key, "wrong", 100, 200),
+        Err(CacheError::InvalidRunTransition(_))
+    ));
+    let running = transition_run_to_running(&directory, &key, "owned-run", 100, 200).unwrap();
+    assert_eq!(running.state, RunState::Running);
+    assert_eq!(running.child_pid, Some(200));
+    assert!(matches!(
+        claim_released_run(&directory, &key, "owned-run", 100, 201),
+        Err(CacheError::InvalidRunTransition(_))
+    ));
+    let claimed = claim_released_run(&directory, &key, "owned-run", 100, 200).unwrap();
+    assert_eq!(claimed.state, RunState::CleanupPending);
+    assert!(delete_run_after_cleanup(&directory, &key, &claimed).unwrap());
+    assert!(load_cache_entry(&directory, &key).unwrap().is_none());
+}
+
+#[test]
+fn abandoned_transition_rejects_a_stale_snapshot() {
+    let temp = cache_dir();
+    let directory = temp.path().join("cache");
+    let key = compute_run_cache_key("abandoned");
+    save_cache_entry(&directory, &key, &run_entry("abandoned", RunState::Pending)).unwrap();
+    let CacheEntry::Run(snapshot) = load_cache_entry(&directory, &key).unwrap().unwrap() else {
+        panic!("expected run entry")
+    };
+    transition_run_to_running(&directory, &key, "abandoned", 100, 200).unwrap();
+    assert!(matches!(
+        claim_abandoned_run(&directory, &key, &snapshot),
+        Err(CacheError::InvalidRunTransition(_))
+    ));
 }
 
 #[test]
@@ -302,7 +384,9 @@ fn compatible_entry_is_retained_and_wrong_kind_fails_closed() {
             CacheEntry::Root(RootCacheEntry { access_token, .. }) => {
                 assert_eq!(access_token.as_ref(), "existing");
             }
-            CacheEntry::Derived(_) => panic!("expected retained root entry"),
+            CacheEntry::Derived(_) | CacheEntry::Run(_) => {
+                panic!("expected retained root entry")
+            }
         },
         SaveCacheEntry::Saved => panic!("expected compatible entry to be retained"),
     }

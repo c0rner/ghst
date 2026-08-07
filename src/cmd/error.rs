@@ -16,7 +16,10 @@ pub enum CmdError {
     InvalidOutputFormat(String),
     OAuthExpired,
     OAuthAccessDenied,
-    ClearIncomplete { failures: usize },
+    PruneIncomplete { failures: usize },
+    RevokeAllRequired,
+    RevokeIncomplete { failures: usize },
+    MissingRunCommand,
     Io(std::io::Error),
 }
 
@@ -58,9 +61,22 @@ impl fmt::Display for CmdError {
                 write!(f, "device code expired; run `ghst login` again")
             }
             Self::OAuthAccessDenied => write!(f, "authorization request was denied by the user"),
-            Self::ClearIncomplete { failures } => {
-                write!(f, "cache cleanup was incomplete ({failures} failure(s))")
+            Self::PruneIncomplete { failures } => {
+                write!(f, "cache pruning was incomplete ({failures} failure(s))")
             }
+            Self::RevokeAllRequired => {
+                write!(
+                    f,
+                    "revoke requires `--all` because it affects every cached credential"
+                )
+            }
+            Self::RevokeIncomplete { failures } => {
+                write!(
+                    f,
+                    "credential revocation was incomplete ({failures} failure(s))"
+                )
+            }
+            Self::MissingRunCommand => write!(f, "run requires a command after `--`"),
             Self::Io(err) => write!(f, "IO error: {err}"),
         }
     }
@@ -80,7 +96,10 @@ impl std::error::Error for CmdError {
             | Self::InvalidOutputFormat(_)
             | Self::OAuthExpired
             | Self::OAuthAccessDenied
-            | Self::ClearIncomplete { .. } => None,
+            | Self::PruneIncomplete { .. }
+            | Self::RevokeAllRequired
+            | Self::RevokeIncomplete { .. }
+            | Self::MissingRunCommand => None,
         }
     }
 }

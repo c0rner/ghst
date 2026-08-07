@@ -1,8 +1,9 @@
-pub mod clear;
 pub mod error;
 pub mod login;
 pub mod profiles;
-pub mod proxy;
+pub mod prune;
+pub mod revoke;
+pub mod run;
 pub mod status;
 pub mod token;
 
@@ -10,6 +11,7 @@ use crate::config::Config;
 use argh::FromArgs;
 pub use error::CmdError;
 use std::env;
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -31,8 +33,9 @@ pub enum SubCommand {
     Token(TokenCmd),
     Status(StatusCmd),
     Profiles(ProfilesCmd),
-    Clear(ClearCmd),
-    Proxy(ProxyCmd),
+    Revoke(RevokeCmd),
+    Prune(PruneCmd),
+    Run(RunCmd),
 }
 
 /// Authenticate a profile via GitHub App OAuth Device Flow.
@@ -79,22 +82,35 @@ pub struct ProfilesCmd {
     pub verbose: bool,
 }
 
-/// Clear cached tokens.
+/// Revoke all cached credentials and remove their local entries.
 #[derive(FromArgs, PartialEq, Eq, Debug)]
-#[argh(subcommand, name = "clear")]
-pub struct ClearCmd {}
+#[argh(subcommand, name = "revoke")]
+pub struct RevokeCmd {
+    /// required acknowledgement that every cached credential will be revoked
+    #[argh(switch)]
+    pub all: bool,
+}
 
-/// Run IPC proxy daemon for host isolation (v2).
+/// Remove expired entries and revoke tokens from abandoned runs.
 #[derive(FromArgs, PartialEq, Eq, Debug)]
-#[argh(subcommand, name = "proxy")]
-pub struct ProxyCmd {
-    /// unix domain socket path
-    #[argh(option, short = 's')]
-    pub socket: Option<PathBuf>,
+#[argh(subcommand, name = "prune")]
+pub struct PruneCmd {}
 
-    /// allowed profile name (may be specified multiple times to restrict proxy execution)
-    #[argh(option, short = 'a')]
-    pub allow_profile: Vec<String>,
+/// Run a command with a fresh derived GitHub token.
+#[derive(FromArgs, PartialEq, Eq, Debug)]
+#[argh(subcommand, name = "run")]
+pub struct RunCmd {
+    /// target derived profile name (override `GHST_PROFILE`)
+    #[argh(option, short = 'p')]
+    pub profile: Option<String>,
+
+    /// derived-profile repository selection (all, auto, or owner/repo; repeat to select repositories)
+    #[argh(option, short = 'r')]
+    pub repo: Vec<String>,
+
+    /// command and arguments to execute (precede with --)
+    #[argh(positional, greedy)]
+    pub command: Vec<OsString>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -202,17 +218,19 @@ mod tests {
     }
 
     #[test]
-    fn test_proxy_cmd_allowed_profiles() {
+    fn test_run_cmd_parsing_preserves_command_arguments() {
         let args = GhstCli::from_args(
             &["ghst"],
             &[
-                "proxy",
-                "--socket",
-                "/tmp/ghst.sock",
-                "--allow-profile",
+                "run",
+                "--profile",
                 "reader",
-                "--allow-profile",
-                "contributor",
+                "--repo",
+                "acme/api",
+                "--",
+                "printf",
+                "%s",
+                "a b",
             ],
         )
         .unwrap();
@@ -220,12 +238,30 @@ mod tests {
             args,
             GhstCli {
                 config: None,
-                command: SubCommand::Proxy(ProxyCmd {
-                    socket: Some(PathBuf::from("/tmp/ghst.sock")),
-                    allow_profile: vec!["reader".to_string(), "contributor".to_string()],
+                command: SubCommand::Run(RunCmd {
+                    profile: Some("reader".to_string()),
+                    repo: vec!["acme/api".to_string()],
+                    command: vec!["printf".into(), "%s".into(), "a b".into()],
                 })
             }
         );
+    }
+
+    #[test]
+    fn test_maintenance_commands_and_removed_commands() {
+        assert!(matches!(
+            GhstCli::from_args(&["ghst"], &["prune"]).unwrap().command,
+            SubCommand::Prune(PruneCmd {})
+        ));
+        assert_eq!(
+            GhstCli::from_args(&["ghst"], &["revoke", "--all"])
+                .unwrap()
+                .command,
+            SubCommand::Revoke(RevokeCmd { all: true })
+        );
+        assert!(GhstCli::from_args(&["ghst"], &["clear"]).is_err());
+        assert!(GhstCli::from_args(&["ghst"], &["flush"]).is_err());
+        assert!(GhstCli::from_args(&["ghst"], &["proxy"]).is_err());
     }
 
     #[test]

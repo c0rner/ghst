@@ -16,6 +16,8 @@ pub enum TokenError {
     NoRootTokenCached(String),
     NoSourceTokenCached(String),
     RootScopeRejected(String),
+    RunRequiresDerived(String),
+    Random(getrandom::Error),
     UnexpectedCacheKind {
         profile: String,
         expected: &'static str,
@@ -69,6 +71,13 @@ impl fmt::Display for TokenError {
             Self::RootScopeRejected(profile) => {
                 write!(f, "root profile '{profile}' cannot be repository-scoped")
             }
+            Self::RunRequiresDerived(profile) => {
+                write!(
+                    f,
+                    "profile '{profile}' is a root profile; run requires a derived profile"
+                )
+            }
+            Self::Random(error) => write!(f, "operating-system randomness unavailable: {error}"),
             Self::UnexpectedCacheKind {
                 profile,
                 expected,
@@ -106,6 +115,7 @@ impl std::error::Error for TokenError {
             Self::Cache(error) => Some(error),
             Self::GitHub(error) => Some(error),
             Self::Repository(error) => Some(error),
+            Self::Random(error) => Some(error),
             Self::RevocationFailed { source, .. } => Some(source),
             _ => None,
         }
@@ -130,6 +140,12 @@ impl From<RepositoryError> for TokenError {
     }
 }
 
+impl From<getrandom::Error> for TokenError {
+    fn from(error: getrandom::Error) -> Self {
+        Self::Random(error)
+    }
+}
+
 #[cfg(test)]
 mod error_tests {
     use super::TokenError;
@@ -145,5 +161,14 @@ mod error_tests {
             assert!(!message.contains("ghst"));
             assert!(!message.contains("--repo"));
         }
+    }
+
+    #[test]
+    fn random_error_exposes_its_source() {
+        let random = getrandom::Error::UNSUPPORTED;
+        let error = TokenError::from(random);
+
+        let source = std::error::Error::source(&error).expect("random error should have a source");
+        assert_eq!(source.downcast_ref::<getrandom::Error>(), Some(&random));
     }
 }

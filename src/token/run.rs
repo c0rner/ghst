@@ -1,0 +1,332 @@
+use super::{TokenError, load_current_root_entry, revoke_with_context, root_cache_key};
+use crate::cache::{
+    CacheEntry, RUN_CACHE_SCHEMA_VERSION, RunCacheEntry, RunState, SaveCacheEntry, cache_epoch,
+    compute_run_cache_key, format_rfc3339, save_cache_candidate,
+};
+use crate::config::{Config, DerivedProfile, ProfileConfig, RootProfile};
+use crate::github::{ScopedTokenClient, ScopedTokenResponse};
+use crate::repository::{RepositoryError, RepositorySelection};
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
+use std::path::Path;
+use time::OffsetDateTime;
+
+pub struct MintRunRequest<'a> {
+    pub config: &'a Config,
+    pub cache_dir: &'a Path,
+    pub profile_name: &'a str,
+    pub repositories: &'a [String],
+    pub wrapper_pid: u32,
+    pub now: OffsetDateTime,
+}
+
+pub struct PendingRun {
+    pub cache_key: String,
+    pub run_id: String,
+    pub wrapper_pid: u32,
+    pub access_token: crate::cache::AccessToken,
+}
+
+impl std::fmt::Debug for PendingRun {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PendingRun")
+            .field("cache_key", &self.cache_key)
+            .field("run_id", &self.run_id)
+            .field("wrapper_pid", &self.wrapper_pid)
+            .field("access_token", &self.access_token)
+            .finish()
+    }
+}
+
+pub fn mint<C: ScopedTokenClient>(
+    client: &C,
+    request: &MintRunRequest<'_>,
+    resolve_auto: impl FnMut() -> Result<String, RepositoryError>,
+) -> Result<PendingRun, TokenError> {
+    let (profile, source) = resolve_profiles(request.config, request.profile_name)?;
+    let selection = RepositorySelection::resolve(
+        request.repositories,
+        &profile.repo,
+        &source.github_app.account,
+        resolve_auto,
+    )?;
+    let scope = selection.canonical();
+    let repositories = selection.repository_names();
+    let permissions = profile
+        .permissions
+        .iter()
+        .map(|(name, level)| (name.clone(), level.to_string()))
+        .collect::<BTreeMap<_, _>>();
+    let root = load_current_root_entry(request.cache_dir, &profile.source, &source.github_app)?
+        .ok_or_else(|| TokenError::NoSourceTokenCached(profile.source.clone()))?;
+    if !root.expires_at.is_usable_at(request.now) {
+        return Err(TokenError::NoSourceTokenCached(profile.source.clone()));
+    }
+    let secret = source
+        .github_app
+        .client_secret
+        .as_deref()
+        .ok_or_else(|| TokenError::ClientSecretRequired(profile.source.clone()))?;
+    let run_id = generate_run_id()?;
+    let cache_key = compute_run_cache_key(&run_id);
+    let epoch = cache_epoch(request.cache_dir)?;
+    let generation = root.generation_fingerprint();
+    let ScopedTokenResponse {
+        token, expires_at, ..
+    } = client.create_scoped_token(
+        &source.github_app.client_id,
+        secret,
+        root.access_token.as_ref(),
+        &source.github_app.account,
+        repositories.as_deref(),
+        &permissions,
+    )?;
+    let expiry = match super::validate_scoped_expiry(expires_at.as_deref(), request.now) {
+        Ok(expiry) => expiry,
+        Err(error) => return Err(revoke_with_context(client, source, &token, error)),
+    };
+    let candidate = CacheEntry::Run(RunCacheEntry {
+        version: RUN_CACHE_SCHEMA_VERSION,
+        run_id: run_id.clone(),
+        state: RunState::Pending,
+        wrapper_pid: request.wrapper_pid,
+        child_pid: None,
+        profile: request.profile_name.to_owned(),
+        source_profile: profile.source.clone(),
+        source_authority_fingerprint: crate::cache::authority_fingerprint(
+            &source.github_app.client_id,
+            &source.github_app.account,
+        ),
+        github_user: root.github_user,
+        repo_scope: scope,
+        issued_at: format_rfc3339(request.now),
+        expires_at: expiry,
+        access_token: token,
+    });
+    let saved = save_cache_candidate(
+        request.cache_dir,
+        &cache_key,
+        &candidate,
+        epoch,
+        Some((&root_cache_key(&profile.source), &generation)),
+    );
+    match saved {
+        Ok(SaveCacheEntry::Saved) => {
+            let CacheEntry::Run(entry) = candidate else {
+                unreachable!("run candidate changed kind")
+            };
+            Ok(PendingRun {
+                cache_key,
+                run_id,
+                wrapper_pid: request.wrapper_pid,
+                access_token: entry.access_token,
+            })
+        }
+        Ok(SaveCacheEntry::Retained(_)) => unreachable!("run entries are never reusable"),
+        Err(source_error) => Err(revoke_with_context(
+            client,
+            source,
+            candidate.access_token(),
+            TokenError::Cache(source_error),
+        )),
+    }
+}
+
+fn resolve_profiles<'a>(
+    config: &'a Config,
+    profile_name: &str,
+) -> Result<(&'a DerivedProfile, &'a RootProfile), TokenError> {
+    let profile = match config.profiles.get(profile_name) {
+        Some(ProfileConfig::Derived(profile)) => profile,
+        Some(ProfileConfig::Root(_)) => {
+            return Err(TokenError::RunRequiresDerived(profile_name.to_owned()));
+        }
+        None => return Err(TokenError::ProfileNotFound(profile_name.to_owned())),
+    };
+    match config.profiles.get(&profile.source) {
+        Some(ProfileConfig::Root(source)) => Ok((profile, source)),
+        Some(ProfileConfig::Derived(_)) => Err(TokenError::SourceProfileNotRoot {
+            profile: profile_name.to_owned(),
+            source: profile.source.clone(),
+        }),
+        None => Err(TokenError::ProfileNotFound(profile.source.clone())),
+    }
+}
+
+fn generate_run_id() -> Result<String, TokenError> {
+    let mut random = [0_u8; 32];
+    getrandom::fill(&mut random)?;
+    let mut encoded = String::with_capacity(64);
+    for byte in random {
+        let _ = write!(encoded, "{byte:02x}");
+    }
+    Ok(encoded)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::cache::{
+        CACHE_SCHEMA_VERSION, DerivedCacheEntry, RootCacheEntry, TokenExpiry,
+        authority_fingerprint, compute_cache_key, compute_run_cache_key, policy_fingerprint,
+        save_cache_entry,
+    };
+    use crate::github::{GitHubError, RevokeTokenClient};
+    use std::cell::Cell;
+    use time::Duration;
+
+    struct MockClient(Cell<usize>);
+
+    impl RevokeTokenClient for MockClient {
+        fn delete_token(
+            &self,
+            _client_id: &str,
+            _client_secret: &str,
+            _access_token: &str,
+        ) -> Result<(), GitHubError> {
+            Ok(())
+        }
+    }
+
+    impl ScopedTokenClient for MockClient {
+        fn create_scoped_token(
+            &self,
+            _client_id: &str,
+            _client_secret: &str,
+            _root_token: &str,
+            _target: &str,
+            _repositories: Option<&[String]>,
+            _permissions: &BTreeMap<String, String>,
+        ) -> Result<ScopedTokenResponse, GitHubError> {
+            let number = self.0.get() + 1;
+            self.0.set(number);
+            Ok(ScopedTokenResponse {
+                token: format!("fresh-{number}").into(),
+                expires_at: Some(
+                    TokenExpiry::new(OffsetDateTime::now_utc() + Duration::hours(1)).to_string(),
+                ),
+                permissions: None,
+                repositories: None,
+            })
+        }
+    }
+
+    fn config() -> Config {
+        r#"
+version = 1
+default_profile = "reader"
+[profile.developer]
+github_app.account = "acme"
+github_app.client_id = "id"
+github_app.client_secret = "secret"
+[profile.reader]
+source = "developer"
+repo = "acme/api"
+permissions = { contents = "read" }
+"#
+        .parse()
+        .unwrap()
+    }
+
+    fn cache_root(cache_dir: &Path, now: OffsetDateTime) {
+        save_cache_entry(
+            cache_dir,
+            &compute_cache_key("developer", "all"),
+            &CacheEntry::Root(RootCacheEntry {
+                version: CACHE_SCHEMA_VERSION,
+                profile: "developer".into(),
+                authority_fingerprint: authority_fingerprint("id", "acme"),
+                github_user: "octocat".into(),
+                issued_at: format_rfc3339(now),
+                expires_at: TokenExpiry::new(now + Duration::hours(1)),
+                access_token: "root".into(),
+            }),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn run_ids_are_unique_random_and_domain_separated() {
+        let first = generate_run_id().unwrap();
+        let second = generate_run_id().unwrap();
+        assert_eq!(first.len(), 64);
+        assert_ne!(first, second);
+        assert_ne!(
+            compute_run_cache_key(&first),
+            compute_cache_key("run", &first)
+        );
+    }
+
+    #[test]
+    fn each_run_mints_fresh_despite_a_reusable_derived_token() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let now = OffsetDateTime::now_utc();
+        let config = config();
+        cache_root(&cache_dir, now);
+        let permissions = BTreeMap::from([("contents".into(), "read".into())]);
+        save_cache_entry(
+            &cache_dir,
+            &compute_cache_key("reader", "acme/api"),
+            &CacheEntry::Derived(DerivedCacheEntry {
+                version: CACHE_SCHEMA_VERSION,
+                profile: "reader".into(),
+                source_profile: "developer".into(),
+                parent_generation: match crate::cache::load_cache_entry(
+                    &cache_dir,
+                    &compute_cache_key("developer", "all"),
+                )
+                .unwrap()
+                .unwrap()
+                {
+                    CacheEntry::Root(entry) => entry.generation_fingerprint(),
+                    CacheEntry::Derived(_) | CacheEntry::Run(_) => panic!("expected root"),
+                },
+                policy_fingerprint: policy_fingerprint("acme", "acme/api", &permissions),
+                github_user: "octocat".into(),
+                repo_scope: "acme/api".into(),
+                issued_at: format_rfc3339(now),
+                expires_at: TokenExpiry::new(now + Duration::hours(1)),
+                access_token: "reusable".into(),
+            }),
+        )
+        .unwrap();
+        let client = MockClient(Cell::new(0));
+        let request = MintRunRequest {
+            config: &config,
+            cache_dir: &cache_dir,
+            profile_name: "reader",
+            repositories: &[],
+            wrapper_pid: std::process::id(),
+            now,
+        };
+        let first = mint(&client, &request, || panic!("auto is not used")).unwrap();
+        let second = mint(&client, &request, || panic!("auto is not used")).unwrap();
+        assert_eq!(first.access_token.as_ref(), "fresh-1");
+        assert_eq!(second.access_token.as_ref(), "fresh-2");
+        assert_ne!(first.cache_key, second.cache_key);
+        assert_eq!(client.0.get(), 2);
+    }
+
+    #[test]
+    fn run_rejects_root_profiles_before_minting() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = config();
+        let client = MockClient(Cell::new(0));
+        let result = mint(
+            &client,
+            &MintRunRequest {
+                config: &config,
+                cache_dir: temp.path(),
+                profile_name: "developer",
+                repositories: &[],
+                wrapper_pid: std::process::id(),
+                now: OffsetDateTime::now_utc(),
+            },
+            || panic!("auto is not used"),
+        );
+        assert!(matches!(result, Err(TokenError::RunRequiresDerived(_))));
+        assert_eq!(client.0.get(), 0);
+    }
+}

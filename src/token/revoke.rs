@@ -1,10 +1,10 @@
-use crate::cache::{CacheEntry, CacheInspectionState, clear_transaction};
+use crate::cache::{CacheEntry, CacheInspectionState, revoke_transaction};
 use crate::config::{Config, ProfileConfig, RootProfile};
 use crate::github::{GitHubError, RevokeTokenClient};
 use std::path::Path;
 use time::OffsetDateTime;
 
-pub enum ClearFailure {
+pub enum RevokeFailure {
     MissingAppCredentials {
         entry: String,
     },
@@ -21,7 +21,7 @@ pub enum ClearFailure {
     },
 }
 
-impl std::fmt::Debug for ClearFailure {
+impl std::fmt::Debug for RevokeFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::MissingAppCredentials { entry } => formatter
@@ -47,21 +47,21 @@ impl std::fmt::Debug for ClearFailure {
 }
 
 #[derive(Debug, Default)]
-pub struct ClearReport {
+pub struct RevokeReport {
     pub remotely_inactive: usize,
     pub local_only: usize,
     pub retained: usize,
-    pub failures: Vec<ClearFailure>,
+    pub failures: Vec<RevokeFailure>,
 }
 
-pub fn clear<C: RevokeTokenClient>(
+pub fn revoke_all<C: RevokeTokenClient>(
     client: &C,
     config: &Config,
     cache_dir: &Path,
     now: OffsetDateTime,
-) -> Result<ClearReport, crate::cache::CacheError> {
-    clear_transaction(cache_dir, |transaction| {
-        let mut report = ClearReport::default();
+) -> Result<RevokeReport, crate::cache::CacheError> {
+    revoke_transaction(cache_dir, |transaction| {
+        let mut report = RevokeReport::default();
         for index in 0..transaction.entries().len() {
             let label = transaction.entries()[index].label.clone();
             let revocation = match &transaction.entries()[index].state {
@@ -77,7 +77,7 @@ pub fn clear<C: RevokeTokenClient>(
                                 Err(source) if source.is_not_found() => true,
                                 Err(source) => {
                                     report.retained += 1;
-                                    report.failures.push(ClearFailure::GitHubRevocation {
+                                    report.failures.push(RevokeFailure::GitHubRevocation {
                                         entry: label,
                                         source,
                                     });
@@ -85,13 +85,15 @@ pub fn clear<C: RevokeTokenClient>(
                                 }
                             }
                         } else {
-                            report.failures.push(ClearFailure::ClientSecretUnavailable {
-                                entry: label.clone(),
-                            });
+                            report
+                                .failures
+                                .push(RevokeFailure::ClientSecretUnavailable {
+                                    entry: label.clone(),
+                                });
                             false
                         }
                     } else {
-                        report.failures.push(ClearFailure::MissingAppCredentials {
+                        report.failures.push(RevokeFailure::MissingAppCredentials {
                             entry: label.clone(),
                         });
                         false
@@ -104,14 +106,14 @@ pub fn clear<C: RevokeTokenClient>(
             match transaction.delete(index) {
                 Ok(true) if revocation => report.remotely_inactive += 1,
                 Ok(true) => report.local_only += 1,
-                Ok(false) => report.failures.push(ClearFailure::CacheDeletion {
+                Ok(false) => report.failures.push(RevokeFailure::CacheDeletion {
                     entry: label,
                     source: crate::cache::CacheError::Io(std::io::Error::new(
                         std::io::ErrorKind::NotFound,
                         "cache entry disappeared",
                     )),
                 }),
-                Err(source) => report.failures.push(ClearFailure::CacheDeletion {
+                Err(source) => report.failures.push(RevokeFailure::CacheDeletion {
                     entry: label,
                     source,
                 }),
@@ -125,9 +127,20 @@ fn app_for_entry<'a>(config: &'a Config, entry: &CacheEntry) -> Option<&'a RootP
     let name = match entry {
         CacheEntry::Root(value) => &value.profile,
         CacheEntry::Derived(value) => &value.source_profile,
+        CacheEntry::Run(value) => &value.source_profile,
     };
     match config.profiles.get(name) {
-        Some(ProfileConfig::Root(root)) => Some(root),
+        Some(ProfileConfig::Root(root)) => match entry {
+            CacheEntry::Run(entry)
+                if crate::cache::authority_fingerprint(
+                    &root.github_app.client_id,
+                    &root.github_app.account,
+                ) != entry.source_authority_fingerprint =>
+            {
+                None
+            }
+            CacheEntry::Root(_) | CacheEntry::Derived(_) | CacheEntry::Run(_) => Some(root),
+        },
         Some(ProfileConfig::Derived(_)) | None => None,
     }
 }
@@ -193,7 +206,7 @@ mod tests {
         let cache_dir = temp.path().join("cache");
         cache_root(&cache_dir, OffsetDateTime::now_utc() + Duration::hours(1));
         let client = MockClient(Cell::new(0));
-        let report = clear(
+        let report = revoke_all(
             &client,
             &config(false),
             &cache_dir,
@@ -213,7 +226,7 @@ mod tests {
             let cache_dir = temp.path().join("cache");
             cache_root(&cache_dir, OffsetDateTime::now_utc() + offset);
             let client = MockClient(Cell::new(0));
-            let report = clear(
+            let report = revoke_all(
                 &client,
                 &config(true),
                 &cache_dir,

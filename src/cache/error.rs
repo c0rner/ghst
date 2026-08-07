@@ -18,6 +18,8 @@ pub enum CacheError {
         expected: &'static str,
         actual: &'static str,
     },
+    RunCollision(String),
+    InvalidRunTransition(&'static str),
     MalformedEpoch,
     EpochExhausted,
     EpochChanged {
@@ -50,6 +52,10 @@ impl fmt::Display for CacheError {
                     "unexpected cache entry kind '{actual}', expected '{expected}'"
                 )
             }
+            Self::RunCollision(key) => write!(f, "run cache key collision at '{key}'"),
+            Self::InvalidRunTransition(reason) => {
+                write!(f, "invalid run cache lifecycle transition: {reason}")
+            }
             Self::MalformedEpoch => write!(f, "cache lock contains a malformed epoch"),
             Self::EpochExhausted => write!(f, "cache epoch is exhausted"),
             Self::EpochChanged { expected, actual } => write!(
@@ -73,6 +79,8 @@ impl std::error::Error for CacheError {
             | Self::InvalidKey(_)
             | Self::InconsistentMetadata { .. }
             | Self::UnexpectedKind { .. }
+            | Self::RunCollision(_)
+            | Self::InvalidRunTransition(_)
             | Self::MalformedEpoch
             | Self::EpochExhausted
             | Self::EpochChanged { .. }

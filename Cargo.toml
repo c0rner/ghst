@@ -11,6 +11,7 @@ repository = "https://github.com/c0rner/ghst"
 argh = "0.1"
 base64 = "0.23"
 fs2 = "0.4"
+getrandom = "0.3"
 open = "5"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
@@ -43,3 +44,4 @@ strip = true
 
 [target."cfg(unix)".dependencies]
 rustix = { version = "1.1.4", features = ["fs", "process"] }
+signal-hook = "0.3"

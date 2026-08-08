@@ -66,8 +66,8 @@ OAuth Device Flow uses the public `client_id`, not the `client_secret`, so anyon
 - **Interactive Verification Banner:** `ghst` prints a prominent `DEVICE AUTHORIZATION REQUIRED` banner showing the configured target account and user code. Users are warned to verify the expected App on GitHub and the local authorization context before approving it.
 - **Prohibition of Pre-filled Verification URLs:** `ghst` **never** opens or outputs pre-filled verification URLs containing `?user_code=...`. The browser strictly navigates to `https://github.com/login/device`, forcing the user to manually copy and enter the user code. This removes a one-click authorization path from `ghst` itself, but cannot protect a user who approves an out-of-bound flow.
 
-> [!NOTE]
-> For a detailed threat matrix and security architecture see [security](SECURITY.md)
+> [!IMPORTANT]
+> Please take time to read [SECURITY.md](SECURITY.md) before deploying in large scale. 
 
 ---
 
@@ -102,15 +102,32 @@ permissions = { contents = "read", pull_requests = "read", issues = "read" }
 
 Profile type is inferred from its fields: roots define `github_app`, while derived profiles define `source`. Profiles cannot mix both shapes or declare a separate `kind` field. Unknown fields are rejected.
 
-Root profiles cannot define `repo`: they represent the GitHub App's complete authority ceiling and are cached under `profile|all`. A root token can be printed in text, JSON, or environment format only by calling `ghst token` without `--repo`. Derived profiles may reference only roots with a configured client secret. Removing a secret therefore also requires removing every derived profile that references that root.
+Root profiles cannot define `repo`: they represent the GitHub App's complete authority ceiling and are cached under `profile|all`. Derived profiles may reference only roots with a configured client secret.
 
-A derived profile's `repo` value is its default selection. Repeated CLI `--repo` values replace that default. `all` means “apply no additional repository narrowing”; it never widens the permissions or repositories GitHub allows for the root token. Explicit repositories must use `owner/repository`, and every owner must match the source root profile's `github_app.account`.
+A derived profile's `repo` value is its default selection. Repeated CLI `--repo` values replace that default. `all` means “apply no additional repository narrowing”; it never widens the permissions or repositories GitHub allows for the source profile. Explicit repositories must use `owner/repository`, and every owner must match the source root profile's `github_app.account`.
+
+> [!TIP]
+> See [SECURITY.md](SECURITY.md#permission-ceiling-and-scope-intersection) for details on GitHubs permission model.
+
+#### Common Scopes
+
+Permission | Values | Description
+------|--------|------------
+actions | read, write | View and manage GitHub Actions workflows, workflow runs, and artifacts.
+checks | read, write | View and manage checks on code.
+contents | read, write | View and manage contents, commits, branches, downloads, releases, and merges.
+issues | read, write | View and manage issues and related comments, assignees, labels, and milestones.
+packages | read, write | View and manage packages published to GitHub Packages.
+pull_requests | read, write | View and manage pull requests and related comments, assignees, labels, milestones, and merges.
+security_events | read, write | View and manage security events like code scanning alerts.
+
+For a full list see `permissions` on GitHub's [scoped-token endpoint](https://docs.github.com/en/rest/apps#create-a-scoped-access-token)
 
 ### Independent Token Lifetimes
 
-GitHub issues a scoped token as a separate user access token with its own `expires_at`. `ghst` takes this GitHub-issued expiry at face value and only requires the token to remain usable beyond its 30-second safety margin; it does not impose a local maximum lifetime. A scoped token may remain valid after the root token used to mint it has expired or been individually revoked. An expired root may validate an already-cached child but cannot mint a new one.
+GitHub issues a derived (scoped) token as a separate user access token with its own `expires_at`. A derived token may remain valid after the root token used to mint it has expired or been individually revoked. An expired root may validate an already-cached child but cannot mint a new one.
 
-Root-token expiration or individual revocation must not be treated as revoking its children. `ghst revoke --all` attempts to revoke every cached live root, derived, and run token when its root client secret is available before removing its cache entry. A live secretless root is deleted locally, reported as potentially active remotely, and makes `revoke` return nonzero. See GitHub's [scoped-token endpoint](https://docs.github.com/en/rest/apps/apps?apiVersion=2022-11-28#create-a-scoped-access-token) and [single-token revocation endpoint](https://docs.github.com/en/rest/apps/oauth-applications?apiVersion=2022-11-28#delete-an-app-token).
+Root-token expiration or individual revocation must not be treated as revoking its children. `ghst revoke --all` attempts to revoke every cached live root, derived, and run token when its root client secret is available before removing its cache entry. A live secretless root is deleted locally, reported as potentially active remotely, and makes `revoke` return nonzero. See GitHub's [scoped-token endpoint](https://docs.github.com/en/rest/apps/apps#create-a-scoped-access-token) and [single-token revocation endpoint](https://docs.github.com/en/rest/apps/oauth-applications#delete-an-app-token).
 
 ---
 

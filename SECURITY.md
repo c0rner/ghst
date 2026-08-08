@@ -134,7 +134,7 @@ The conclusion changes when the secret is combined with other material:
 | Private key | Can sign App JWTs and mint installation access tokens for App installations, bypassing the user intersection. This is why private keys are forbidden. |
 | GitHub App administration access | Can change permissions or authorization settings and generate a private key. App administration is therefore part of the trusted computing base. |
 
-The [scoped-token endpoint](https://docs.github.com/en/rest/apps/apps?apiVersion=2022-11-28#create-a-scoped-access-token)
+The [scoped-token endpoint](https://docs.github.com/en/rest/apps/apps#create-a-scoped-access-token)
 documents both required inputs: Basic authentication with the client ID and secret, plus the
 non-scoped user token to be narrowed.
 
@@ -189,13 +189,25 @@ tokens:
 3. **Derived profile:** `ghst` asks GitHub to further restrict repositories and permissions. A
    derived profile can narrow the first two boundaries but never widen them.
 
-```text
-Root user-token scope = App installation grant
-                      ∩ Authorizing user's access
-
-Derived user-token scope = Root user-token scope
-                         ∩ Profile repository selection
-                         ∩ Profile permissions
+```mermaid
+venn-beta
+    title "GitHub Permission Model"
+    set G["GitHub App"]:30
+        text G["Permissions"]
+    set U["User"]:30
+        text U["Permissions"]
+    set S["Scoped"]:20
+        text S["Permissions"]
+    union G,U["Root"]:5
+        text GU["Token"]
+    union U,S
+    union G,S
+    union G,U,S["Derived"]:20
+        text GUS["Token"]
+    style G,U fill:lightgreen, color:black
+    style G,U,S fill:green, color:white
+    style GUS color:white
+    style GU color:black
 ```
 
 GitHub describes this distinction in its

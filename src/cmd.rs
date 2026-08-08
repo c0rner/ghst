@@ -15,8 +15,22 @@ use std::ffi::OsString;
 use std::path::PathBuf;
 use std::str::FromStr;
 
-/// GitHub Scoped Token Helper.
+/// `GhstCli` command line interface
 #[derive(FromArgs, PartialEq, Eq, Debug)]
+#[argh(
+    description = "\
+'{command_name}' is a local, developer-focused CLI tool that issues short-lived
+GitHub App user access tokens for humans and AI coding tools.\n
+It replaces long-lived personal access credentials with user-attributed,
+strictly scoped access tokens protecting a trusted human operator's GitHub
+authority from less-trusted processes running on the same machine.
+It does not attempt to prevent the operator themselves from bypassing local
+profiles or directly invoking the GitHub API.",
+    example = "\
+{command_name} login --profile developer
+{command_name} token --profile reader --repo acme/api --format env
+{command_name} run --profile contributor --repo auto -- llm_tool"
+)]
 pub struct GhstCli {
     /// optional path to configuration file (override `GHST_CONFIG` or ~/.config/ghst/profiles.toml)
     #[argh(option, short = 'c')]
@@ -96,7 +110,7 @@ pub struct RevokeCmd {
 #[argh(subcommand, name = "prune")]
 pub struct PruneCmd {}
 
-/// Run a command with a fresh derived GitHub token.
+/// Run a command with a fresh derived GitHub token. Access that dies with the process.
 #[derive(FromArgs, PartialEq, Eq, Debug)]
 #[argh(subcommand, name = "run")]
 pub struct RunCmd {

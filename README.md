@@ -1,4 +1,4 @@
-# ghst (GitHub Scoped Tokens)
+# ghst - GitHub Scoped Tokens
 
 `ghst` (pronounced "ghost") is a local, developer-focused CLI tool that issues short-lived GitHub App user access tokens for humans and AI coding tools. It replaces long-lived personal access credentials with user-attributed, strictly scoped access tokens.
 
@@ -13,30 +13,61 @@
 
 ---
 
+## Ephemeral Command Execution with `ghst run`
+
+`ghst run` puts a credential lifetime around one foreground command. Each invocation mints a fresh
+token from a derived profile, sets `GH_TOKEN` and `GITHUB_TOKEN`, and launches the command directly
+without a shell. When the command exits, `ghst` revokes the token and returns the command's exit
+result.
+
+This avoids exporting a reusable token into a shell or giving an AI tool access to the broader
+authority of a root profile:
+
+```bash
+ghst run --profile contributor --repo auto -- codex
+```
+
+`ghst run` controls GitHub authority and credential lifetime; it is not a sandbox. Combine it with
+a kernel sandbox such as [nono](https://nono.sh/) to also restrict filesystem, network, and host
+access:
+
+```bash
+ghst run --profile contributor --repo auto -- \
+  nono run --allow . -- codex
+```
+
+The ordering is deliberate: `ghst` owns the complete foreground invocation, while `nono` confines
+the AI tool and its process tree. The sandbox should deny access to `ghst` configuration and cache
+files, as well as fallback credentials such as GitHub CLI storage, Git credential helpers, and SSH
+keys.
+
+> [!WARNING]
+> `ghst run` is not suitable for commands that daemonize, run in the background, or detach their
+> sandbox session. The token lease belongs to the top-level command invocation, not to arbitrary
+> descendants. When that command exits, `ghst` revokes the token even if a descendant is still
+> running. Keep the workload in the foreground; for example, do not use `nono run --detached` here
+> or consider using `ghst token` for more control.
+
+Before handing off the token, `ghst` records a private recovery entry. If a crash, power loss, or
+GitHub failure prevents immediate cleanup, `ghst prune` retries abandoned run tokens. Active
+recorded processes are skipped conservatively.
+
+---
+
 ## Security Model & Risk Architecture
 
 ### 1. `client_secret` Storage & Filesystem Security
 Root profiles reference configured GitHub Apps. A `client_secret` is optional; it enables derived-token minting and remote revocation.
 - **Filesystem Permissions:** `profiles.toml` must be restricted to `0600` permissions (`chmod 600 ~/.config/ghst/profiles.toml`).
-- **Access Limits:** Possession of `client_secret` alone does **not** grant repository access or token minting privileges. Token issuance always requires interactive human user authorization via GitHub OAuth Device Flow.
+- **Access Limits:** Possession of `client_secret` alone does **not** grant repository access. Initial user authority requires interactive GitHub Device Flow authorization; creating a scoped token also requires an existing non-scoped user token and can only narrow it.
 
 ### 2. Phishing Protection & Anti-Phishing Invariants
-If a `client_secret` were exposed, an attacker could attempt to initiate OAuth Device Flows. `ghst` enforces explicit mitigations:
-- **Interactive Verification Banner:** `ghst` prints a prominent `DEVICE AUTHORIZATION REQUIRED` banner explicitly showing the target GitHub App name. Users are warned to verify the App name before authorizing.
-- **Prohibition of Pre-filled Verification URLs:** `ghst` **never** opens or outputs pre-filled verification URLs containing `?user_code=...`. The browser strictly navigates to `https://github.com/login/device`, forcing the user to manually copy and enter the user code. This prevents 1-click phishing attacks.
+OAuth Device Flow uses the public `client_id`, not the `client_secret`, so anyone who knows the App identity can initiate a flow. The user must authorize only a code produced by a `ghst login` invocation they personally started. `ghst` provides explicit mitigations:
+- **Interactive Verification Banner:** `ghst` prints a prominent `DEVICE AUTHORIZATION REQUIRED` banner showing the configured target account and user code. Users are warned to verify the expected App on GitHub and the local authorization context before approving it.
+- **Prohibition of Pre-filled Verification URLs:** `ghst` **never** opens or outputs pre-filled verification URLs containing `?user_code=...`. The browser strictly navigates to `https://github.com/login/device`, forcing the user to manually copy and enter the user code. This removes a one-click authorization path from `ghst` itself, but cannot protect a user who approves an out-of-bound flow.
 
-### 3. One-Off Command Tokens and Sandboxing
-
-`ghst run` always mints a fresh token from a derived profile and launches one command directly,
-without a shell. It sets both `GH_TOKEN` and `GITHUB_TOKEN`, removes the GitHub Enterprise token
-variables, and preserves all other environment variables and command arguments. The token is
-revoked after the command exits. Cleanup never replaces the command's exit result.
-
-The token is recorded in a private recovery entry before the child can use it. If the wrapper or
-GitHub fails during cleanup, `ghst prune` retries abandoned tokens; active recorded processes are
-skipped conservatively. `ghst run` is a credential-lifetime tool, not a sandbox. Use a kernel
-sandbox separately to restrict configuration/cache access and fallback credentials such as GitHub
-CLI storage, Git credential helpers, and SSH keys.
+> [!NOTE]
+> For a detailed threat matrix and security architecture see [security](SECURITY.md)
 
 ---
 
@@ -108,12 +139,6 @@ ghst run [--profile name] [--repo all|auto|owner/repo]... -- <command> [args...]
 # Recover abandoned run tokens and remove issuer-expired entries
 ghst prune
 ```
-
-`run` accepts derived profiles only and never reuses the token returned by `ghst token`. After
-handoff, a normal child exit is returned unchanged and Unix signal termination maps to
-`128 + signal`. Pre-handoff `ghst` failures return `1`. Revocation failures print a redacted warning,
-leave the entry in `cleanup_pending`, and still return the child's result. `prune` processes global
-recovery explicitly; post-run cleanup targets only that run.
 
 ---
 

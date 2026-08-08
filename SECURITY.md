@@ -1,186 +1,295 @@
 # Security Architecture & Threat Model
 
-`ghst` is a credential isolation and scoped token minting tool designed to issue short-lived GitHub App user access tokens to humans and AI coding agents. Because `ghst` handles sensitive access credentials, security is its primary design goal.
-
----
-
-## Security Invariants
-
-All architectural decisions in `ghst` strictly enforce five core security invariants:
-
-1. **`ghst` Never Exposes Refresh Tokens to Downstream Tools**
-   Refresh tokens received during authentication are discarded immediately in memory. They
-   are never cached, logged, transmitted through the proxy, or returned to any caller. Tokens
-   delivered through `ghst` cannot be refreshed by the tools that receive them. Derived tokens
-   also cannot be reset or used to create further scoped tokens.
-2. **Every Token is User-Attributed**  
-   Tokens are minted via GitHub App User Access Token flows. Actions taken by AI tools remain attributable to the authorizing human user.
-3. **Every Derived Token is a Strict Subset**  
-   Child tokens minted via scoping endpoints can only narrow permissions and repository boundaries relative to the root token.
-4. **No Operation Can Increase Privilege**  
-   Privilege escalation is impossible. A requested profile or token scope can never exceed the intersection of user permissions and root app boundaries.
-5. **Every Token Has an Explicit, Bounded Lifetime**  
-   Root and derived tokens have separate GitHub-issued lifetimes (maximum 8 hours).
-
----
-
-## Trusted Operator Assumption
-
-`ghst` protects a trusted human operator's GitHub authority from less-trusted processes
-running on the same machine. It does not attempt to prevent the operator themselves from
-bypassing local profiles or directly invoking the GitHub API.
-
-**Trusted:** The human operating `ghst`, the host-side `ghst proxy`, the root-profile
-configuration, and the GitHub App registration.
-
-**Less trusted:** AI coding agents, agent-invoked shell commands, build tools and repository
-scripts, sandboxed subprocesses, and any tokens exposed inside an agent environment.
-
-A developer who uses the public `client_id` to run the Device Flow independently — bypassing
-`ghst` — is the trusted operator choosing to step outside their
-own protection. This is analogous to a developer running `gh auth token` and handing the
-result directly to an agent. No local tool can prevent a workstation owner from
-intentionally dismantling their own security boundary while they control all the underlying
-credentials.
-
-> [!NOTE]
-> **Enterprise applicability:** Local `ghst` is appropriate where developers are already
-> trusted with GitHub repository access and the organization's goal is to constrain
-> authority delegated to AI tools. It is not an insider-resistant policy boundary — the
-> workstation owner controls the local configuration and OAuth client credentials. A
-> deployment that must constrain the operator themselves requires a centrally managed
-> credential broker.
-
----
-
-## Permission Ceiling & Scope Intersection
-
-Every token is constrained by two layers enforced by GitHub's API. Derived tokens add a third layer enforced by `ghst`.
-
-### Layer 1 — GitHub App Installation Grant (Absolute Ceiling)
-
-A GitHub App is granted a specific set of permissions when an organization administrator installs it. This installation grant is the **absolute permission ceiling**. Any token produced through that App — regardless of what a profile or caller requests — can never carry permissions beyond what the administrator approved. This constraint is enforced by GitHub's API; `ghst` cannot override it.
-
-### Layer 2 — Authenticating User's Repository Access
-
-GitHub intersects a GitHub App user token's authority with the **authorizing user's own access rights**. When `ghst` requests a derived token through the scoped token endpoint (`POST /applications/{client_id}/token/scoped`), the same user boundary continues to apply. The [GitHub API documentation](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/authenticating-with-a-github-app-on-behalf-of-a-user) states explicitly:
-
-> *"The app can only access resources that the user has access to. If a user does not have access to a repository, your app cannot access that repository on their behalf even if the app is installed on that repository… A token cannot grant additional access capabilities to a user."*
-
-This is a platform-level guarantee from GitHub, enforced independently of any `ghst` configuration.
-
-### Layer 3 — Profile Declaration (Local Narrowing)
-
-On top of both GitHub-enforced layers, `ghst` further narrows the token request to the permission subset and repository selection declared in the derived profile. Profile configuration is validated locally before the API call is made and can only narrow — never widen — what is requested.
-
-### Effective Scope
-
-Root and derived tokens have different effective-scope formulas:
-
-```
-Root scope = GitHub App installation grant
-           ∩ Authenticating user's repository access       (GitHub-enforced)
-
-Derived scope = Root scope
-              ∩ Profile-declared permission and repo subset
-```
-
-Even a misconfigured or compromised profile cannot produce a token that exceeds either GitHub-enforced ceiling.
-
----
-
-## Client Secret Deployment Modes
-
-Each root profile may contain a client secret or omit it. Neither mode is universally safer; they place the least-privilege boundary in different locations.
-
-| Mode | Security boundary | Capabilities | Tradeoffs |
-| --- | --- | --- | --- |
-| **Secret-bearing root** | GitHub App grant, user access, and local derived profiles | Repository and permission narrowing; remote token revocation | The secret must be isolated. A party holding both it and a live non-scoped root token can request a scoped token with an independent lifetime. |
-| **Secretless root** | GitHub App grant and user access | Device Flow login and bounded root-token delivery | No derived profiles and no App-authenticated remote revocation. Live tokens removed locally may remain active until GitHub invalidates them or they are manually revoked. |
-
-An enterprise that does not want to distribute client secrets can provide multiple narrowly configured GitHub Apps for different roles or repository sets and distribute only their public client IDs. This moves policy enforcement into GitHub App installation grants. It increases App administration and loses the flexibility of local derived profiles, but avoids placing App client secrets on developer workstations.
-
-Where derived profiles are needed, the strongest architecture is to keep the client secret and root token behind `ghst proxy` and expose only derived tokens to less-trusted tools.
-
-Removing a client secret also requires removing every derived profile that references that root; configuration loading otherwise fails closed.
-
----
-
-## Filesystem & Local Storage Security
-
-> [!WARNING]
-> Configuration files may store sensitive `client_secret` credentials for your GitHub Apps. Restrict access permissions on configuration and cache directories.
-
-- **Configuration Directory:** `~/.config/ghst/`  
-  Configuration file `~/.config/ghst/profiles.toml` must be set to `0600` permissions (`chmod 600 ~/.config/ghst/profiles.toml`).
-- **Runtime Cache Directory:** `~/.cache/ghst/`  
-  Directory permissions are enforced at `0700`.
-- **Cache Files & Lock Files:** `~/.cache/ghst/*.json` and `~/.cache/ghst/.cache.lock`  
-  File permissions are strictly enforced at `0600`.
-- **Atomic Operations & Symlink Protection:**  
-  Cache entries are written atomically using tempfiles (`0600`) and directory syncing. Hard links and symlinks are explicitly rejected.
-- **Platform Support:**  
-  Token caching requires Unix private permission semantics. Non-Unix platforms fail closed rather than storing tokens insecurely.
-
----
-
-## Device Flow and Anti-Phishing Preparations
-
-GitHub's Device Flow is a public-client flow: anyone who knows the App's public client ID can initiate it. If a user authorizes an attacker's flow, the initiating party receives both an eight-hour access token and a refresh token. For Device-Flow credentials, GitHub permits refresh with the client ID and refresh token; the client secret is not required. A successful out-of-band authorization can therefore provide renewable access even when no client secret is distributed. See GitHub's documentation for [generating](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app) and [refreshing](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/refreshing-user-access-tokens) user access tokens.
-
-`ghst` destroys every refresh token it receives, but it cannot control a Device Flow initiated by another party. It provides explicit prompts to reduce accidental authorization:
+`ghst` issues short-lived GitHub App user access tokens to humans and AI coding tools. Its purpose
+is to reduce the GitHub authority and credential lifetime delegated by a trusted operator to a
+less-trusted local process.
 
 > [!IMPORTANT]
-> Always verify that the GitHub App name displayed on `https://github.com/login/device` matches your expected App account before authorizing.
-
-1. **Interactive Verification Banner:** `ghst` displays a prominent `DEVICE AUTHORIZATION REQUIRED` banner in stdout/stderr displaying the target GitHub App account and user code.
-2. **Prohibition of Pre-filled URLs:** `ghst` **never** opens or outputs pre-filled verification URLs containing `?user_code=...`. The browser navigates strictly to `https://github.com/login/device`, requiring the user to manually copy and enter the code. This removes a one-click authorization path but cannot prevent a user from authorizing a convincing out-of-band request.
+> The security claims in this document depend on the GitHub App being configured exactly as
+> described below. In particular, the App must use expiring user access tokens and must have no
+> private keys. The human operator is responsible for authorizing only Device Flows that they
+> initiated locally with `ghst`.
 
 ---
 
-## Threat Model & Risk Matrix
+## Required GitHub App Configuration
 
-| Risk Vector | Assessment | Mitigation Architecture |
+Use a dedicated GitHub App for `ghst`. Do not share the App with a server, automation system, or
+other integration that needs a private key or a callback-based OAuth flow.
+
+| GitHub App setting | Required value | Security reason |
 | --- | --- | --- |
-| **Out-of-Band Device Flow** | High; interactive | The public client ID is sufficient to initiate Device Flow. If the user authorizes it, the initiator receives the refresh token and can renew without a client secret. Users must treat unexpected device codes as phishing and verify the context as well as the App identity. |
-| **`client_secret` Exposure Alone** | Bounded | The secret alone grants no repository access and is not needed for Device Flow. Restrict `profiles.toml`, rotate exposed secrets, and prefer secretless profiles where their App installation grants are sufficiently narrow. |
-| **Root Token + Client Secret Exposure** | Extended but not widened | Together they can request a scoped token with an independent lifetime. The result cannot exceed the root authority, and a scoped token cannot create another scoped token. Isolate both credentials behind the proxy when using derived profiles. |
-| **Refresh Token Exposure** | Renewable access | A Device-Flow refresh token can be exchanged using the public client ID without the client secret. `ghst` destroys refresh tokens immediately and never persists or returns them. |
-| **Trusted Operator Bypass** | Out of scope in local mode | A developer who controls the machine can extract credentials, bypass `ghst`, or use another GitHub authentication path. This is accepted risk under the trusted-operator model. Insider-resistant enforcement requires a managed broker. See [Trusted Operator Assumption](#trusted-operator-assumption). |
-| **Derived Token Exfiltration** | Capped impact | The token is bounded by its repository scope, permission subset, and fixed GitHub-issued lifetime. It has no refresh token and cannot mint another token. |
-| **Root Token Exfiltration** | Capped unless paired with another credential | The token is bounded by the App/user intersection and its remaining lifetime. Without a refresh token it cannot use the refresh grant; pairing it with the client secret permits scoped-token creation. |
-| **Untrusted AI Agent Sandbox Escape** | High Impact | Host IPC Proxy Mode (`ghst proxy`) isolates secrets behind a Unix domain socket (`GHST_SOCKET`), completely denying sandboxed AI agents access to `~/.config/ghst/`. |
+| **Permissions** | Only the repository, organization, and account permissions that `ghst` users need | The App permissions are a platform-enforced ceiling. Derived profiles can narrow this ceiling but cannot repair an unnecessarily broad installation. |
+| **Installation repositories** | Only the repositories that may be accessed through this App | A token cannot access repositories outside the App installation, but `all` in a derived profile applies no further repository narrowing. |
+| **Enable Device Flow** | Enabled | `ghst login` uses only GitHub's Device Flow. GitHub documents this as the flow intended for CLI and headless applications. |
+| **Request user authorization (OAuth) during installation** | Disabled | `ghst` does not use install-time or callback-based web authorization. Keep other OAuth workloads on a separate App. |
+| **Callback URL** | Empty | Device Flow does not use a redirect URI. An empty callback configuration prevents this dedicated App from also serving a web application flow. |
+| **Expire user authorization tokens** / **User-to-server token expiration** | Enabled | GitHub then returns an expiring user access token and a refresh token. `ghst` requires the access-token expiry and destroys the refresh token. |
+| **Client secret** | Generate only if derived profiles or remote revocation are needed | The secret enables scoped-token and revocation endpoints but is not used by Device Flow. It must remain private even though exposure alone has bounded authority. |
+| **Private keys** | **None** | A private key can authenticate as the App and mint installation access tokens, bypassing the authorizing-user intersection on which `ghst` relies. |
+| **Webhooks** | Disabled | `ghst` does not consume webhooks. A workload that needs them should use a separate App. |
+
+GitHub exposes Device Flow and install-time OAuth as separate settings. “Device Flow only” in this
+threat model means that Device Flow is enabled, install-time OAuth is disabled, and no other
+callback-based OAuth client shares this App. GitHub notes that the callback URL is ignored when an
+App uses Device Flow. See GitHub's guides to [registering a GitHub App](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/registering-a-github-app),
+[modifying its authorization settings](https://docs.github.com/en/apps/maintaining-github-apps/modifying-a-github-app-registration),
+and [choosing minimum permissions](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app).
+
+After saving the registration, verify that the **Private keys** list is empty, install the App only
+on the intended account and repositories, and copy its client ID into the root profile. Generate a
+client secret only when derived profiles or remote revocation are required, store it in the `0600`
+configuration file, and set `github_app.account` to the target account that owns the permitted
+repositories. A secretless root can perform Device Flow login but cannot mint derived tokens or
+remotely revoke tokens through the App-authenticated endpoints.
+
+### No Private Keys
+
+> [!CAUTION]
+> A GitHub App used by `ghst` must never have a private key. If the App's **Private keys** list is
+> non-empty, it does not satisfy this threat model. Delete every key, and use a different GitHub App
+> for any workload that must authenticate as an App installation.
+
+A client secret and a private key are not interchangeable:
+
+- A **client secret** authenticates the App at OAuth application endpoints. The scoped-token
+  endpoint still requires an existing non-scoped user access token, and Device Flow still requires
+  an explicit human authorization.
+- A **private key** signs an App JWT. A holder can use that JWT to request an installation access
+  token without a human authorizing a user flow. Unless the request narrows it, that installation
+  token receives all permissions and repositories granted to the installation.
+- Installation-token authorization depends on the App installation, not on a particular user's
+  access. Actions are attributed to the App rather than to the accountable human operator.
+- GitHub App private keys do not expire automatically. They remain useful until manually deleted.
+
+GitHub documents that a JWT signed by an App private key can mint an
+[installation access token](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app),
+and explicitly recommends user access tokens for actions performed on behalf of users in its
+[GitHub App security guidance](https://docs.github.com/en/apps/creating-github-apps/about-creating-github-apps/best-practices-for-creating-a-github-app).
 
 ---
 
-## Credential Isolation & Sandboxing (`ghst proxy`)
+## Trust and Accountability Assumptions
 
-When running untrusted AI tools inside kernel sandboxes (e.g., `nono`, `landlock`, or container namespaces):
+`ghst` protects a trusted human operator's GitHub authority from less-trusted processes running on
+the same machine. It is not an insider-resistant control against the workstation owner.
 
+The model assumes all of the following:
+
+1. **The operator and App administrators are trusted.** They preserve the required App settings,
+   do not generate private keys, and do not deliberately bypass `ghst`.
+2. **The operator protects their GitHub account.** An attacker who can sign in as the user can grant
+   or use the user's authority outside `ghst`.
+3. **Every Device Flow approval is deliberate and in-bound.** The operator approves only a code
+   produced by a `ghst login` command they personally started and that is still waiting locally.
+4. **Less-trusted processes cannot read `ghst` state.** AI tools, repository scripts, and build
+   processes must be denied access to `~/.config/ghst/` and `~/.cache/ghst/` when they are not fully
+   trusted.
+5. **GitHub enforces its documented token boundaries.** User access tokens remain limited by both
+   the App installation and the authorizing user's access, and scoped user tokens can only narrow
+   an existing user token.
+
+The operator remains accountable for every authorization made through their GitHub account. If the
+operator authorizes an unexpected device code, GitHub correctly treats that as consent; `ghst`
+cannot determine that the approval was socially engineered or intended for another process.
+
+> [!NOTE]
+> Local `ghst` is appropriate when an organization already trusts developers with repository
+> access and wants to constrain what they delegate to AI tools. An organization that must constrain
+> the developer as an adversary needs a centrally administered security boundary, not a local CLI
+> controlled by that developer.
+
+---
+
+## Why Client-Secret Exposure Is Bounded
+
+Calling a `client_secret` “safe to expose” would be misleading. It remains a credential, must be
+stored privately, and should be rotated after exposure. The narrower claim made by `ghst` is:
+
+> [!NOTE]
+> Under the required App configuration, possession of the client secret **alone** does not grant
+> repository access and cannot mint an installation access token.
+
+This boundary exists because the client secret does not represent either a user or an App
+installation:
+
+- Starting and completing GitHub Device Flow uses the public `client_id`, not the client secret.
+  GitHub returns a token only after a user enters the device code and authorizes the App.
+- Creating a scoped user access token requires both App authentication (`client_id` plus
+  `client_secret`) and an existing non-scoped user access token. The new token can narrow
+  repositories or permissions but cannot widen the supplied user's authority.
+- Minting an installation access token requires an App JWT signed with a private key. The required
+  no-private-key configuration removes that authentication path.
+- Revocation and token-inspection endpoints require the caller to identify a token. The client
+  secret is not itself a bearer token for repository APIs.
+
+The conclusion changes when the secret is combined with other material:
+
+| Material held by an attacker | Consequence |
+| --- | --- |
+| Public `client_id` only | Can initiate Device Flow and attempt to convince a user to authorize it. This risk exists even when no client secret is configured locally. |
+| `client_secret` only | Can authenticate as the OAuth application at applicable endpoints, but has no user or installation authority to access repositories. |
+| `client_secret` plus a live root user token | Can create independently expiring scoped user tokens while the root is usable. Those tokens cannot exceed the root token's App/user authority. |
+| Device-Flow refresh token | Can renew the user access token using the public client ID; GitHub does not require the client secret for a refresh token issued through Device Flow. |
+| Private key | Can sign App JWTs and mint installation access tokens for App installations, bypassing the user intersection. This is why private keys are forbidden. |
+| GitHub App administration access | Can change permissions or authorization settings and generate a private key. App administration is therefore part of the trusted computing base. |
+
+The [scoped-token endpoint](https://docs.github.com/en/rest/apps/apps?apiVersion=2022-11-28#create-a-scoped-access-token)
+documents both required inputs: Basic authentication with the client ID and secret, plus the
+non-scoped user token to be narrowed.
+
+---
+
+## Device Flow and Human Authorization
+
+Device Flow is intentionally usable by public clients. Anyone who learns the App's public client ID
+can request a device code; leaking the client secret is not required. The security boundary is the
+human approval on GitHub.
+
+If an attacker starts a flow and persuades a user to approve it, the attacker polling that flow
+receives the user access token and its refresh token. Because a Device-Flow refresh does not require
+the client secret, that access can be renewed until GitHub invalidates the authorization or the
+current refresh token is allowed to expire. `ghst` can destroy only the refresh tokens returned to
+its own process; it cannot destroy a token returned to an attacker-controlled flow.
+
+> [!IMPORTANT]
+> Authorize a device code only when all of these are true:
+>
+> 1. You personally started `ghst login` in a trusted local terminal.
+> 2. That exact invocation is still waiting for authorization.
+> 3. You manually entered the user code printed by that invocation at
+>    `https://github.com/login/device`.
+> 4. GitHub displays the dedicated App you expect and the access being requested is appropriate.
+>
+> Never authorize a device code supplied through chat, email, a web page, an issue, an AI agent, or
+> another person's terminal. Matching the expected App name is necessary but not sufficient: an
+> attacker can initiate a flow for the same App using its public client ID.
+
+If any context is unexpected, deny the request and restart `ghst login` yourself. `ghst` opens only
+the base verification URL and requires manual code entry; it never presents a pre-filled
+`?user_code=...` link. This creates a deliberate verification step, but it cannot protect a user who
+approves an out-of-bound request.
+
+GitHub's [Device Flow documentation](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/generating-a-user-access-token-for-a-github-app)
+shows that the flow and polling request require the client ID, device code, and grant type—not the
+client secret. Its [refresh-token documentation](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/refreshing-user-access-tokens)
+states that the client secret is not required when the original token came from Device Flow.
+
+---
+
+## Permission Ceiling and Scope Intersection
+
+GitHub enforces two boundaries for every user access token; `ghst` adds a third boundary for derived
+tokens:
+
+1. **App installation:** The token cannot exceed the permissions and repository access granted to
+   the GitHub App installation.
+2. **Authorizing user:** The token cannot perform an operation the authorizing user could not
+   perform. This is the user intersection that an installation token would bypass.
+3. **Derived profile:** `ghst` asks GitHub to further restrict repositories and permissions. A
+   derived profile can narrow the first two boundaries but never widen them.
+
+```text
+Root user-token scope = App installation grant
+                      ∩ Authorizing user's access
+
+Derived user-token scope = Root user-token scope
+                         ∩ Profile repository selection
+                         ∩ Profile permissions
 ```
-                        HOST SYSTEM (Trusted Zone)
-+-------------------------------------------------------------------+
-|   `ghst proxy` Daemon                                            |
-|   - Reads ~/.config/ghst/profiles.toml (0600)                    |
-|   - Listens on Unix Domain Socket (/tmp/ghst.sock, 0600)         |
-|   - Enforces host privilege ceilings (--allow-profile)            |
-+-------------------------------------------------------------------+
-                                 ^
-                                 | Local IPC Boundary (Unix Socket)
-                                 v
-+-------------------------------------------------------------------+
-|                `nono` KERNEL SANDBOX (Restricted Zone)            |
-|   - DENIED access to ~/.config/ghst/ and ~/.cache/ghst/         |
-|   - ALLOWED connection to /tmp/ghst.sock                         |
-|   - `ghst token --profile reader` receives scoped token over IPC  |
-+-------------------------------------------------------------------+
+
+GitHub describes this distinction in its
+[permission guidance](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app):
+user-token requests depend on both App and user permissions, while installation-token requests
+depend on App permissions.
+
+---
+
+## Credential Lifetimes and Storage
+
+1. GitHub must return an explicit expiry for every root and scoped token. `ghst` rejects a token
+   whose expiry is absent, invalid, or inside its 30-second safety margin.
+2. `ghst` accepts the GitHub-issued lifetime rather than synthesizing or extending one locally.
+   With user-to-server token expiration enabled, GitHub currently documents an eight-hour user
+   access token and a six-month refresh token.
+3. Refresh tokens are wrapped in zeroizing memory, dropped immediately after parsing, never cached,
+   and never returned to downstream tools.
+4. Root and reusable derived access tokens are stored under `~/.cache/ghst/`. One-off `run` tokens
+   are stored temporarily in private recovery entries so interrupted cleanup can be retried.
+5. Root and derived tokens have independent GitHub-issued expiries. Revoking or expiring a root
+   token is not assumed to revoke already-created scoped tokens.
+
+Configuration and cache state have different enforcement:
+
+- `~/.config/ghst/` should be mode `0700`, and `profiles.toml` must be a trusted regular file with
+  mode `0600`. It may contain a client secret. **The current configuration loader does not validate
+  its ownership, mode, or link status**, so this is an operator and deployment responsibility.
+- `ghst` enforces mode `0700` on `~/.cache/ghst/` and mode `0600` on cache entries and
+  `.cache.lock`.
+- Cache writes are atomic; symlinked, hard-linked, malformed, or insecure cache state fails closed.
+- Platforms without Unix private-permission semantics cannot persist tokens.
+
+Possession of the local client secret becomes more consequential when paired with a cached root
+token. Configuration and cache must therefore be protected as one credential boundary, even though
+the client secret alone has bounded authority.
+
+---
+
+## Sandboxing Less-Trusted Tools
+
+`ghst run` is a credential-lifetime wrapper, not a kernel sandbox. Run it outside the sandbox and
+place the sandboxed foreground command inside it:
+
+```bash
+ghst run --profile contributor --repo auto -- \
+  nono run --allow . -- codex
 ```
 
-- Sandboxed processes are **denied read/write access** to `~/.config/ghst/` and `~/.cache/ghst/`.
-- The host user runs `ghst proxy` in the trusted zone, serving scoped tokens over IPC without exposing refresh tokens, `client_secret`s, or parent credentials.
+The sandbox must deny access to `~/.config/ghst/`, `~/.cache/ghst/`, GitHub CLI authentication,
+Git credential helpers, SSH keys, and other fallback credentials. The scoped token is intentionally
+available to the sandboxed process through `GH_TOKEN` and `GITHUB_TOKEN`; exfiltration remains
+possible until revocation or issuer expiry.
+
+Keep the workload in the foreground. If the top-level command daemonizes, backgrounds a child, or
+detaches its sandbox session, `ghst` revokes the lease when the top-level invocation exits. The
+lease does not follow arbitrary descendants.
+
+---
+
+## Threat Matrix
+
+| Risk | Boundary or mitigation |
+| --- | --- |
+| **Out-of-bound Device Flow authorization** | Human-gated but high impact. The operator must reject every flow they did not initiate locally. App-name matching alone cannot distinguish an attacker using the same public client ID. |
+| **Client secret exposure alone** | Does not directly grant repository access under the required configuration. Rotate it anyway, inspect App settings, and investigate whether it was paired with a user token or authorization artifact. |
+| **Client secret plus root-token exposure** | Allows additional scoped user tokens with independent lifetimes, but cannot exceed the root's App/user intersection. Protect configuration and cache together. |
+| **Refresh-token exposure** | Enables renewable user access. `ghst` destroys only refresh tokens it receives; it cannot protect an attacker-controlled flow. |
+| **Private key present or exposed** | Outside the threat model and critical. It enables App JWTs and installation access tokens without a user intersection. Delete the key and treat every App installation as potentially affected. |
+| **GitHub App administrator compromise** | Outside the local boundary. An administrator can change permissions, authorization settings, installations, secrets, and private keys. |
+| **Derived-token exfiltration** | Bounded by the profile, App/user intersection, and token expiry, but usable until revoked or expired. |
+| **Root-token exfiltration** | Bounded by the App/user intersection and expiry. Pairing it with the client secret enables scoped-token creation. |
+| **Cleanup interruption** | Issuer expiry is the final bound. `ghst prune` retries abandoned run-token cleanup; `ghst revoke --all` attempts full remote revocation and local purge. |
+| **Trusted operator bypass** | Out of scope. A workstation owner can use another GitHub credential or deliberately expose local state. |
+
+---
+
+## Responding to Credential or Configuration Exposure
+
+1. Stop authorizing Device Flows and inspect the GitHub App registration for changed permissions,
+   installations, OAuth settings, and any private keys.
+2. Run `ghst revoke --all` when the configured client secret is still usable. Treat a nonzero result
+   as incomplete cleanup.
+3. Delete and replace an exposed client secret in GitHub, then update `profiles.toml`. Secret
+   rotation does not prove that previously issued access tokens were revoked.
+4. If a private key existed, delete it immediately. Because it could have minted installation
+   tokens across installations, review or suspend/uninstall the App as appropriate.
+5. If an unauthorized Device Flow may have been approved, revoke the GitHub App authorization from
+   the affected user account and review GitHub audit and security logs. Rotating the client secret
+   alone does not invalidate a Device-Flow refresh token.
 
 ---
 
 ## Reporting a Security Vulnerability
 
-If you discover a potential security vulnerability in `ghst`, please do not report it in public GitHub issues. Please report security concerns privately to the maintainers or via repository security advisories.
+Do not report suspected vulnerabilities in public GitHub issues. Contact the maintainers privately
+or use the repository's private security-advisory mechanism.

@@ -45,7 +45,7 @@ keys.
 > `ghst run` is not suitable for commands that daemonize, run in the background, or detach their
 > sandbox session. The token lease belongs to the top-level command invocation, not to arbitrary
 > descendants. When that command exits, `ghst` revokes the token even if a descendant is still
-> running. Keep the workload in the foreground; for example, do not use `nono run --detached` here
+> running. Keep the workload in the foreground; for example, do not use `nono run --detached` here.
 > For detached workloads, `ghst token` provides no process-bound cleanup: the caller must manage
 > the token, which remains cached and usable until issuer expiry or `ghst revoke --all`.
 
@@ -68,7 +68,7 @@ OAuth Device Flow uses the public `client_id`, not the `client_secret`, so anyon
 - **Prohibition of Pre-filled Verification URLs:** `ghst` **never** opens or outputs pre-filled verification URLs containing `?user_code=...`. The browser strictly navigates to `https://github.com/login/device`, forcing the user to manually copy and enter the user code. This removes a one-click authorization path from `ghst` itself, but cannot protect a user who approves an out-of-bound flow.
 
 > [!IMPORTANT]
-> Please take time to read [SECURITY.md](SECURITY.md) before deploying in large scale. 
+> Please take time to read [SECURITY.md](SECURITY.md) before deploying at scale.
 
 ---
 

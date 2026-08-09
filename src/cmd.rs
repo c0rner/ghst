@@ -19,12 +19,12 @@ use std::str::FromStr;
 #[derive(FromArgs, PartialEq, Eq, Debug)]
 #[argh(
     description = "\
-'{command_name}' is a local, developer-focused CLI tool that issues short-lived
-GitHub App user access tokens for humans and AI coding tools.\n
-It replaces long-lived personal access credentials with user-attributed,
-strictly scoped access tokens protecting a trusted human operator's GitHub
-authority from less-trusted processes running on the same machine.
-It does not attempt to prevent the operator themselves from bypassing local
+'{command_name}' is a local, developer-focused CLI tool that issues short-lived \
+GitHub App user access tokens for humans and AI coding tools.\n\
+It replaces long-lived personal access credentials with user-attributed, \
+strictly scoped access tokens protecting a trusted human operator's GitHub \
+authority from less-trusted processes running on the same machine.\n\
+It does not attempt to prevent the operator themselves from bypassing local \
 profiles or directly invoking the GitHub API.",
     example = "\
 {command_name} login --profile developer

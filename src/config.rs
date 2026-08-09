@@ -92,7 +92,7 @@ permissions = { contents = "write", pull_requests = "write", issues = "write" }
 description = "Read access focused on vulnerability alerts and security events"
 source = "security-admin"
 repo = "octo-org/api"
-permissions = { contents = "read", security_events = "read", vulnerabilities = "none" }
+permissions = { contents = "read", security_events = "read", vulnerability_alerts = "read" }
 "#;
 
     #[test]
@@ -136,12 +136,22 @@ permissions = { contents = "read", security_events = "read", vulnerabilities = "
                     RepoScope::Specific("octo-org/api".to_string())
                 );
                 assert_eq!(
-                    derived.permissions.get("vulnerabilities"),
-                    Some(&PermissionLevel::None)
+                    derived.permissions.get("vulnerability_alerts"),
+                    Some(&PermissionLevel::Read)
                 );
             }
             ProfileConfig::Root(_) => panic!("expected derived profile"),
         }
+    }
+
+    #[test]
+    fn test_none_permission_level_is_rejected() {
+        let invalid = VALID_CONFIG.replace(
+            "vulnerability_alerts = \"read\"",
+            "vulnerability_alerts = \"none\"",
+        );
+        let err: ConfigError = invalid.parse::<Config>().unwrap_err();
+        assert!(matches!(err, ConfigError::Parse(_)));
     }
 
     #[test]

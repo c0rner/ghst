@@ -141,7 +141,6 @@ impl fmt::Display for RepoScope {
 pub enum PermissionLevel {
     Read,
     Write,
-    None,
 }
 
 impl fmt::Display for PermissionLevel {
@@ -149,7 +148,6 @@ impl fmt::Display for PermissionLevel {
         match self {
             Self::Read => write!(f, "read"),
             Self::Write => write!(f, "write"),
-            Self::None => write!(f, "none"),
         }
     }
 }

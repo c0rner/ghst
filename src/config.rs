@@ -3,11 +3,12 @@ mod types;
 mod validation;
 
 pub use error::ConfigError;
-pub use types::{
-    Config, DerivedProfile, GitHubAppConfig, PermissionLevel, ProfileConfig, RepoScope, RootProfile,
-};
+#[cfg(test)]
+use types::PermissionLevel;
+pub use types::{Config, DerivedProfile, GitHubAppConfig, ProfileConfig, RepoScope, RootProfile};
 
-use std::fs;
+use std::fs::{File, OpenOptions};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -15,7 +16,10 @@ impl FromStr for Config {
     type Err = ConfigError;
 
     fn from_str(content: &str) -> Result<Self, Self::Err> {
-        let config: Self = toml::from_str(content).map_err(ConfigError::Parse)?;
+        let config: Self = toml::from_str(content).map_err(|mut source| {
+            source.set_input(None);
+            ConfigError::Parse(source)
+        })?;
         validation::validate_config(&config)?;
         Ok(config)
     }
@@ -31,8 +35,66 @@ pub fn load(path: Option<&Path>) -> Result<Config, ConfigError> {
         Some(path) => path.to_path_buf(),
         None => config_path()?,
     };
-    let content = fs::read_to_string(&path).map_err(|source| ConfigError::Io { path, source })?;
+    let mut file = open_config_file(&path)?;
+    let mut content = String::new();
+    file.read_to_string(&mut content)
+        .map_err(|source| ConfigError::Io {
+            path: path.clone(),
+            source,
+        })?;
     content.parse()
+}
+
+#[cfg(unix)]
+fn open_config_file(path: &Path) -> Result<File, ConfigError> {
+    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+
+    let flags = i32::try_from(rustix::fs::OFlags::NOFOLLOW.bits()).map_err(|_| {
+        ConfigError::InsecurePath {
+            path: path.to_path_buf(),
+            reason: "required filesystem open flags are not supported",
+        }
+    })?;
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(flags)
+        .open(path)
+        .map_err(|source| ConfigError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+    let metadata = file.metadata().map_err(|source| ConfigError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let reason = if !metadata.is_file() {
+        Some("expected a regular file")
+    } else if metadata.nlink() != 1 {
+        Some("hard links are not permitted")
+    } else if metadata.uid() != rustix::process::geteuid().as_raw() {
+        Some("not owned by the effective user")
+    } else if metadata.permissions().mode() & 0o7777 != 0o600 {
+        Some("unexpected permissions")
+    } else {
+        None
+    };
+    reason.map_or_else(
+        || Ok(file),
+        |reason| {
+            Err(ConfigError::InsecurePath {
+                path: path.to_path_buf(),
+                reason,
+            })
+        },
+    )
+}
+
+#[cfg(not(unix))]
+fn open_config_file(path: &Path) -> Result<File, ConfigError> {
+    Err(ConfigError::InsecurePath {
+        path: path.to_path_buf(),
+        reason: "secure configuration loading is not supported on this platform",
+    })
 }
 
 fn config_path() -> Result<PathBuf, ConfigError> {
@@ -387,5 +449,64 @@ permissions = {}
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn toml_errors_do_not_retain_secret_source() {
+        let marker = "secret-marker-must-not-leak";
+        let invalid =
+            format!("version = 1\n[profile.developer]\ngithub_app.client_secret = \"{marker}\n");
+        let error = invalid.parse::<Config>().unwrap_err();
+        assert!(!error.to_string().contains(marker));
+        assert!(!format!("{error:?}").contains(marker));
+        let command_error = crate::cmd::CmdError::from(error);
+        assert!(!command_error.to_string().contains(marker));
+        assert!(!format!("{command_error:?}").contains(marker));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn load_rejects_insecure_file_types_links_and_permissions() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let temp = tempfile::tempdir().unwrap();
+        let valid = temp.path().join("valid.toml");
+        std::fs::write(&valid, VALID_CONFIG).unwrap();
+        std::fs::set_permissions(&valid, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(load(Some(&valid)).is_ok());
+
+        std::fs::set_permissions(&valid, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(matches!(
+            load(Some(&valid)),
+            Err(ConfigError::InsecurePath {
+                reason: "unexpected permissions",
+                ..
+            })
+        ));
+        std::fs::set_permissions(&valid, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let symlink_path = temp.path().join("symlink.toml");
+        symlink(&valid, &symlink_path).unwrap();
+        assert!(load(Some(&symlink_path)).is_err());
+
+        let hardlink_path = temp.path().join("hardlink.toml");
+        std::fs::hard_link(&valid, &hardlink_path).unwrap();
+        assert!(matches!(
+            load(Some(&valid)),
+            Err(ConfigError::InsecurePath {
+                reason: "hard links are not permitted",
+                ..
+            })
+        ));
+
+        let directory = temp.path().join("directory.toml");
+        std::fs::create_dir(&directory).unwrap();
+        assert!(matches!(
+            load(Some(&directory)),
+            Err(ConfigError::InsecurePath {
+                reason: "expected a regular file",
+                ..
+            })
+        ));
     }
 }

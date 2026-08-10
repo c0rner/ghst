@@ -1,12 +1,11 @@
-use super::{TokenError, load_current_root_entry, revoke_with_context, root_cache_key};
+use super::{TokenError, revoke_with_context, root_cache_key};
 use crate::cache::{
     CacheEntry, RUN_CACHE_SCHEMA_VERSION, RunCacheEntry, RunState, SaveCacheEntry, cache_epoch,
     compute_run_cache_key, format_rfc3339, save_cache_candidate,
 };
-use crate::config::{Config, DerivedProfile, ProfileConfig, RootProfile};
-use crate::github::{ScopedTokenClient, ScopedTokenResponse};
-use crate::repository::{RepositoryError, RepositorySelection};
-use std::collections::BTreeMap;
+use crate::config::Config;
+use crate::github::ScopedTokenClient;
+use crate::repository::RepositoryError;
 use std::fmt::Write as _;
 use std::path::Path;
 use time::OffsetDateTime;
@@ -44,48 +43,18 @@ pub fn mint<C: ScopedTokenClient>(
     request: &MintRunRequest<'_>,
     resolve_auto: impl FnMut() -> Result<String, RepositoryError>,
 ) -> Result<PendingRun, TokenError> {
-    let (profile, source) = resolve_profiles(request.config, request.profile_name)?;
-    let selection = RepositorySelection::resolve(
+    let prepared = super::scoped::prepare(
+        request.config,
+        request.cache_dir,
+        request.profile_name,
         request.repositories,
-        &profile.repo,
-        &source.github_app.account,
         resolve_auto,
     )?;
-    let scope = selection.canonical();
-    let repositories = selection.repository_names();
-    let permissions = profile
-        .permissions
-        .iter()
-        .map(|(name, level)| (name.clone(), level.to_string()))
-        .collect::<BTreeMap<_, _>>();
-    let root = load_current_root_entry(request.cache_dir, &profile.source, &source.github_app)?
-        .ok_or_else(|| TokenError::NoSourceTokenCached(profile.source.clone()))?;
-    if !root.expires_at.is_usable_at(request.now) {
-        return Err(TokenError::NoSourceTokenCached(profile.source.clone()));
-    }
-    let secret = source
-        .github_app
-        .client_secret
-        .as_deref()
-        .ok_or_else(|| TokenError::ClientSecretRequired(profile.source.clone()))?;
     let run_id = generate_run_id()?;
     let cache_key = compute_run_cache_key(&run_id);
     let epoch = cache_epoch(request.cache_dir)?;
-    let generation = root.generation_fingerprint();
-    let ScopedTokenResponse {
-        token, expires_at, ..
-    } = client.create_scoped_token(
-        &source.github_app.client_id,
-        secret,
-        root.access_token.as_ref(),
-        &source.github_app.account,
-        repositories.as_deref(),
-        &permissions,
-    )?;
-    let expiry = match super::validate_scoped_expiry(expires_at.as_deref(), request.now) {
-        Ok(expiry) => expiry,
-        Err(error) => return Err(revoke_with_context(client, source, &token, error)),
-    };
+    let generation = prepared.root.generation_fingerprint();
+    let issued = super::scoped::issue(client, &prepared, request.now)?;
     let candidate = CacheEntry::Run(RunCacheEntry {
         version: RUN_CACHE_SCHEMA_VERSION,
         run_id: run_id.clone(),
@@ -93,23 +62,23 @@ pub fn mint<C: ScopedTokenClient>(
         wrapper_pid: request.wrapper_pid,
         child_pid: None,
         profile: request.profile_name.to_owned(),
-        source_profile: profile.source.clone(),
+        source_profile: prepared.profile.source.clone(),
         source_authority_fingerprint: crate::cache::authority_fingerprint(
-            &source.github_app.client_id,
-            &source.github_app.account,
+            &prepared.source.github_app.client_id,
+            &prepared.source.github_app.account,
         ),
-        github_user: root.github_user,
-        repo_scope: scope,
+        github_user: prepared.root.github_user,
+        repo_scope: prepared.scope,
         issued_at: format_rfc3339(request.now),
-        expires_at: expiry,
-        access_token: token,
+        expires_at: issued.expires_at,
+        access_token: issued.access_token,
     });
     let saved = save_cache_candidate(
         request.cache_dir,
         &cache_key,
         &candidate,
         epoch,
-        Some((&root_cache_key(&profile.source), &generation)),
+        Some((&root_cache_key(&prepared.profile.source), &generation)),
     );
     match saved {
         Ok(SaveCacheEntry::Saved) => {
@@ -126,31 +95,10 @@ pub fn mint<C: ScopedTokenClient>(
         Ok(SaveCacheEntry::Retained(_)) => unreachable!("run entries are never reusable"),
         Err(source_error) => Err(revoke_with_context(
             client,
-            source,
+            prepared.source,
             candidate.access_token(),
             TokenError::Cache(source_error),
         )),
-    }
-}
-
-fn resolve_profiles<'a>(
-    config: &'a Config,
-    profile_name: &str,
-) -> Result<(&'a DerivedProfile, &'a RootProfile), TokenError> {
-    let profile = match config.profiles.get(profile_name) {
-        Some(ProfileConfig::Derived(profile)) => profile,
-        Some(ProfileConfig::Root(_)) => {
-            return Err(TokenError::RunRequiresDerived(profile_name.to_owned()));
-        }
-        None => return Err(TokenError::ProfileNotFound(profile_name.to_owned())),
-    };
-    match config.profiles.get(&profile.source) {
-        Some(ProfileConfig::Root(source)) => Ok((profile, source)),
-        Some(ProfileConfig::Derived(_)) => Err(TokenError::SourceProfileNotRoot {
-            profile: profile_name.to_owned(),
-            source: profile.source.clone(),
-        }),
-        None => Err(TokenError::ProfileNotFound(profile.source.clone())),
     }
 }
 
@@ -172,8 +120,9 @@ mod tests {
         authority_fingerprint, compute_cache_key, compute_run_cache_key, policy_fingerprint,
         save_cache_entry,
     };
-    use crate::github::{GitHubError, RevokeTokenClient};
+    use crate::github::{GitHubError, RevokeTokenClient, ScopedTokenResponse};
     use std::cell::Cell;
+    use std::collections::BTreeMap;
     use time::Duration;
 
     struct MockClient(Cell<usize>);
@@ -273,6 +222,7 @@ permissions = { contents = "read" }
                 version: CACHE_SCHEMA_VERSION,
                 profile: "reader".into(),
                 source_profile: "developer".into(),
+                source_authority_fingerprint: authority_fingerprint("id", "acme"),
                 parent_generation: match crate::cache::load_cache_entry(
                     &cache_dir,
                     &compute_cache_key("developer", "all"),

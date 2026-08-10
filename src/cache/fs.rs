@@ -57,15 +57,7 @@ pub(super) fn with_cache_lock<T>(
     lock_mode: LockMode,
     operation: impl FnOnce() -> Result<T, CacheError>,
 ) -> Result<T, CacheError> {
-    ensure_cache_dir(cache_dir)?;
-
-    let lock_file = open_cache_lock_file(cache_dir)?;
-    match lock_mode {
-        LockMode::Shared => fs2::FileExt::lock_shared(&lock_file).map_err(CacheError::Io)?,
-        LockMode::Exclusive => fs2::FileExt::lock_exclusive(&lock_file).map_err(CacheError::Io)?,
-    }
-
-    operation()
+    with_locked_file(cache_dir, lock_mode, |_| operation())
 }
 
 pub(super) fn create_private_tempfile(

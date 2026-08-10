@@ -1,8 +1,14 @@
 use crate::repository::RepositoryError;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::process::Command;
 
-/// Resolves the canonical `owner/repo` for the `origin` remote by inspecting local `.git/config`.
+enum GitRepository {
+    NotRepository,
+    RepositoryWithoutOrigin,
+    Repository { origin_url: String },
+}
+
+/// Resolves the canonical `owner/repo` for the `origin` remote through Git.
 ///
 /// # Errors
 ///
@@ -19,71 +25,41 @@ pub fn resolve_origin_repo() -> Result<String, RepositoryError> {
 ///
 /// Returns `RepositoryError` if repository or `origin` is missing or invalid.
 fn resolve_origin_repo_from(start_dir: &Path) -> Result<String, RepositoryError> {
-    let config_path = find_git_config_path(start_dir)?;
-    let content = fs::read_to_string(&config_path)?;
-    let url = parse_origin_url_from_config(&content)?;
-    parse_github_owner_repo(url)
+    match discover_repository(start_dir)? {
+        GitRepository::NotRepository => Err(RepositoryError::NotFound),
+        GitRepository::RepositoryWithoutOrigin => Err(RepositoryError::OriginNotFound),
+        GitRepository::Repository { origin_url } if origin_url.is_empty() => {
+            Err(RepositoryError::MissingOriginUrl)
+        }
+        GitRepository::Repository { origin_url } => parse_github_owner_repo(&origin_url),
+    }
 }
 
-/// Finds the path to `.git/config` by walking up parent directories starting from `start_dir`.
-fn find_git_config_path(start_dir: &Path) -> Result<PathBuf, RepositoryError> {
-    let mut current = start_dir.to_path_buf();
-    loop {
-        let git_path = current.join(".git");
-        if git_path.is_dir() {
-            let config = git_path.join("config");
-            if config.is_file() {
-                return Ok(config);
-            }
-        } else if git_path.is_file() {
-            // Worktree or submodule .git file pointing to gitdir
-            let content = fs::read_to_string(&git_path)?;
-            for line in content.lines() {
-                let line = line.trim();
-                if let Some(gitdir) = line.strip_prefix("gitdir:") {
-                    let config = current.join(gitdir.trim()).join("config");
-                    if config.is_file() {
-                        return Ok(config);
-                    }
-                }
-            }
-        }
-
-        if !current.pop() {
-            break;
-        }
-    }
-    Err(RepositoryError::NotFound)
-}
-
-/// Parses `[remote "origin"]` section from `.git/config` content and returns its `url`.
-fn parse_origin_url_from_config(config_content: &str) -> Result<&str, RepositoryError> {
-    let mut in_origin_section = false;
-    for line in config_content.lines() {
-        let line = line.trim();
-
-        if line.starts_with('[') && line.ends_with(']') {
-            let section = line[1..line.len() - 1].trim();
-            // Handle [remote "origin"] or [remote 'origin'] or [remote origin]
-            in_origin_section = section.eq_ignore_ascii_case(r#"remote "origin""#)
-                || section.eq_ignore_ascii_case("remote 'origin'")
-                || section.eq_ignore_ascii_case("remote origin");
-            continue;
-        }
-
-        if in_origin_section && let Some((key, val)) = line.split_once('=') {
-            let key = key.trim();
-            let val = val.trim();
-            if key.eq_ignore_ascii_case("url") {
-                if val.is_empty() {
-                    return Err(RepositoryError::MissingOriginUrl);
-                }
-                return Ok(val);
-            }
-        }
+fn discover_repository(start_dir: &Path) -> Result<GitRepository, RepositoryError> {
+    let repository = Command::new("git")
+        .arg("-C")
+        .arg(start_dir)
+        .args(["rev-parse", "--git-dir"])
+        .output()?;
+    if !repository.status.success() {
+        return Ok(GitRepository::NotRepository);
     }
 
-    Err(RepositoryError::OriginNotFound)
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(start_dir)
+        .args(["remote", "get-url", "origin"])
+        .output()?;
+    match output.status.code() {
+        Some(0) => {
+            let url = std::str::from_utf8(&output.stdout)
+                .map_err(|_| RepositoryError::InvalidOriginUrl)?
+                .trim()
+                .to_owned();
+            Ok(GitRepository::Repository { origin_url: url })
+        }
+        Some(_) | None => Ok(GitRepository::RepositoryWithoutOrigin),
+    }
 }
 
 /// Parses `owner/repo` from a GitHub remote URL.
@@ -99,7 +75,9 @@ fn parse_github_owner_repo(url: &str) -> Result<String, RepositoryError> {
         && let Some((host, path)) = rest.split_once(':')
     {
         if !host.eq_ignore_ascii_case("github.com") {
-            return Err(RepositoryError::UnsupportedRemote(url.to_string()));
+            return Err(RepositoryError::UnsupportedRemote {
+                host: host.to_owned(),
+            });
         }
         return extract_owner_repo_path(path, url);
     }
@@ -110,7 +88,7 @@ fn parse_github_owner_repo(url: &str) -> Result<String, RepositoryError> {
         .or_else(|| raw.strip_prefix("ssh://"))
     {
         // Handle optional userinfo prefix in URL e.g. git@
-        let rest = if let Some((_user, host_and_path)) = rest.split_once('@') {
+        let rest = if let Some((_user, host_and_path)) = rest.rsplit_once('@') {
             host_and_path
         } else {
             rest
@@ -118,16 +96,18 @@ fn parse_github_owner_repo(url: &str) -> Result<String, RepositoryError> {
 
         if let Some((host, path)) = rest.split_once('/') {
             if !host.eq_ignore_ascii_case("github.com") {
-                return Err(RepositoryError::UnsupportedRemote(url.to_string()));
+                return Err(RepositoryError::UnsupportedRemote {
+                    host: host.to_owned(),
+                });
             }
             return extract_owner_repo_path(path, url);
         }
     }
 
-    Err(RepositoryError::InvalidOriginUrl(url.to_string()))
+    Err(RepositoryError::InvalidOriginUrl)
 }
 
-fn extract_owner_repo_path(path: &str, original_url: &str) -> Result<String, RepositoryError> {
+fn extract_owner_repo_path(path: &str, _original_url: &str) -> Result<String, RepositoryError> {
     let mut parts = path
         .split('/')
         .map(str::trim)
@@ -136,7 +116,7 @@ fn extract_owner_repo_path(path: &str, original_url: &str) -> Result<String, Rep
         return Ok(format!("{owner}/{repository}"));
     }
 
-    Err(RepositoryError::InvalidOriginUrl(original_url.to_string()))
+    Err(RepositoryError::InvalidOriginUrl)
 }
 
 #[cfg(test)]
@@ -171,8 +151,8 @@ mod tests {
     fn test_reject_non_github_remotes() {
         let err = parse_github_owner_repo("git@gitlab.com:owner/repo.git").unwrap_err();
         match err {
-            RepositoryError::UnsupportedRemote(url) => {
-                assert_eq!(url, "git@gitlab.com:owner/repo.git");
+            RepositoryError::UnsupportedRemote { host } => {
+                assert_eq!(host, "gitlab.com");
             }
             other => panic!("expected UnsupportedRemote, got {other:?}"),
         }
@@ -180,42 +160,92 @@ mod tests {
         let err_https =
             parse_github_owner_repo("https://bitbucket.org/owner/repo.git").unwrap_err();
         match err_https {
-            RepositoryError::UnsupportedRemote(url) => {
-                assert_eq!(url, "https://bitbucket.org/owner/repo.git");
+            RepositoryError::UnsupportedRemote { host } => {
+                assert_eq!(host, "bitbucket.org");
             }
             other => panic!("expected UnsupportedRemote, got {other:?}"),
         }
     }
 
     #[test]
-    fn test_parse_origin_url_from_config() {
-        let config = r#"
-[core]
-	repositoryformatversion = 0
-	filemode = true
-[remote "origin"]
-	url = git@github.com:c0rner/ghst.git
-	fetch = +refs/heads/*:refs/remotes/origin/*
-[branch "main"]
-	remote = origin
-	merge = refs/heads/main
-"#;
-        let url = parse_origin_url_from_config(config).unwrap();
-        assert_eq!(url, "git@github.com:c0rner/ghst.git");
+    fn errors_do_not_retain_credentials() {
+        let marker = "secret-marker";
+        for url in [
+            format!("https://user:{marker}@gitlab.com/owner/repo.git"),
+            format!("https://user:password@{marker}@gitlab.com/owner/repo.git"),
+            format!("https://user:{marker}@github.com/not-enough"),
+        ] {
+            let error = parse_github_owner_repo(&url).unwrap_err();
+            assert!(!error.to_string().contains(marker));
+            assert!(!format!("{error:?}").contains(marker));
+        }
     }
 
     #[test]
-    fn test_missing_origin_remote() {
-        let config = r#"
-[core]
-	repositoryformatversion = 0
-[remote "upstream"]
-	url = git@github.com:c0rner/ghst.git
-"#;
-        let err = parse_origin_url_from_config(config).unwrap_err();
-        match err {
-            RepositoryError::OriginNotFound => {}
-            other => panic!("expected OriginNotFound, got {other:?}"),
-        }
+    fn distinguishes_non_repository_and_repository_without_origin() {
+        let temp = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            discover_repository(temp.path()).unwrap(),
+            GitRepository::NotRepository
+        ));
+        assert!(matches!(
+            resolve_origin_repo_from(temp.path()),
+            Err(RepositoryError::NotFound)
+        ));
+        init_repository(temp.path());
+        assert!(matches!(
+            discover_repository(temp.path()).unwrap(),
+            GitRepository::RepositoryWithoutOrigin
+        ));
+        assert!(matches!(
+            resolve_origin_repo_from(temp.path()),
+            Err(RepositoryError::OriginNotFound)
+        ));
+    }
+
+    #[test]
+    fn resolves_rewritten_origin_through_git() {
+        let temp = tempfile::tempdir().unwrap();
+        init_repository(temp.path());
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(temp.path())
+                .args([
+                    "config",
+                    "url.https://github.com/.insteadOf",
+                    "https://example.invalid/",
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .arg("-C")
+                .arg(temp.path())
+                .args([
+                    "config",
+                    "remote.origin.url",
+                    "https://example.invalid/c0rner/ghst.git",
+                ])
+                .status()
+                .unwrap()
+                .success()
+        );
+        let nested = temp.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        assert_eq!(resolve_origin_repo_from(&nested).unwrap(), "c0rner/ghst");
+    }
+
+    fn init_repository(path: &Path) {
+        assert!(
+            Command::new("git")
+                .args(["init", "--quiet"])
+                .arg(path)
+                .status()
+                .unwrap()
+                .success()
+        );
     }
 }

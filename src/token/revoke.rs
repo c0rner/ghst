@@ -1,5 +1,5 @@
-use crate::cache::{CacheEntry, CacheInspectionState, revoke_transaction};
-use crate::config::{Config, ProfileConfig, RootProfile};
+use crate::cache::{CacheInspectionState, revoke_transaction};
+use crate::config::Config;
 use crate::github::{GitHubError, RevokeTokenClient};
 use std::path::Path;
 use time::OffsetDateTime;
@@ -9,6 +9,9 @@ pub enum RevokeFailure {
         entry: String,
     },
     ClientSecretUnavailable {
+        entry: String,
+    },
+    AuthorityMismatch {
         entry: String,
     },
     GitHubRevocation {
@@ -30,6 +33,10 @@ impl std::fmt::Debug for RevokeFailure {
                 .finish(),
             Self::ClientSecretUnavailable { entry } => formatter
                 .debug_struct("ClientSecretUnavailable")
+                .field("entry", entry)
+                .finish(),
+            Self::AuthorityMismatch { entry } => formatter
+                .debug_struct("AuthorityMismatch")
                 .field("entry", entry)
                 .finish(),
             Self::GitHubRevocation { entry, source } => formatter
@@ -66,37 +73,46 @@ pub fn revoke_all<C: RevokeTokenClient>(
             let label = transaction.entries()[index].label.clone();
             let revocation = match &transaction.entries()[index].state {
                 CacheInspectionState::Current(entry) if entry.is_usable_at(now) => {
-                    if let Some(app) = app_for_entry(config, entry) {
-                        if let Some(secret) = app.github_app.client_secret.as_deref() {
-                            match client.delete_token(
-                                &app.github_app.client_id,
-                                secret,
-                                entry.access_token().as_ref(),
-                            ) {
-                                Ok(()) => true,
-                                Err(source) if source.is_not_found() => true,
-                                Err(source) => {
-                                    report.retained += 1;
-                                    report.failures.push(RevokeFailure::GitHubRevocation {
-                                        entry: label,
-                                        source,
-                                    });
-                                    continue;
+                    match super::provenance::for_entry(config, entry) {
+                        super::provenance::ConfiguredAuthority::Match(app) => {
+                            if let Some(secret) = app.github_app.client_secret.as_deref() {
+                                match client.delete_token(
+                                    &app.github_app.client_id,
+                                    secret,
+                                    entry.access_token().as_ref(),
+                                ) {
+                                    Ok(()) => true,
+                                    Err(source) if source.is_not_found() => true,
+                                    Err(source) => {
+                                        report.retained += 1;
+                                        report.failures.push(RevokeFailure::GitHubRevocation {
+                                            entry: label,
+                                            source,
+                                        });
+                                        continue;
+                                    }
                                 }
+                            } else {
+                                report
+                                    .failures
+                                    .push(RevokeFailure::ClientSecretUnavailable {
+                                        entry: label.clone(),
+                                    });
+                                false
                             }
-                        } else {
-                            report
-                                .failures
-                                .push(RevokeFailure::ClientSecretUnavailable {
-                                    entry: label.clone(),
-                                });
+                        }
+                        super::provenance::ConfiguredAuthority::Mismatch => {
+                            report.failures.push(RevokeFailure::AuthorityMismatch {
+                                entry: label.clone(),
+                            });
                             false
                         }
-                    } else {
-                        report.failures.push(RevokeFailure::MissingAppCredentials {
-                            entry: label.clone(),
-                        });
-                        false
+                        super::provenance::ConfiguredAuthority::Missing => {
+                            report.failures.push(RevokeFailure::MissingAppCredentials {
+                                entry: label.clone(),
+                            });
+                            false
+                        }
                     }
                 }
                 CacheInspectionState::Current(_)
@@ -123,34 +139,14 @@ pub fn revoke_all<C: RevokeTokenClient>(
     })
 }
 
-fn app_for_entry<'a>(config: &'a Config, entry: &CacheEntry) -> Option<&'a RootProfile> {
-    let name = match entry {
-        CacheEntry::Root(value) => &value.profile,
-        CacheEntry::Derived(value) => &value.source_profile,
-        CacheEntry::Run(value) => &value.source_profile,
-    };
-    match config.profiles.get(name) {
-        Some(ProfileConfig::Root(root)) => match entry {
-            CacheEntry::Run(entry)
-                if crate::cache::authority_fingerprint(
-                    &root.github_app.client_id,
-                    &root.github_app.account,
-                ) != entry.source_authority_fingerprint =>
-            {
-                None
-            }
-            CacheEntry::Root(_) | CacheEntry::Derived(_) | CacheEntry::Run(_) => Some(root),
-        },
-        Some(ProfileConfig::Derived(_)) | None => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::cache::{
-        AccessToken, CACHE_SCHEMA_VERSION, RootCacheEntry, TokenExpiry, authority_fingerprint,
-        format_rfc3339, list_all_cache_entries, save_cache_entry,
+        AccessToken, CACHE_SCHEMA_VERSION, CacheEntry, DerivedCacheEntry, RUN_CACHE_SCHEMA_VERSION,
+        RootCacheEntry, RunCacheEntry, RunState, TokenExpiry, authority_fingerprint,
+        compute_cache_key, compute_run_cache_key, format_rfc3339, list_all_cache_entries,
+        save_cache_entry,
     };
     use std::cell::Cell;
     use time::Duration;
@@ -237,5 +233,81 @@ mod tests {
             assert!(report.failures.is_empty());
             assert!(list_all_cache_entries(&cache_dir).unwrap().is_empty());
         }
+    }
+
+    #[test]
+    fn authority_mismatch_is_local_only_for_every_cache_kind() {
+        let now = OffsetDateTime::now_utc();
+        let changed: Config = "version = 1\ndefault_profile = \"developer\"\n[profile.developer]\ngithub_app.account = \"different\"\ngithub_app.client_id = \"other-id\"\ngithub_app.client_secret = \"secret\"\n"
+            .parse()
+            .unwrap();
+        for (key, entry) in mismatched_entries(now + Duration::hours(1)) {
+            let temp = tempfile::tempdir().unwrap();
+            let cache_dir = temp.path().join("cache");
+            save_cache_entry(&cache_dir, &key, &entry).unwrap();
+            let client = MockClient(Cell::new(0));
+            let report = revoke_all(&client, &changed, &cache_dir, now).unwrap();
+            assert_eq!(client.0.get(), 0);
+            assert_eq!(report.remotely_inactive, 0);
+            assert_eq!(report.local_only, 1);
+            assert!(matches!(
+                report.failures.as_slice(),
+                [RevokeFailure::AuthorityMismatch { .. }]
+            ));
+            assert!(list_all_cache_entries(&cache_dir).unwrap().is_empty());
+        }
+    }
+
+    fn mismatched_entries(expiry: OffsetDateTime) -> [(String, crate::cache::CacheEntry); 3] {
+        let authority = authority_fingerprint("id", "acme");
+        let issued_at = format_rfc3339(OffsetDateTime::now_utc());
+        [
+            (
+                crate::token::root_cache_key("developer"),
+                crate::cache::CacheEntry::Root(RootCacheEntry {
+                    version: CACHE_SCHEMA_VERSION,
+                    profile: "developer".into(),
+                    authority_fingerprint: authority.clone(),
+                    github_user: "octocat".into(),
+                    issued_at: issued_at.clone(),
+                    expires_at: TokenExpiry::new(expiry),
+                    access_token: AccessToken::from("root-token"),
+                }),
+            ),
+            (
+                compute_cache_key("reader", "acme/api"),
+                crate::cache::CacheEntry::Derived(DerivedCacheEntry {
+                    version: CACHE_SCHEMA_VERSION,
+                    profile: "reader".into(),
+                    source_profile: "developer".into(),
+                    source_authority_fingerprint: authority.clone(),
+                    parent_generation: "generation".into(),
+                    policy_fingerprint: "policy".into(),
+                    github_user: "octocat".into(),
+                    repo_scope: "acme/api".into(),
+                    issued_at: issued_at.clone(),
+                    expires_at: TokenExpiry::new(expiry),
+                    access_token: AccessToken::from("derived-token"),
+                }),
+            ),
+            (
+                compute_run_cache_key("run-1"),
+                crate::cache::CacheEntry::Run(RunCacheEntry {
+                    version: RUN_CACHE_SCHEMA_VERSION,
+                    run_id: "run-1".into(),
+                    state: RunState::Running,
+                    wrapper_pid: 100,
+                    child_pid: Some(101),
+                    profile: "reader".into(),
+                    source_profile: "developer".into(),
+                    source_authority_fingerprint: authority,
+                    github_user: "octocat".into(),
+                    repo_scope: "acme/api".into(),
+                    issued_at,
+                    expires_at: TokenExpiry::new(expiry),
+                    access_token: AccessToken::from("run-token"),
+                }),
+            ),
+        ]
     }
 }

@@ -7,7 +7,7 @@ use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
 use zeroize::Zeroizing;
 
-pub const CACHE_SCHEMA_VERSION: u32 = 2;
+pub const CACHE_SCHEMA_VERSION: u32 = 3;
 pub const RUN_CACHE_SCHEMA_VERSION: u32 = 1;
 pub const TOKEN_SAFETY_MARGIN: Duration = Duration::seconds(30);
 
@@ -164,6 +164,8 @@ impl CacheEntry {
             (Self::Derived(existing), Self::Derived(candidate)) => {
                 existing.profile == candidate.profile
                     && existing.source_profile == candidate.source_profile
+                    && existing.source_authority_fingerprint
+                        == candidate.source_authority_fingerprint
                     && existing.repo_scope == candidate.repo_scope
                     && existing.parent_generation == candidate.parent_generation
                     && existing.policy_fingerprint == candidate.policy_fingerprint
@@ -221,6 +223,7 @@ pub struct DerivedCacheEntry {
     pub version: u32,
     pub profile: String,
     pub source_profile: String,
+    pub source_authority_fingerprint: String,
     pub parent_generation: String,
     pub policy_fingerprint: String,
     pub github_user: String,
@@ -285,6 +288,10 @@ impl fmt::Debug for DerivedCacheEntry {
             .field("version", &self.version)
             .field("profile", &self.profile)
             .field("source_profile", &self.source_profile)
+            .field(
+                "source_authority_fingerprint",
+                &self.source_authority_fingerprint,
+            )
             .field("parent_generation", &self.parent_generation)
             .field("policy_fingerprint", &self.policy_fingerprint)
             .field("github_user", &self.github_user)

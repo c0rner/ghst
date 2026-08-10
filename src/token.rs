@@ -1,9 +1,11 @@
 mod acquire;
 pub mod cleanup;
 mod error;
+mod provenance;
 pub mod revoke;
 mod root;
 pub mod run;
+mod scoped;
 mod types;
 mod validation;
 

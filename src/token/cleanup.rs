@@ -1,9 +1,8 @@
 use crate::cache::{
-    CacheEntry, CacheInspectionState, RunCacheEntry, RunState, authority_fingerprint,
-    claim_abandoned_run, claim_released_run, delete_entry_if_unchanged, delete_run_after_cleanup,
-    inspect_cache,
+    CacheEntry, CacheInspectionState, RunCacheEntry, RunState, claim_abandoned_run,
+    claim_released_run, delete_entry_if_unchanged, delete_run_after_cleanup, inspect_cache,
 };
-use crate::config::{Config, ProfileConfig, RootProfile};
+use crate::config::{Config, RootProfile};
 use crate::github::{GitHubError, RevokeTokenClient};
 use std::path::Path;
 use time::OffsetDateTime;
@@ -284,14 +283,14 @@ fn cleanup_run_entry<C: RevokeTokenClient>(
 }
 
 fn validated_root<'a>(config: &'a Config, entry: &RunCacheEntry) -> Option<&'a RootProfile> {
-    match config.profiles.get(&entry.source_profile) {
-        Some(ProfileConfig::Root(root))
-            if authority_fingerprint(&root.github_app.client_id, &root.github_app.account)
-                == entry.source_authority_fingerprint =>
-        {
-            Some(root)
-        }
-        Some(ProfileConfig::Root(_) | ProfileConfig::Derived(_)) | None => None,
+    match super::provenance::for_source(
+        config,
+        &entry.source_profile,
+        &entry.source_authority_fingerprint,
+    ) {
+        super::provenance::ConfiguredAuthority::Match(root) => Some(root),
+        super::provenance::ConfiguredAuthority::Mismatch
+        | super::provenance::ConfiguredAuthority::Missing => None,
     }
 }
 
@@ -331,8 +330,8 @@ fn pid_is_alive(_pid: u32) -> bool {
 mod tests {
     use super::*;
     use crate::cache::{
-        RUN_CACHE_SCHEMA_VERSION, RunState, TokenExpiry, compute_run_cache_key, format_rfc3339,
-        load_cache_entry, save_cache_entry,
+        RUN_CACHE_SCHEMA_VERSION, RunState, TokenExpiry, authority_fingerprint,
+        compute_run_cache_key, format_rfc3339, load_cache_entry, save_cache_entry,
     };
     use std::cell::{Cell, RefCell};
     use time::Duration;
@@ -478,6 +477,43 @@ permissions = { contents = "read" }
         assert_eq!(report.expired_deletions, 1);
         assert!(client.revoked.borrow().is_empty());
         assert!(load_cache_entry(&cache_dir, &key).unwrap().is_none());
+    }
+
+    #[test]
+    fn prune_does_not_revoke_with_mismatched_authority() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let now = OffsetDateTime::now_utc();
+        let key = compute_run_cache_key("mismatched");
+        let mut cached = run_entry(
+            "mismatched",
+            RunState::Running,
+            i32::MAX as u32,
+            Some(i32::MAX as u32),
+            now + Duration::hours(1),
+        );
+        let CacheEntry::Run(entry) = &mut cached else {
+            unreachable!("run_entry returned a non-run entry")
+        };
+        entry.source_authority_fingerprint = authority_fingerprint("other-id", "different");
+        save_cache_entry(&cache_dir, &key, &cached).unwrap();
+
+        let client = client();
+        let report = cleanup(&client, &config(), &cache_dir, CleanupScope::Prune, now).unwrap();
+
+        assert!(client.revoked.borrow().is_empty());
+        assert_eq!(report.retained_entries, 1);
+        assert!(matches!(
+            report.failures.as_slice(),
+            [CleanupFailure::Configuration { .. }]
+        ));
+        assert!(matches!(
+            load_cache_entry(&cache_dir, &key).unwrap(),
+            Some(CacheEntry::Run(RunCacheEntry {
+                state: RunState::CleanupPending,
+                ..
+            }))
+        ));
     }
 
     #[test]

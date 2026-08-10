@@ -148,7 +148,7 @@ fn cache_entry_json_format_is_compatible() {
     let cases = [
         (
             CacheEntry::Root(RootCacheEntry {
-                version: 2,
+                version: 3,
                 profile: "developer".into(),
                 authority_fingerprint: "authority".into(),
                 github_user: "octocat".into(),
@@ -156,13 +156,14 @@ fn cache_entry_json_format_is_compatible() {
                 expires_at: TokenExpiry::parse("2026-08-09T11:00:00Z").unwrap(),
                 access_token: "root-token".into(),
             }),
-            r#"{"kind":"root","version":2,"profile":"developer","authority_fingerprint":"authority","github_user":"octocat","issued_at":"2026-08-09T10:00:00Z","expires_at":"2026-08-09T11:00:00Z","access_token":"root-token"}"#,
+            r#"{"kind":"root","version":3,"profile":"developer","authority_fingerprint":"authority","github_user":"octocat","issued_at":"2026-08-09T10:00:00Z","expires_at":"2026-08-09T11:00:00Z","access_token":"root-token"}"#,
         ),
         (
             CacheEntry::Derived(DerivedCacheEntry {
-                version: 2,
+                version: 3,
                 profile: "reader".into(),
                 source_profile: "developer".into(),
+                source_authority_fingerprint: "authority".into(),
                 parent_generation: "generation".into(),
                 policy_fingerprint: "policy".into(),
                 github_user: "octocat".into(),
@@ -171,7 +172,7 @@ fn cache_entry_json_format_is_compatible() {
                 expires_at: TokenExpiry::parse("2026-08-09T11:00:00Z").unwrap(),
                 access_token: "derived-token".into(),
             }),
-            r#"{"kind":"derived","version":2,"profile":"reader","source_profile":"developer","parent_generation":"generation","policy_fingerprint":"policy","github_user":"octocat","repo_scope":"acme/api","issued_at":"2026-08-09T10:00:00Z","expires_at":"2026-08-09T11:00:00Z","access_token":"derived-token"}"#,
+            r#"{"kind":"derived","version":3,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","parent_generation":"generation","policy_fingerprint":"policy","github_user":"octocat","repo_scope":"acme/api","issued_at":"2026-08-09T10:00:00Z","expires_at":"2026-08-09T11:00:00Z","access_token":"derived-token"}"#,
         ),
         (
             CacheEntry::Run(RunCacheEntry {
@@ -455,6 +456,7 @@ fn compatible_entry_is_retained_and_wrong_kind_fails_closed() {
         version: CACHE_SCHEMA_VERSION,
         profile: "developer".into(),
         source_profile: "developer".into(),
+        source_authority_fingerprint: "authority".into(),
         parent_generation: "parent".into(),
         policy_fingerprint: "policy".into(),
         github_user: "octocat".into(),

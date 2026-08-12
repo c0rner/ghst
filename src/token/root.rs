@@ -51,13 +51,9 @@ pub fn load_current_root_entry(
         });
     }
     match entry {
-        CacheEntry::Root(entry) => {
-            let expected = authority_fingerprint(&github_app.client_id, &github_app.account);
-            Ok(
-                (entry.version == CACHE_SCHEMA_VERSION && entry.authority_fingerprint == expected)
-                    .then_some(entry),
-            )
-        }
+        CacheEntry::Root(entry) => Ok((entry.version == CACHE_SCHEMA_VERSION
+            && super::provenance::matches(github_app, &entry.authority_fingerprint))
+        .then_some(entry)),
         other @ (CacheEntry::Derived(_) | CacheEntry::Run(_)) => {
             Err(TokenError::UnexpectedCacheKind {
                 profile: profile_name.to_owned(),

@@ -45,6 +45,10 @@ fn write_report(writer: &mut impl Write, report: &RevokeReport) -> io::Result<()
                 writer,
                 "  - {entry}: client secret unavailable; deleted locally and token may remain active remotely"
             )?,
+            RevokeFailure::AuthorityMismatch { entry } => writeln!(
+                writer,
+                "  - {entry}: cached token authority does not match configuration; deleted locally and token may remain active remotely"
+            )?,
             RevokeFailure::GitHubRevocation { entry, source: _ } => {
                 writeln!(writer, "  - {entry}: remote revocation failed")?;
             }

@@ -7,7 +7,7 @@ use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
 use zeroize::Zeroizing;
 
-pub const CACHE_SCHEMA_VERSION: u32 = 2;
+pub const CACHE_SCHEMA_VERSION: u32 = 3;
 pub const RUN_CACHE_SCHEMA_VERSION: u32 = 1;
 pub const TOKEN_SAFETY_MARGIN: Duration = Duration::seconds(30);
 
@@ -94,7 +94,8 @@ impl<'de> Deserialize<'de> for TokenExpiry {
     }
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CacheEntry {
     Root(RootCacheEntry),
     Derived(DerivedCacheEntry),
@@ -163,6 +164,8 @@ impl CacheEntry {
             (Self::Derived(existing), Self::Derived(candidate)) => {
                 existing.profile == candidate.profile
                     && existing.source_profile == candidate.source_profile
+                    && existing.source_authority_fingerprint
+                        == candidate.source_authority_fingerprint
                     && existing.repo_scope == candidate.repo_scope
                     && existing.parent_generation == candidate.parent_generation
                     && existing.policy_fingerprint == candidate.policy_fingerprint
@@ -220,6 +223,7 @@ pub struct DerivedCacheEntry {
     pub version: u32,
     pub profile: String,
     pub source_profile: String,
+    pub source_authority_fingerprint: String,
     pub parent_generation: String,
     pub policy_fingerprint: String,
     pub github_user: String,
@@ -284,6 +288,10 @@ impl fmt::Debug for DerivedCacheEntry {
             .field("version", &self.version)
             .field("profile", &self.profile)
             .field("source_profile", &self.source_profile)
+            .field(
+                "source_authority_fingerprint",
+                &self.source_authority_fingerprint,
+            )
             .field("parent_generation", &self.parent_generation)
             .field("policy_fingerprint", &self.policy_fingerprint)
             .field("github_user", &self.github_user)
@@ -292,48 +300,6 @@ impl fmt::Debug for DerivedCacheEntry {
             .field("expires_at", &self.expires_at)
             .field("access_token", &self.access_token)
             .finish()
-    }
-}
-
-#[derive(Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum CurrentCacheEntryRef<'a> {
-    Root(&'a RootCacheEntry),
-    Derived(&'a DerivedCacheEntry),
-    Run(&'a RunCacheEntry),
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum CurrentCacheEntry {
-    Root(RootCacheEntry),
-    Derived(DerivedCacheEntry),
-    Run(RunCacheEntry),
-}
-
-impl Serialize for CacheEntry {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match self {
-            Self::Root(entry) => CurrentCacheEntryRef::Root(entry).serialize(serializer),
-            Self::Derived(entry) => CurrentCacheEntryRef::Derived(entry).serialize(serializer),
-            Self::Run(entry) => CurrentCacheEntryRef::Run(entry).serialize(serializer),
-        }
-    }
-}
-
-impl<'de> Deserialize<'de> for CacheEntry {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        match CurrentCacheEntry::deserialize(deserializer)? {
-            CurrentCacheEntry::Root(entry) => Ok(Self::Root(entry)),
-            CurrentCacheEntry::Derived(entry) => Ok(Self::Derived(entry)),
-            CurrentCacheEntry::Run(entry) => Ok(Self::Run(entry)),
-        }
     }
 }
 

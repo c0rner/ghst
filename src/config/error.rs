@@ -9,6 +9,10 @@ pub enum ConfigError {
         path: PathBuf,
         source: std::io::Error,
     },
+    InsecurePath {
+        path: PathBuf,
+        reason: &'static str,
+    },
     Parse(toml::de::Error),
     UnsupportedVersion(u32),
     MissingDefaultProfile(String),
@@ -41,6 +45,13 @@ impl fmt::Display for ConfigError {
             Self::CacheDirNotFound => write!(f, "could not determine user cache directory"),
             Self::Io { path, source } => {
                 write!(f, "IO error reading '{}': {source}", path.display())
+            }
+            Self::InsecurePath { path, reason } => {
+                write!(
+                    f,
+                    "insecure configuration path '{}': {reason}",
+                    path.display()
+                )
             }
             Self::Parse(err) => write!(f, "TOML parse error: {err}"),
             Self::UnsupportedVersion(v) => write!(
@@ -77,7 +88,16 @@ impl std::error::Error for ConfigError {
         match self {
             Self::Io { source, .. } => Some(source),
             Self::Parse(err) => Some(err),
-            _ => None,
+            Self::ConfigDirNotFound
+            | Self::CacheDirNotFound
+            | Self::InsecurePath { .. }
+            | Self::UnsupportedVersion(_)
+            | Self::MissingDefaultProfile(_)
+            | Self::ProfileNotFound { .. }
+            | Self::DerivedFromNonRoot { .. }
+            | Self::DerivedFromSecretlessRoot { .. }
+            | Self::InvalidRootProfile { .. }
+            | Self::InvalidDerivedProfile { .. } => None,
         }
     }
 }

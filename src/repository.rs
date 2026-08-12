@@ -7,8 +7,8 @@ pub enum RepositoryError {
     NotFound,
     OriginNotFound,
     MissingOriginUrl,
-    UnsupportedRemote(String),
-    InvalidOriginUrl(String),
+    UnsupportedRemote { host: String },
+    InvalidOriginUrl,
     InvalidScope { value: String, reason: &'static str },
     OwnerMismatch { repository: String, account: String },
     Io(std::io::Error),
@@ -21,20 +21,15 @@ impl fmt::Display for RepositoryError {
                 f,
                 "could not find .git repository in current or parent directories"
             ),
-            Self::OriginNotFound => write!(f, "'origin' remote is not defined in .git/config"),
+            Self::OriginNotFound => write!(f, "repository does not define an 'origin' remote"),
             Self::MissingOriginUrl => {
-                write!(f, "'origin' remote in .git/config is missing a URL")
+                write!(f, "repository's 'origin' remote is missing a URL")
             }
-            Self::UnsupportedRemote(url) => write!(
+            Self::UnsupportedRemote { host } => write!(
                 f,
-                "origin remote '{url}' is not a GitHub repository. ghst is tailored for GitHub only"
+                "origin remote host '{host}' is not GitHub. ghst is tailored for GitHub only"
             ),
-            Self::InvalidOriginUrl(url) => {
-                write!(
-                    f,
-                    "could not parse owner/repository from origin URL '{url}'"
-                )
-            }
+            Self::InvalidOriginUrl => write!(f, "could not parse owner/repository from origin URL"),
             Self::InvalidScope { value, reason } => {
                 write!(f, "invalid repository scope '{value}': {reason}")
             }
@@ -57,8 +52,8 @@ impl std::error::Error for RepositoryError {
             Self::NotFound
             | Self::OriginNotFound
             | Self::MissingOriginUrl
-            | Self::UnsupportedRemote(_)
-            | Self::InvalidOriginUrl(_)
+            | Self::UnsupportedRemote { .. }
+            | Self::InvalidOriginUrl
             | Self::InvalidScope { .. }
             | Self::OwnerMismatch { .. } => None,
         }

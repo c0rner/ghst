@@ -144,6 +144,66 @@ fn secrets_are_redacted_and_zeroizing_type_serializes() {
 }
 
 #[test]
+fn cache_entry_json_format_is_compatible() {
+    let cases = [
+        (
+            CacheEntry::Root(RootCacheEntry {
+                version: 3,
+                profile: "developer".into(),
+                authority_fingerprint: "authority".into(),
+                github_user: "octocat".into(),
+                issued_at: "2026-08-09T10:00:00Z".into(),
+                expires_at: TokenExpiry::parse("2026-08-09T11:00:00Z").unwrap(),
+                access_token: "root-token".into(),
+            }),
+            r#"{"kind":"root","version":3,"profile":"developer","authority_fingerprint":"authority","github_user":"octocat","issued_at":"2026-08-09T10:00:00Z","expires_at":"2026-08-09T11:00:00Z","access_token":"root-token"}"#,
+        ),
+        (
+            CacheEntry::Derived(DerivedCacheEntry {
+                version: 3,
+                profile: "reader".into(),
+                source_profile: "developer".into(),
+                source_authority_fingerprint: "authority".into(),
+                parent_generation: "generation".into(),
+                policy_fingerprint: "policy".into(),
+                github_user: "octocat".into(),
+                repo_scope: "acme/api".into(),
+                issued_at: "2026-08-09T10:00:00Z".into(),
+                expires_at: TokenExpiry::parse("2026-08-09T11:00:00Z").unwrap(),
+                access_token: "derived-token".into(),
+            }),
+            r#"{"kind":"derived","version":3,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","parent_generation":"generation","policy_fingerprint":"policy","github_user":"octocat","repo_scope":"acme/api","issued_at":"2026-08-09T10:00:00Z","expires_at":"2026-08-09T11:00:00Z","access_token":"derived-token"}"#,
+        ),
+        (
+            CacheEntry::Run(RunCacheEntry {
+                version: 1,
+                run_id: "run-1".into(),
+                state: RunState::Running,
+                wrapper_pid: 100,
+                child_pid: Some(101),
+                profile: "reader".into(),
+                source_profile: "developer".into(),
+                source_authority_fingerprint: "authority".into(),
+                github_user: "octocat".into(),
+                repo_scope: "acme/api".into(),
+                issued_at: "2026-08-09T10:00:00Z".into(),
+                expires_at: TokenExpiry::parse("2026-08-09T11:00:00Z").unwrap(),
+                access_token: "run-token".into(),
+            }),
+            r#"{"kind":"run","version":1,"run_id":"run-1","state":"running","wrapper_pid":100,"child_pid":101,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","github_user":"octocat","repo_scope":"acme/api","issued_at":"2026-08-09T10:00:00Z","expires_at":"2026-08-09T11:00:00Z","access_token":"run-token"}"#,
+        ),
+    ];
+
+    for (entry, golden_json) in cases {
+        assert_eq!(serde_json::to_string(&entry).unwrap(), golden_json);
+        assert_eq!(
+            serde_json::from_str::<CacheEntry>(golden_json).unwrap(),
+            entry
+        );
+    }
+}
+
+#[test]
 fn save_creates_private_directory_and_entry() {
     let temp = cache_dir();
     let directory = temp.path().join("cache");
@@ -396,6 +456,7 @@ fn compatible_entry_is_retained_and_wrong_kind_fails_closed() {
         version: CACHE_SCHEMA_VERSION,
         profile: "developer".into(),
         source_profile: "developer".into(),
+        source_authority_fingerprint: "authority".into(),
         parent_generation: "parent".into(),
         policy_fingerprint: "policy".into(),
         github_user: "octocat".into(),

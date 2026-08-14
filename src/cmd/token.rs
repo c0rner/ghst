@@ -1,7 +1,7 @@
 use crate::cmd::{CmdError, GhstCli, OutputFormat, TokenCmd, resolve_profile_name};
-use crate::github::{GitHubClient, ScopedTokenClient};
+use crate::github::GitHubClient;
 use crate::repository::RepositoryError;
-use crate::token::{AcquireRequest, AcquiredToken};
+use crate::token::{AcquireRequest, AcquiredToken, ScopedTokenClient};
 use std::io::{self, Write};
 use std::path::Path;
 use time::OffsetDateTime;

@@ -1,6 +1,7 @@
 mod acquire;
 pub mod cleanup;
 mod error;
+mod ports;
 mod provenance;
 pub mod revoke;
 mod root;
@@ -11,6 +12,10 @@ mod validation;
 
 pub use acquire::acquire;
 pub use error::TokenError;
+pub use ports::{
+    GitHubUser, IssuedRootToken, IssuedScopedToken, RevokeTokenClient, RootTokenClient,
+    ScopedTokenClient, ScopedTokenRequest,
+};
 pub use root::{
     load_current_root_entry, load_valid_root_entry, load_valid_root_status, persist_root_response,
     root_cache_key,
@@ -19,8 +24,6 @@ pub use types::{AcquireRequest, AcquiredToken, RootPersistence, RootTokenStatus}
 pub use validation::{validate_root_expiry, validate_scoped_expiry};
 
 use crate::config::RootProfile;
-use crate::github::RevokeTokenClient;
-
 fn revoke_with_context<C: RevokeTokenClient + ?Sized>(
     client: &C,
     profile: &RootProfile,

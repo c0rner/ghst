@@ -1,7 +1,9 @@
-use super::{TokenError, load_current_root_entry, revoke_with_context, validate_scoped_expiry};
+use super::{
+    IssuedScopedToken, ScopedTokenClient, ScopedTokenRequest, TokenError, load_current_root_entry,
+    revoke_with_context, validate_scoped_expiry,
+};
 use crate::cache::{AccessToken, RootCacheEntry, TokenExpiry};
 use crate::config::{Config, DerivedProfile, ProfileConfig, RootProfile};
-use crate::github::{ScopedTokenClient, ScopedTokenResponse};
 use crate::repository::{RepositoryError, RepositorySelection};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -16,7 +18,7 @@ pub(super) struct PreparedScopedToken<'a> {
     pub permissions: BTreeMap<String, String>,
 }
 
-pub(super) struct IssuedScopedToken {
+pub(super) struct ValidatedScopedToken {
     pub access_token: AccessToken,
     pub expires_at: TokenExpiry,
 }
@@ -71,7 +73,7 @@ pub(super) fn issue<C: ScopedTokenClient>(
     client: &C,
     prepared: &PreparedScopedToken<'_>,
     now: OffsetDateTime,
-) -> Result<IssuedScopedToken, TokenError> {
+) -> Result<ValidatedScopedToken, TokenError> {
     if !prepared.root.expires_at.is_usable_at(now) {
         return Err(TokenError::NoSourceTokenCached(
             prepared.profile.source.clone(),
@@ -83,21 +85,27 @@ pub(super) fn issue<C: ScopedTokenClient>(
         .client_secret
         .as_deref()
         .ok_or_else(|| TokenError::ClientSecretRequired(prepared.profile.source.clone()))?;
-    let ScopedTokenResponse {
-        token, expires_at, ..
-    } = client.create_scoped_token(
-        &prepared.source.github_app.client_id,
-        secret,
-        prepared.root.access_token.as_ref(),
-        &prepared.source.github_app.account,
-        prepared.repositories.as_deref(),
-        &prepared.permissions,
-    )?;
+    let IssuedScopedToken {
+        access_token,
+        expires_at,
+    } = client.create_scoped_token(&ScopedTokenRequest {
+        client_id: &prepared.source.github_app.client_id,
+        client_secret: secret,
+        root_token: prepared.root.access_token.as_ref(),
+        target: &prepared.source.github_app.account,
+        repositories: prepared.repositories.as_deref(),
+        permissions: &prepared.permissions,
+    })?;
     match validate_scoped_expiry(expires_at.as_deref(), now) {
-        Ok(expires_at) => Ok(IssuedScopedToken {
-            access_token: token,
+        Ok(expires_at) => Ok(ValidatedScopedToken {
+            access_token,
             expires_at,
         }),
-        Err(error) => Err(revoke_with_context(client, prepared.source, &token, error)),
+        Err(error) => Err(revoke_with_context(
+            client,
+            prepared.source,
+            &access_token,
+            error,
+        )),
     }
 }

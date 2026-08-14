@@ -6,7 +6,7 @@ use crate::cache::{
     compute_cache_key, format_rfc3339, load_cache_entry, save_cache_candidate,
 };
 use crate::config::{GitHubAppConfig, RootProfile};
-use crate::github::{AccessTokenResponse, RootTokenClient};
+use crate::token::{IssuedRootToken, RootTokenClient};
 use std::path::Path;
 use time::OffsetDateTime;
 
@@ -69,17 +69,14 @@ pub fn persist_root_response<C: RootTokenClient>(
     profile: &RootProfile,
     profile_name: &str,
     cache_dir: &Path,
-    response: AccessTokenResponse,
+    response: IssuedRootToken,
     now: OffsetDateTime,
     epoch: u64,
 ) -> Result<RootPersistence, TokenError> {
-    let AccessTokenResponse {
+    let IssuedRootToken {
         access_token,
         expires_in,
-        refresh_token,
-        ..
     } = response;
-    drop(refresh_token);
     let expiry = match validate_root_expiry(expires_in, now) {
         Ok(expiry) => expiry,
         Err(error) => return Err(revoke_with_context(client, profile, &access_token, error)),

@@ -3,7 +3,8 @@ use crate::cache::{
     claim_released_run, delete_entry_if_unchanged, delete_run_after_cleanup, inspect_cache,
 };
 use crate::config::{Config, RootProfile};
-use crate::github::{GitHubError, RevokeTokenClient};
+use crate::github::GitHubError;
+use crate::token::RevokeTokenClient;
 use std::path::Path;
 use time::OffsetDateTime;
 

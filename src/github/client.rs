@@ -1,11 +1,15 @@
 use crate::github::error::GitHubError;
 use crate::github::types::{
-    AccessTokenResponse, DeviceCodeResponse, ScopedTokenRequest, ScopedTokenResponse, UserResponse,
+    AccessTokenResponse, DeviceCodeResponse, ScopedTokenRequest as ScopedTokenBody,
+    ScopedTokenResponse, UserResponse,
+};
+use crate::token::{
+    GitHubUser, IssuedRootToken, IssuedScopedToken, RevokeTokenClient, RootTokenClient,
+    ScopedTokenClient, ScopedTokenRequest,
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde::de::DeserializeOwned;
-use std::collections::BTreeMap;
 use std::fmt;
 use tracing::debug;
 
@@ -16,31 +20,6 @@ pub struct GitHubClient {
     base_url: String,
     api_url: String,
     agent: ureq::Agent,
-}
-
-pub trait RevokeTokenClient {
-    fn delete_token(
-        &self,
-        client_id: &str,
-        client_secret: &str,
-        access_token: &str,
-    ) -> Result<(), GitHubError>;
-}
-
-pub trait ScopedTokenClient: RevokeTokenClient {
-    fn create_scoped_token(
-        &self,
-        client_id: &str,
-        client_secret: &str,
-        root_token: &str,
-        target: &str,
-        repositories: Option<&[String]>,
-        permissions: &BTreeMap<String, String>,
-    ) -> Result<ScopedTokenResponse, GitHubError>;
-}
-
-pub trait RootTokenClient: RevokeTokenClient {
-    fn get_user(&self, access_token: &str) -> Result<UserResponse, GitHubError>;
 }
 
 #[allow(clippy::missing_fields_in_debug)]
@@ -102,12 +81,12 @@ impl GitHubClient {
     ///
     /// # Errors
     ///
-    /// Returns `GitHubError` indicating success (`AccessTokenResponse`) or OAuth pending/error states.
+    /// Returns `Ok(IssuedRootToken)` on success, or `GitHubError` for OAuth pending/error states.
     pub fn poll_access_token(
         &self,
         client_id: &str,
         device_code: &str,
-    ) -> Result<AccessTokenResponse, GitHubError> {
+    ) -> Result<IssuedRootToken, GitHubError> {
         let url = format!("{}/login/oauth/access_token", self.base_url);
         let body = serde_json::json!({
             "client_id": client_id,
@@ -128,7 +107,9 @@ impl GitHubClient {
             return Err(oauth_error_from_value(&value));
         }
 
-        serde_json::from_value(value).map_err(GitHubError::Json)
+        let response: AccessTokenResponse =
+            serde_json::from_value(value).map_err(GitHubError::Json)?;
+        Ok(narrow_root_token(response))
     }
 }
 
@@ -192,19 +173,17 @@ impl RevokeTokenClient for GitHubClient {
 impl ScopedTokenClient for GitHubClient {
     fn create_scoped_token(
         &self,
-        client_id: &str,
-        client_secret: &str,
-        root_token: &str,
-        target: &str,
-        repositories: Option<&[String]>,
-        permissions: &BTreeMap<String, String>,
-    ) -> Result<ScopedTokenResponse, GitHubError> {
-        let url = format!("{}/applications/{client_id}/token/scoped", self.api_url);
-        let body = ScopedTokenRequest {
-            access_token: root_token,
-            target,
-            repositories,
-            permissions,
+        request: &ScopedTokenRequest<'_>,
+    ) -> Result<IssuedScopedToken, GitHubError> {
+        let url = format!(
+            "{}/applications/{}/token/scoped",
+            self.api_url, request.client_id
+        );
+        let body = ScopedTokenBody {
+            access_token: request.root_token,
+            target: request.target,
+            repositories: request.repositories,
+            permissions: request.permissions,
         };
 
         debug!("Creating scoped token with request body: {body:?}");
@@ -213,17 +192,17 @@ impl ScopedTokenClient for GitHubClient {
             .post(&url)
             .header(
                 "Authorization",
-                &basic_auth_header(client_id, client_secret),
+                &basic_auth_header(request.client_id, request.client_secret),
             )
             .send_json(&body)
             .map_err(map_ureq_error)?;
 
-        decode_response(response)
+        decode_response(response).map(narrow_scoped_token)
     }
 }
 
 impl RootTokenClient for GitHubClient {
-    fn get_user(&self, access_token: &str) -> Result<UserResponse, GitHubError> {
+    fn get_user(&self, access_token: &str) -> Result<GitHubUser, GitHubError> {
         let url = format!("{}/user", self.api_url);
         let response = self
             .agent
@@ -232,7 +211,34 @@ impl RootTokenClient for GitHubClient {
             .call()
             .map_err(map_ureq_error)?;
 
-        decode_response(response)
+        decode_response(response).map(narrow_user)
+    }
+}
+
+fn narrow_root_token(response: AccessTokenResponse) -> IssuedRootToken {
+    let AccessTokenResponse {
+        access_token,
+        expires_in,
+        refresh_token,
+        ..
+    } = response;
+    drop(refresh_token);
+    IssuedRootToken {
+        access_token,
+        expires_in,
+    }
+}
+
+fn narrow_user(response: UserResponse) -> GitHubUser {
+    GitHubUser {
+        login: response.login,
+    }
+}
+
+fn narrow_scoped_token(response: ScopedTokenResponse) -> IssuedScopedToken {
+    IssuedScopedToken {
+        access_token: response.token,
+        expires_at: response.expires_at,
     }
 }
 
@@ -254,6 +260,7 @@ fn basic_auth_header(client_id: &str, client_secret: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     #[test]
     fn configured_agent_has_github_defaults() {
@@ -311,6 +318,13 @@ mod tests {
         assert!(!debug_str.contains("ghu_16C7e42F292c6912E7710c838347Ae178B4a"));
         assert!(!debug_str.contains("ghr_1B4a2e4F292c6912E7710c838347Ae178B4b"));
         assert!(debug_str.contains("[REDACTED]"));
+
+        let issued = narrow_root_token(res);
+        assert_eq!(
+            issued.access_token.as_ref(),
+            "ghu_16C7e42F292c6912E7710c838347Ae178B4a"
+        );
+        assert_eq!(issued.expires_in, Some(28_800));
     }
 
     #[test]
@@ -326,6 +340,13 @@ mod tests {
         assert_eq!(res.login, "octocat");
         assert_eq!(res.id, 583_231);
         assert_eq!(res.name.as_deref(), Some("The Octocat"));
+
+        assert_eq!(
+            narrow_user(res),
+            GitHubUser {
+                login: "octocat".into()
+            }
+        );
     }
 
     #[test]
@@ -352,6 +373,10 @@ mod tests {
         let debug_str = format!("{res:?}");
         assert!(!debug_str.contains("ghu_scoped_1234567890abcdef"));
         assert!(debug_str.contains("[REDACTED]"));
+
+        let issued = narrow_scoped_token(res);
+        assert_eq!(issued.access_token.as_ref(), "ghu_scoped_1234567890abcdef");
+        assert_eq!(issued.expires_at.as_deref(), Some("2026-07-30T18:00:00Z"));
     }
 
     #[test]
@@ -361,7 +386,7 @@ mod tests {
             ("contents".into(), "read".into()),
             ("pull_requests".into(), "write".into()),
         ]);
-        let request = ScopedTokenRequest {
+        let request = ScopedTokenBody {
             access_token: "root-token",
             target: "acme",
             repositories: Some(&repositories),
@@ -377,7 +402,7 @@ mod tests {
             })
         );
 
-        let all_request = ScopedTokenRequest {
+        let all_request = ScopedTokenBody {
             access_token: "root-token",
             target: "acme",
             repositories: None,

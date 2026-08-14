@@ -4,8 +4,8 @@ use crate::cache::{
     compute_run_cache_key, format_rfc3339, save_cache_candidate,
 };
 use crate::config::Config;
-use crate::github::ScopedTokenClient;
 use crate::repository::RepositoryError;
+use crate::token::ScopedTokenClient;
 use std::fmt::Write as _;
 use std::path::Path;
 use time::OffsetDateTime;
@@ -120,7 +120,8 @@ mod tests {
         authority_fingerprint, compute_cache_key, compute_run_cache_key, policy_fingerprint,
         save_cache_entry,
     };
-    use crate::github::{GitHubError, RevokeTokenClient, ScopedTokenResponse};
+    use crate::github::GitHubError;
+    use crate::token::{IssuedScopedToken, RevokeTokenClient, ScopedTokenRequest};
     use std::cell::Cell;
     use std::collections::BTreeMap;
     use time::Duration;
@@ -141,22 +142,15 @@ mod tests {
     impl ScopedTokenClient for MockClient {
         fn create_scoped_token(
             &self,
-            _client_id: &str,
-            _client_secret: &str,
-            _root_token: &str,
-            _target: &str,
-            _repositories: Option<&[String]>,
-            _permissions: &BTreeMap<String, String>,
-        ) -> Result<ScopedTokenResponse, GitHubError> {
+            _request: &ScopedTokenRequest<'_>,
+        ) -> Result<IssuedScopedToken, GitHubError> {
             let number = self.0.get() + 1;
             self.0.set(number);
-            Ok(ScopedTokenResponse {
-                token: format!("fresh-{number}").into(),
+            Ok(IssuedScopedToken {
+                access_token: format!("fresh-{number}").into(),
                 expires_at: Some(
                     TokenExpiry::new(OffsetDateTime::now_utc() + Duration::hours(1)).to_string(),
                 ),
-                permissions: None,
-                repositories: None,
             })
         }
     }

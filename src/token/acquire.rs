@@ -7,8 +7,8 @@ use crate::cache::{
     compute_cache_key, format_rfc3339, load_cache_entry, policy_fingerprint, save_cache_candidate,
 };
 use crate::config::{ProfileConfig, RootProfile};
-use crate::github::ScopedTokenClient;
 use crate::repository::RepositoryError;
+use crate::token::ScopedTokenClient;
 use std::path::Path;
 use time::OffsetDateTime;
 

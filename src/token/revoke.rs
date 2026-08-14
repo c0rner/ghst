@@ -1,6 +1,7 @@
 use crate::cache::{CacheInspectionState, revoke_transaction};
 use crate::config::Config;
-use crate::github::{GitHubError, RevokeTokenClient};
+use crate::github::GitHubError;
+use crate::token::RevokeTokenClient;
 use std::path::Path;
 use time::OffsetDateTime;
 

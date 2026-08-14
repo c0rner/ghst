@@ -5,12 +5,8 @@ use crate::cache::{
     save_cache_entry,
 };
 use crate::config::{Config, GitHubAppConfig, ProfileConfig};
-use crate::github::{
-    AccessTokenResponse, GitHubError, RevokeTokenClient, RootTokenClient, ScopedTokenClient,
-    ScopedTokenResponse, UserResponse,
-};
+use crate::github::GitHubError;
 use std::cell::RefCell;
-use std::collections::BTreeMap;
 use std::path::Path;
 use time::{Duration, OffsetDateTime};
 
@@ -30,7 +26,7 @@ permissions = { contents = "read", pull_requests = "write" }
 "#;
 
 struct MockClient {
-    scoped: RefCell<Option<Result<ScopedTokenResponse, GitHubError>>>,
+    scoped: RefCell<Option<Result<IssuedScopedToken, GitHubError>>>,
     request: RefCell<Option<serde_json::Value>>,
     revoked: RefCell<Vec<String>>,
     revoke_fails: bool,
@@ -56,12 +52,9 @@ impl RevokeTokenClient for MockClient {
 }
 
 impl RootTokenClient for MockClient {
-    fn get_user(&self, _access_token: &str) -> Result<UserResponse, GitHubError> {
-        Ok(UserResponse {
+    fn get_user(&self, _access_token: &str) -> Result<GitHubUser, GitHubError> {
+        Ok(GitHubUser {
             login: "octocat".into(),
-            id: 1,
-            name: None,
-            email: None,
         })
     }
 }
@@ -69,26 +62,21 @@ impl RootTokenClient for MockClient {
 impl ScopedTokenClient for MockClient {
     fn create_scoped_token(
         &self,
-        client_id: &str,
-        client_secret: &str,
-        root_token: &str,
-        target: &str,
-        repositories: Option<&[String]>,
-        permissions: &BTreeMap<String, String>,
-    ) -> Result<ScopedTokenResponse, GitHubError> {
+        request: &ScopedTokenRequest<'_>,
+    ) -> Result<IssuedScopedToken, GitHubError> {
         self.request.replace(Some(serde_json::json!({
-            "client_id": client_id,
-            "client_secret": client_secret,
-            "root_token": root_token,
-            "target": target,
-            "repositories": repositories,
-            "permissions": permissions,
+            "client_id": request.client_id,
+            "client_secret": request.client_secret,
+            "root_token": request.root_token,
+            "target": request.target,
+            "repositories": request.repositories,
+            "permissions": request.permissions,
         })));
         self.scoped.borrow_mut().take().unwrap()
     }
 }
 
-fn client(response: ScopedTokenResponse) -> MockClient {
+fn client(response: IssuedScopedToken) -> MockClient {
     MockClient {
         scoped: RefCell::new(Some(Ok(response))),
         request: RefCell::new(None),
@@ -179,11 +167,9 @@ fn root_acquisition_returns_cached_token_and_rejects_repository_scope() {
     let cache_dir = temp.path().join("cache");
     cache_root(&cache_dir, now, "root-token");
     let config: Config = CONFIG.parse().unwrap();
-    let client = client(ScopedTokenResponse {
-        token: "unused".into(),
+    let client = client(IssuedScopedToken {
+        access_token: "unused".into(),
         expires_at: None,
-        permissions: None,
-        repositories: None,
     });
     let acquired = acquire(
         &client,
@@ -222,21 +208,15 @@ fn invalid_root_response_is_revoked_and_not_persisted() {
     let ProfileConfig::Root(root) = config.profiles.get("developer").unwrap() else {
         panic!("expected root");
     };
-    let client = client(ScopedTokenResponse {
-        token: "unused".into(),
+    let client = client(IssuedScopedToken {
+        access_token: "unused".into(),
         expires_at: None,
-        permissions: None,
-        repositories: None,
     });
     let temp = tempfile::tempdir().unwrap();
     let cache_dir = temp.path().join("cache");
-    let response = AccessTokenResponse {
+    let response = IssuedRootToken {
         access_token: "bad-root".into(),
-        token_type: "bearer".into(),
         expires_in: None,
-        refresh_token: Some(zeroize::Zeroizing::new("refresh".into())),
-        refresh_token_expires_in: Some(3600),
-        scope: None,
     };
     assert!(matches!(
         persist_root_response(
@@ -265,11 +245,9 @@ fn derived_acquisition_sends_exact_narrowing_request() {
     let cache_dir = temp.path().join("cache");
     cache_root(&cache_dir, now, "root-token");
     let expiry = TokenExpiry::new(OffsetDateTime::now_utc() + Duration::hours(6)).to_string();
-    let client = client(ScopedTokenResponse {
-        token: "child-token".into(),
+    let client = client(IssuedScopedToken {
+        access_token: "child-token".into(),
         expires_at: Some(expiry),
-        permissions: None,
-        repositories: None,
     });
     let config: Config = CONFIG.parse().unwrap();
     let acquired = acquire(
@@ -305,11 +283,9 @@ fn invalid_scoped_response_is_revoked_without_cache_entry() {
     let temp = tempfile::tempdir().unwrap();
     let cache_dir = temp.path().join("cache");
     cache_root(&cache_dir, now, "root-token");
-    let client = client(ScopedTokenResponse {
-        token: "bad-child".into(),
+    let client = client(IssuedScopedToken {
+        access_token: "bad-child".into(),
         expires_at: None,
-        permissions: None,
-        repositories: None,
     });
     let config: Config = CONFIG.parse().unwrap();
     assert!(matches!(
@@ -355,23 +331,16 @@ impl RevokeTokenClient for GenerationChangingClient<'_> {
 impl ScopedTokenClient for GenerationChangingClient<'_> {
     fn create_scoped_token(
         &self,
-        _client_id: &str,
-        _client_secret: &str,
-        _root_token: &str,
-        _target: &str,
-        _repositories: Option<&[String]>,
-        _permissions: &BTreeMap<String, String>,
-    ) -> Result<ScopedTokenResponse, GitHubError> {
+        _request: &ScopedTokenRequest<'_>,
+    ) -> Result<IssuedScopedToken, GitHubError> {
         let key = root_cache_key("developer");
         delete_cache_entry(self.cache_dir, &key).unwrap();
         cache_root(self.cache_dir, self.now, "replacement-root");
-        Ok(ScopedTokenResponse {
-            token: "orphaned-child".into(),
+        Ok(IssuedScopedToken {
+            access_token: "orphaned-child".into(),
             expires_at: Some(
                 TokenExpiry::new(OffsetDateTime::now_utc() + Duration::hours(1)).to_string(),
             ),
-            permissions: None,
-            repositories: None,
         })
     }
 }
@@ -412,13 +381,11 @@ fn cached_derived_token_remains_usable_after_root_expiry() {
     let cache_dir = temp.path().join("cache");
     cache_root(&cache_dir, now, "root-token");
     let config: Config = CONFIG.parse().unwrap();
-    let first_client = client(ScopedTokenResponse {
-        token: "child-token".into(),
+    let first_client = client(IssuedScopedToken {
+        access_token: "child-token".into(),
         expires_at: Some(
             TokenExpiry::new(OffsetDateTime::now_utc() + Duration::hours(6)).to_string(),
         ),
-        permissions: None,
-        repositories: None,
     });
     let request = AcquireRequest {
         config: &config,

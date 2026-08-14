@@ -81,7 +81,7 @@ impl GitHubClient {
     ///
     /// # Errors
     ///
-    /// Returns `GitHubError` indicating success (`IssuedRootToken`) or OAuth pending/error states.
+    /// Returns `Ok(IssuedRootToken)` on success, or `GitHubError` for OAuth pending/error states.
     pub fn poll_access_token(
         &self,
         client_id: &str,

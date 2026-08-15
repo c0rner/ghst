@@ -59,7 +59,7 @@ recorded processes are skipped conservatively.
 
 ### 1. `client_secret` Storage & Filesystem Security
 Root profiles reference configured GitHub Apps. A `client_secret` is optional; it enables derived-token minting and remote revocation.
-- **Filesystem Permissions:** `profiles.toml` must be restricted to `0600` permissions (`chmod 600 ~/.config/ghst/profiles.toml`).
+- **Filesystem Permissions:** The default `~/.config/ghst/` directory must be restricted to `0700`, and `profiles.toml` must be restricted to `0600` (`chmod 700 ~/.config/ghst && chmod 600 ~/.config/ghst/profiles.toml`).
 - **Access Limits:** Possession of `client_secret` alone does **not** grant repository access. Initial user authority requires interactive GitHub Device Flow authorization; creating a scoped token also requires an existing non-scoped user token and can preserve or narrow, but never widen, its authority.
 
 ### 2. Phishing Protection & Anti-Phishing Invariants

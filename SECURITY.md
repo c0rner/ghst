@@ -243,9 +243,10 @@ depend on App permissions.
 
 Configuration and cache state have different enforcement:
 
-- `~/.config/ghst/` should be mode `0700`. `ghst` requires `profiles.toml` to be a regular,
-  single-link file owned by the effective user with mode `0600`, and opens it without following
-  symbolic links. It may contain a client secret.
+- `ghst` requires the default `~/.config/ghst/` path to be a non-symlinked directory owned by the
+  effective user with mode `0700`. It requires `profiles.toml` to be a regular, single-link file
+  owned by the effective user with mode `0600`, and opens it relative to the validated directory
+  without following symbolic links. It may contain a client secret.
 - `ghst` enforces mode `0700` on `~/.cache/ghst/` and mode `0600` on cache entries and
   `.cache.lock`.
 - Cache writes are atomic; symlinked, hard-linked, malformed, or insecure cache state fails closed.

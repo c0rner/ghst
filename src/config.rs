@@ -7,10 +7,20 @@ pub use error::ConfigError;
 use types::PermissionLevel;
 pub use types::{Config, DerivedProfile, GitHubAppConfig, ProfileConfig, RepoScope, RootProfile};
 
-use std::fs::{File, OpenOptions};
+use std::fs::File;
+#[cfg(unix)]
+use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
+
+const CONFIG_DIRECTORY: &str = "ghst";
+const CONFIG_FILE: &str = "profiles.toml";
+
+enum ConfigSource {
+    Custom(PathBuf),
+    Default(PathBuf),
+}
 
 impl FromStr for Config {
     type Err = ConfigError;
@@ -31,11 +41,17 @@ impl FromStr for Config {
 ///
 /// Returns `ConfigError` if path resolution, file IO, TOML parsing, or validation fails.
 pub fn load(path: Option<&Path>) -> Result<Config, ConfigError> {
-    let path = match path {
-        Some(path) => path.to_path_buf(),
-        None => config_path()?,
+    let (path, mut file) = match config_source(path)? {
+        ConfigSource::Custom(path) => {
+            let file = open_config_file(&path)?;
+            (path, file)
+        }
+        ConfigSource::Default(config_dir) => {
+            let path = config_dir.join(CONFIG_FILE);
+            let file = open_default_config_file(&config_dir)?;
+            (path, file)
+        }
     };
-    let mut file = open_config_file(&path)?;
     let mut content = String::new();
     file.read_to_string(&mut content)
         .map_err(|source| ConfigError::Io {
@@ -45,16 +61,24 @@ pub fn load(path: Option<&Path>) -> Result<Config, ConfigError> {
     content.parse()
 }
 
+fn config_source(path: Option<&Path>) -> Result<ConfigSource, ConfigError> {
+    path.map(Path::to_path_buf)
+        .or_else(|| std::env::var_os("GHST_CONFIG").map(PathBuf::from))
+        .map_or_else(
+            || {
+                sysdirs::config_dir()
+                    .ok_or(ConfigError::ConfigDirNotFound)
+                    .map(|path| ConfigSource::Default(path.join(CONFIG_DIRECTORY)))
+            },
+            |path| Ok(ConfigSource::Custom(path)),
+        )
+}
+
 #[cfg(unix)]
 fn open_config_file(path: &Path) -> Result<File, ConfigError> {
-    use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::OpenOptionsExt;
 
-    let flags = i32::try_from(rustix::fs::OFlags::NOFOLLOW.bits()).map_err(|_| {
-        ConfigError::InsecurePath {
-            path: path.to_path_buf(),
-            reason: "required filesystem open flags are not supported",
-        }
-    })?;
+    let flags = open_flags(path, rustix::fs::OFlags::NOFOLLOW)?;
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(flags)
@@ -67,11 +91,72 @@ fn open_config_file(path: &Path) -> Result<File, ConfigError> {
         path: path.to_path_buf(),
         source,
     })?;
+    validate_config_file_metadata(path, &metadata, rustix::process::geteuid().as_raw())?;
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn open_default_config_file(config_dir: &Path) -> Result<File, ConfigError> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let metadata = std::fs::symlink_metadata(config_dir).map_err(|source| ConfigError::Io {
+        path: config_dir.to_path_buf(),
+        source,
+    })?;
+    let effective_uid = rustix::process::geteuid().as_raw();
+    validate_config_dir_metadata(config_dir, &metadata, effective_uid)?;
+
+    let flags = open_flags(
+        config_dir,
+        rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::NOFOLLOW,
+    )?;
+    let directory = OpenOptions::new()
+        .read(true)
+        .custom_flags(flags)
+        .open(config_dir)
+        .map_err(|source| ConfigError::Io {
+            path: config_dir.to_path_buf(),
+            source,
+        })?;
+    let metadata = directory.metadata().map_err(|source| ConfigError::Io {
+        path: config_dir.to_path_buf(),
+        source,
+    })?;
+    validate_config_dir_metadata(config_dir, &metadata, effective_uid)?;
+
+    let path = config_dir.join(CONFIG_FILE);
+    let descriptor = rustix::fs::openat(
+        &directory,
+        CONFIG_FILE,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC | rustix::fs::OFlags::NOFOLLOW,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|source| ConfigError::Io {
+        path: path.clone(),
+        source: source.into(),
+    })?;
+    let file = File::from(descriptor);
+    let metadata = file.metadata().map_err(|source| ConfigError::Io {
+        path: path.clone(),
+        source,
+    })?;
+    validate_config_file_metadata(&path, &metadata, effective_uid)?;
+    Ok(file)
+}
+
+#[cfg(unix)]
+fn validate_config_file_metadata(
+    path: &Path,
+    metadata: &std::fs::Metadata,
+    effective_uid: u32,
+) -> Result<(), ConfigError> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
     let reason = if !metadata.is_file() {
         Some("expected a regular file")
     } else if metadata.nlink() != 1 {
         Some("hard links are not permitted")
-    } else if metadata.uid() != rustix::process::geteuid().as_raw() {
+    } else if metadata.uid() != effective_uid {
         Some("not owned by the effective user")
     } else if metadata.permissions().mode() & 0o7777 != 0o600 {
         Some("unexpected permissions")
@@ -79,7 +164,7 @@ fn open_config_file(path: &Path) -> Result<File, ConfigError> {
         None
     };
     reason.map_or_else(
-        || Ok(file),
+        || Ok(()),
         |reason| {
             Err(ConfigError::InsecurePath {
                 path: path.to_path_buf(),
@@ -87,6 +172,44 @@ fn open_config_file(path: &Path) -> Result<File, ConfigError> {
             })
         },
     )
+}
+
+#[cfg(unix)]
+fn validate_config_dir_metadata(
+    path: &Path,
+    metadata: &std::fs::Metadata,
+    effective_uid: u32,
+) -> Result<(), ConfigError> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let reason = if metadata.file_type().is_symlink() {
+        Some("symbolic links are not permitted")
+    } else if !metadata.is_dir() {
+        Some("expected a directory")
+    } else if metadata.uid() != effective_uid {
+        Some("not owned by the effective user")
+    } else if metadata.permissions().mode() & 0o7777 != 0o700 {
+        Some("unexpected permissions")
+    } else {
+        None
+    };
+    reason.map_or_else(
+        || Ok(()),
+        |reason| {
+            Err(ConfigError::InsecurePath {
+                path: path.to_path_buf(),
+                reason,
+            })
+        },
+    )
+}
+
+#[cfg(unix)]
+fn open_flags(path: &Path, flags: rustix::fs::OFlags) -> Result<i32, ConfigError> {
+    i32::try_from(flags.bits()).map_err(|_| ConfigError::InsecurePath {
+        path: path.to_path_buf(),
+        reason: "required filesystem open flags are not supported",
+    })
 }
 
 #[cfg(not(unix))]
@@ -97,12 +220,12 @@ fn open_config_file(path: &Path) -> Result<File, ConfigError> {
     })
 }
 
-fn config_path() -> Result<PathBuf, ConfigError> {
-    if let Some(value) = std::env::var_os("GHST_CONFIG") {
-        return Ok(PathBuf::from(value));
-    }
-    let config_dir = sysdirs::config_dir().ok_or(ConfigError::ConfigDirNotFound)?;
-    Ok(config_dir.join("ghst").join("profiles.toml"))
+#[cfg(not(unix))]
+fn open_default_config_file(config_dir: &Path) -> Result<File, ConfigError> {
+    Err(ConfigError::InsecurePath {
+        path: config_dir.to_path_buf(),
+        reason: "secure configuration loading is not supported on this platform",
+    })
 }
 
 /// Returns the cache directory path.
@@ -467,7 +590,7 @@ permissions = {}
     #[cfg(unix)]
     #[test]
     fn load_rejects_insecure_file_types_links_and_permissions() {
-        use std::os::unix::fs::{PermissionsExt, symlink};
+        use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
 
         let temp = tempfile::tempdir().unwrap();
         let valid = temp.path().join("valid.toml");
@@ -484,6 +607,15 @@ permissions = {}
             })
         ));
         std::fs::set_permissions(&valid, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let metadata = std::fs::metadata(&valid).unwrap();
+        assert!(matches!(
+            validate_config_file_metadata(&valid, &metadata, metadata.uid().wrapping_add(1)),
+            Err(ConfigError::InsecurePath {
+                reason: "not owned by the effective user",
+                ..
+            })
+        ));
 
         let symlink_path = temp.path().join("symlink.toml");
         symlink(&valid, &symlink_path).unwrap();
@@ -508,5 +640,75 @@ permissions = {}
                 ..
             })
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn default_config_directory_must_be_private_owned_and_not_a_symlink() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt, symlink};
+
+        let temp = tempfile::tempdir().unwrap();
+        let config_dir = temp.path().join(CONFIG_DIRECTORY);
+        std::fs::create_dir(&config_dir).unwrap();
+        std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let config_file = config_dir.join(CONFIG_FILE);
+        std::fs::write(&config_file, VALID_CONFIG).unwrap();
+        std::fs::set_permissions(&config_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(open_default_config_file(&config_dir).is_ok());
+
+        let metadata = std::fs::metadata(&config_dir).unwrap();
+        assert!(matches!(
+            validate_config_dir_metadata(&config_dir, &metadata, metadata.uid().wrapping_add(1)),
+            Err(ConfigError::InsecurePath {
+                reason: "not owned by the effective user",
+                ..
+            })
+        ));
+
+        std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(matches!(
+            open_default_config_file(&config_dir),
+            Err(ConfigError::InsecurePath {
+                reason: "unexpected permissions",
+                ..
+            })
+        ));
+        std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+
+        let symlink_dir = temp.path().join("linked-ghst");
+        symlink(&config_dir, &symlink_dir).unwrap();
+        assert!(matches!(
+            open_default_config_file(&symlink_dir),
+            Err(ConfigError::InsecurePath {
+                reason: "symbolic links are not permitted",
+                ..
+            })
+        ));
+
+        let regular_file = temp.path().join("not-a-directory");
+        std::fs::write(&regular_file, "not a directory").unwrap();
+        assert!(matches!(
+            open_default_config_file(&regular_file),
+            Err(ConfigError::InsecurePath {
+                reason: "expected a directory",
+                ..
+            })
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn explicit_config_path_does_not_require_a_private_parent_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let custom_dir = temp.path().join("custom");
+        std::fs::create_dir(&custom_dir).unwrap();
+        std::fs::set_permissions(&custom_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let config_file = custom_dir.join("custom.toml");
+        std::fs::write(&config_file, VALID_CONFIG).unwrap();
+        std::fs::set_permissions(&config_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        assert!(load(Some(&config_file)).is_ok());
     }
 }

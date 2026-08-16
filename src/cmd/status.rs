@@ -29,7 +29,7 @@ pub fn print_status<W: Write>(
     let mut unmatched = Vec::new();
     for (index, inspection) in inspections.iter().enumerate() {
         match &inspection.state {
-            CacheInspectionState::Current(entry) | CacheInspectionState::Unsupported(entry)
+            CacheInspectionState::Current(entry)
                 if config.profiles.contains_key(entry.profile()) =>
             {
                 grouped.entry(entry.profile()).or_default().push(index);
@@ -71,12 +71,8 @@ fn write_entry(
 ) -> io::Result<()> {
     match &inspection.state {
         CacheInspectionState::Invalid => writeln!(writer, "    Lifetime:    Invalid"),
-        CacheInspectionState::Unsupported(entry) => {
-            writeln!(writer, "    Lifetime:    Unsupported")?;
-            writeln!(writer, "    Repo Scope:  {}", entry.repo_scope())
-        }
         CacheInspectionState::Current(entry) => {
-            let expiry = match entry {
+            let expiry = match entry.as_ref() {
                 CacheEntry::Root(value) => value.expires_at,
                 CacheEntry::Derived(value) => value.expires_at,
                 CacheEntry::Run(value) => value.expires_at,
@@ -90,7 +86,7 @@ fn write_entry(
             };
             writeln!(writer, "    Lifetime:    {state}")?;
             writeln!(writer, "    Repo Scope:  {}", entry.repo_scope())?;
-            if let CacheEntry::Run(entry) = entry {
+            if let CacheEntry::Run(entry) = entry.as_ref() {
                 let state = match entry.state {
                     crate::cache::RunState::Pending => "Pending",
                     crate::cache::RunState::Running => "Running",

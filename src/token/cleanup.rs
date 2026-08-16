@@ -25,9 +25,6 @@ pub enum CleanupFailure {
     InvalidEntry {
         entry: String,
     },
-    UnsupportedEntry {
-        entry: String,
-    },
     Configuration {
         entry: String,
     },
@@ -53,10 +50,6 @@ impl std::fmt::Debug for CleanupFailure {
         match self {
             Self::InvalidEntry { entry } => formatter
                 .debug_struct("InvalidEntry")
-                .field("entry", entry)
-                .finish(),
-            Self::UnsupportedEntry { entry } => formatter
-                .debug_struct("UnsupportedEntry")
                 .field("entry", entry)
                 .finish(),
             Self::Configuration { entry } => formatter
@@ -178,56 +171,62 @@ fn prune<C: RevokeTokenClient>(
             CacheInspectionState::Invalid => {
                 retain(&mut report, CleanupFailure::InvalidEntry { entry: label });
             }
-            CacheInspectionState::Unsupported(_) => {
-                retain(
-                    &mut report,
-                    CleanupFailure::UnsupportedEntry { entry: label },
-                );
-            }
-            CacheInspectionState::Current(entry) if expiry(&entry).value() <= now => {
-                match delete_entry_if_unchanged(cache_dir, &cache_key, &entry) {
-                    Ok(true) => report.expired_deletions += 1,
-                    Ok(false) => retain(&mut report, CleanupFailure::InvalidEntry { entry: label }),
-                    Err(source) => retain(
-                        &mut report,
-                        CleanupFailure::CacheDeletion {
-                            entry: label,
-                            source,
-                        },
-                    ),
-                }
-            }
-            CacheInspectionState::Current(CacheEntry::Root(_) | CacheEntry::Derived(_)) => {}
-            CacheInspectionState::Current(CacheEntry::Run(entry)) => match entry.state {
-                RunState::CleanupPending => {
-                    cleanup_run_entry(client, config, cache_dir, &cache_key, &entry, &mut report);
-                }
-                RunState::Pending | RunState::Running
-                    if pid_is_alive(entry.wrapper_pid)
-                        || entry.child_pid.is_some_and(pid_is_alive) =>
-                {
-                    report.active_runs_skipped += 1;
-                }
-                RunState::Pending | RunState::Running => {
-                    match claim_abandoned_run(cache_dir, &cache_key, &entry) {
-                        Ok(claimed) => cleanup_run_entry(
-                            client,
-                            config,
-                            cache_dir,
-                            &cache_key,
-                            &claimed,
-                            &mut report,
-                        ),
+            CacheInspectionState::Current(entry) => {
+                if expiry(&entry).value() <= now {
+                    match delete_entry_if_unchanged(cache_dir, &cache_key, &entry) {
+                        Ok(true) => report.expired_deletions += 1,
+                        Ok(false) => {
+                            retain(&mut report, CleanupFailure::InvalidEntry { entry: label });
+                        }
                         Err(source) => retain(
                             &mut report,
-                            CleanupFailure::Ownership {
+                            CleanupFailure::CacheDeletion {
                                 entry: label,
                                 source,
                             },
                         ),
                     }
+                    continue;
                 }
-            },
+                let CacheEntry::Run(entry) = *entry else {
+                    continue;
+                };
+                match entry.state {
+                    RunState::CleanupPending => cleanup_run_entry(
+                        client,
+                        config,
+                        cache_dir,
+                        &cache_key,
+                        &entry,
+                        &mut report,
+                    ),
+                    RunState::Pending | RunState::Running
+                        if pid_is_alive(entry.wrapper_pid)
+                            || entry.child_pid.is_some_and(pid_is_alive) =>
+                    {
+                        report.active_runs_skipped += 1;
+                    }
+                    RunState::Pending | RunState::Running => {
+                        match claim_abandoned_run(cache_dir, &cache_key, &entry) {
+                            Ok(claimed) => cleanup_run_entry(
+                                client,
+                                config,
+                                cache_dir,
+                                &cache_key,
+                                &claimed,
+                                &mut report,
+                            ),
+                            Err(source) => retain(
+                                &mut report,
+                                CleanupFailure::Ownership {
+                                    entry: label,
+                                    source,
+                                },
+                            ),
+                        }
+                    }
+                }
+            }
         }
     }
     Ok(report)

@@ -116,9 +116,7 @@ pub fn revoke_all<C: RevokeTokenClient>(
                         }
                     }
                 }
-                CacheInspectionState::Current(_)
-                | CacheInspectionState::Unsupported(_)
-                | CacheInspectionState::Invalid => false,
+                CacheInspectionState::Current(_) | CacheInspectionState::Invalid => false,
             };
             match transaction.delete(index) {
                 Ok(true) if revocation => report.remotely_inactive += 1,

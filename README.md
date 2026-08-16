@@ -154,6 +154,10 @@ revoking the displaced token.
 
 Root-token expiration or individual revocation must not be treated as revoking its children. `ghst revoke --all` attempts to revoke every cached live root, derived, and run token when its root client secret is available before removing its cache entry. A live secretless root is deleted locally, reported as potentially active remotely, and makes `revoke` return nonzero. See GitHub's [scoped-token endpoint](https://docs.github.com/en/rest/apps/apps#create-a-scoped-access-token) and [single-token revocation endpoint](https://docs.github.com/en/rest/apps/oauth-applications#delete-an-app-token).
 
+Cache formats are intentionally forward-only. After an incompatible schema upgrade, `ghst`
+discards old entries with a warning and reacquires credentials as needed; it does not migrate
+ephemeral cache state.
+
 ---
 
 ## CLI Reference

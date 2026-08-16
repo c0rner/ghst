@@ -308,16 +308,33 @@ fn cache_entry_json_format_is_compatible() {
 }
 
 #[test]
-fn predecessor_schemas_are_recognized_as_legacy() {
-    let predecessor_json = [
-        r#"{"kind":"root","version":3,"profile":"developer","authority_fingerprint":"authority","github_user":"octocat","issued_at":"2026-08-09T10:00:00Z","expires_at":"2026-08-09T11:00:00Z","access_token":"root-token"}"#,
-        r#"{"kind":"derived","version":3,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","parent_generation":"generation","policy_fingerprint":"policy","github_user":"octocat","repo_scope":"acme/api","issued_at":"2026-08-09T10:00:00Z","expires_at":"2026-08-09T11:00:00Z","access_token":"derived-token"}"#,
-        r#"{"kind":"run","version":1,"run_id":"run-1","state":"running","wrapper_pid":100,"child_pid":101,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","github_user":"octocat","repo_scope":"acme/api","issued_at":"2026-08-09T10:00:00Z","expires_at":"2026-08-09T11:00:00Z","access_token":"run-token"}"#,
+fn unsupported_schemas_are_discarded() {
+    let cases = [
+        (
+            root_key(),
+            r#"{"kind":"root","version":3,"profile":"developer","authority_fingerprint":"authority","github_user":"octocat","issued_at":"2026-08-09T10:00:00Z","expires_at":"2026-08-09T11:00:00Z","access_token":"root-token"}"#,
+        ),
+        (
+            compute_cache_key("reader", "acme/api"),
+            r#"{"kind":"derived","version":3,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","parent_generation":"generation","policy_fingerprint":"policy","github_user":"octocat","repo_scope":"acme/api","issued_at":"2026-08-09T10:00:00Z","expires_at":"2026-08-09T11:00:00Z","access_token":"derived-token"}"#,
+        ),
+        (
+            compute_run_cache_key("run-1"),
+            r#"{"kind":"run","version":1,"run_id":"run-1","state":"running","wrapper_pid":100,"child_pid":101,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","github_user":"octocat","repo_scope":"acme/api","issued_at":"2026-08-09T10:00:00Z","expires_at":"2026-08-09T11:00:00Z","access_token":"run-token"}"#,
+        ),
     ];
 
-    for json in predecessor_json {
-        let entry: CacheEntry = serde_json::from_str(json).unwrap();
-        assert!(!entry.is_current());
+    for (key, json) in cases {
+        let temp = cache_dir();
+        let directory = temp.path().join("cache");
+        ensure_cache_dir(&directory).unwrap();
+        let path = cache_file_path(&directory, &key);
+        let mut file = create_private_tempfile(&directory).unwrap();
+        file.write_all(json.as_bytes()).unwrap();
+        file.persist(&path).unwrap();
+
+        assert!(load_cache_entry(&directory, &key).unwrap().is_none());
+        assert!(!path.exists());
     }
 }
 
@@ -459,18 +476,17 @@ fn malformed_entry_is_never_overwritten() {
 }
 
 #[test]
-fn malformed_current_expiry_is_not_downgraded_to_legacy_or_overwritten() {
+fn malformed_current_expiry_is_not_discarded_or_overwritten() {
     let temp = cache_dir();
     let directory = temp.path().join("cache");
     ensure_cache_dir(&directory).unwrap();
     let path = cache_file_path(&directory, &root_key());
     let invalid = r#"{
         "kind":"root",
-        "version":2,
+        "version":4,
         "profile":"developer",
         "authority_fingerprint":"authority",
         "github_user":"octocat",
-        "issued_at":"2026-01-01T00:00:00Z",
         "expires_at":"invalid",
         "access_token":"existing"
     }"#;
@@ -494,12 +510,12 @@ fn malformed_current_expiry_is_not_downgraded_to_legacy_or_overwritten() {
 }
 
 #[test]
-fn legacy_and_stale_provenance_are_replaced_only_after_candidate_exists() {
+fn unsupported_schema_is_discarded_before_candidate_persistence() {
     let temp = cache_dir();
     let directory = temp.path().join("cache");
     ensure_cache_dir(&directory).unwrap();
     let path = cache_file_path(&directory, &root_key());
-    let legacy = r#"{
+    let unsupported = r#"{
             "kind":"root",
             "profile":"developer",
             "github_user":"octocat",
@@ -508,23 +524,16 @@ fn legacy_and_stale_provenance_are_replaced_only_after_candidate_exists() {
             "access_token":"legacy-token"
         }"#;
     let mut file = create_private_tempfile(&directory).unwrap();
-    file.write_all(legacy.as_bytes()).unwrap();
+    file.write_all(unsupported.as_bytes()).unwrap();
     file.persist(&path).unwrap();
-    assert!(matches!(
-        load_cache_entry(&directory, &root_key()),
-        Err(CacheError::Json(_))
-    ));
+    assert!(load_cache_entry(&directory, &root_key()).unwrap().is_none());
+    assert!(!path.exists());
 
     let current = root_entry(
         "current",
         OffsetDateTime::now_utc() + Duration::hours(1),
         "new-authority",
     );
-    assert!(matches!(
-        save_cache_entry(&directory, &root_key(), &current),
-        Err(CacheError::Json(_))
-    ));
-    fs::remove_file(&path).unwrap();
     assert!(matches!(
         save_cache_entry(&directory, &root_key(), &current).unwrap(),
         SaveCacheEntry::Saved

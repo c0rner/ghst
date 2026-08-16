@@ -32,6 +32,7 @@ pub enum TokenError {
         reason: &'static str,
     },
     RootGenerationChanged(String),
+    RenewalPersisted(String),
     InvalidLifetime {
         token_kind: &'static str,
         reason: String,
@@ -97,6 +98,10 @@ impl fmt::Display for TokenError {
             Self::RootGenerationChanged(profile) => write!(
                 f,
                 "root token for profile '{profile}' changed while minting; retry the token request"
+            ),
+            Self::RenewalPersisted(profile) => write!(
+                f,
+                "renewed token for profile '{profile}' was persisted before displaced-token cleanup"
             ),
             Self::InvalidLifetime { token_kind, reason } => {
                 write!(f, "invalid {token_kind} token lifetime: {reason}")

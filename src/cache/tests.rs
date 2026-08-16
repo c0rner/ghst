@@ -1,13 +1,16 @@
+use crate::cache::cache_epoch;
 use crate::cache::error::CacheError;
 use crate::cache::fs::{cache_file_path, create_private_tempfile, ensure_cache_dir};
 use crate::cache::key::{compute_cache_key, compute_run_cache_key};
 use crate::cache::storage::{
     claim_abandoned_run, claim_released_run, delete_cache_entry, delete_run_after_cleanup,
-    list_cache_entries, load_cache_entry, save_cache_entry, transition_run_to_running,
+    list_cache_entries, load_cache_entry, replace_cache_candidate, save_cache_entry,
+    transition_run_to_running,
 };
 use crate::cache::types::{
-    CACHE_SCHEMA_VERSION, CacheEntry, DerivedCacheEntry, RUN_CACHE_SCHEMA_VERSION, RootCacheEntry,
-    RunCacheEntry, RunState, SaveCacheEntry, TokenExpiry, authority_fingerprint, format_rfc3339,
+    CACHE_SCHEMA_VERSION, CacheEntry, DerivedCacheEntry, RUN_CACHE_SCHEMA_VERSION,
+    ReplaceCacheEntry, RootCacheEntry, RunCacheEntry, RunState, SaveCacheEntry, TokenExpiry,
+    authority_fingerprint,
 };
 use std::fs;
 use std::io::Write;
@@ -25,7 +28,6 @@ fn root_entry(token: &str, expiry: OffsetDateTime, authority: &str) -> CacheEntr
         profile: "developer".into(),
         authority_fingerprint: authority.into(),
         github_user: "octocat".into(),
-        issued_at: format_rfc3339(OffsetDateTime::now_utc()),
         expires_at: TokenExpiry::new(expiry),
         access_token: token.into(),
     })
@@ -47,9 +49,23 @@ fn run_entry(run_id: &str, state: RunState) -> CacheEntry {
         source_authority_fingerprint: authority_fingerprint("id", "acme"),
         github_user: "octocat".into(),
         repo_scope: "acme/api".into(),
-        issued_at: format_rfc3339(OffsetDateTime::now_utc()),
         expires_at: TokenExpiry::new(OffsetDateTime::now_utc() + Duration::hours(1)),
         access_token: "run-token".into(),
+    })
+}
+
+fn derived_entry(token: &str, expiry: OffsetDateTime, parent_generation: &str) -> CacheEntry {
+    CacheEntry::Derived(DerivedCacheEntry {
+        version: CACHE_SCHEMA_VERSION,
+        profile: "reader".into(),
+        source_profile: "developer".into(),
+        source_authority_fingerprint: "authority".into(),
+        parent_generation: parent_generation.into(),
+        policy_fingerprint: "policy".into(),
+        github_user: "octocat".into(),
+        repo_scope: "acme/api".into(),
+        expires_at: TokenExpiry::new(expiry),
+        access_token: token.into(),
     })
 }
 
@@ -62,6 +78,97 @@ fn cache_key_is_profile_and_canonical_scope_hash() {
         first,
         "44e9b443f6a49a44a6a5588f3be3923a3c1ec1c1f2bfd419addebcde4d598411"
     );
+}
+
+#[test]
+fn expiry_policies_have_distinct_exact_boundaries() {
+    let now = OffsetDateTime::now_utc();
+    assert!(!TokenExpiry::new(now + Duration::seconds(30)).is_safe_to_handoff_at(now));
+    assert!(TokenExpiry::new(now + Duration::seconds(31)).is_safe_to_handoff_at(now));
+    assert!(TokenExpiry::new(now + Duration::minutes(10)).is_due_for_renewal_at(now));
+    assert!(
+        !TokenExpiry::new(now + Duration::minutes(10) + Duration::seconds(1))
+            .is_due_for_renewal_at(now)
+    );
+}
+
+#[test]
+fn renewal_compare_and_replace_returns_the_exact_displaced_entry() {
+    let temp = cache_dir();
+    let directory = temp.path().join("cache");
+    let now = OffsetDateTime::now_utc();
+    let root = root_entry("root", now + Duration::hours(1), "authority");
+    let CacheEntry::Root(root_data) = &root else {
+        panic!("expected root")
+    };
+    let generation = root_data.generation_fingerprint();
+    save_cache_entry(&directory, &root_key(), &root).unwrap();
+    let key = compute_cache_key("reader", "acme/api");
+    let selected = derived_entry("selected", now + Duration::minutes(5), &generation);
+    let candidate = derived_entry("candidate", now + Duration::hours(1), &generation);
+    save_cache_entry(&directory, &key, &selected).unwrap();
+    let epoch = cache_epoch(&directory).unwrap();
+
+    let result = replace_cache_candidate(
+        &directory,
+        &key,
+        &selected,
+        &candidate,
+        epoch,
+        (&root_key(), &generation),
+        now,
+    )
+    .unwrap();
+
+    let ReplaceCacheEntry::Replaced(displaced) = result else {
+        panic!("expected replacement")
+    };
+    assert_eq!(displaced.access_token().as_ref(), "selected");
+    assert_eq!(
+        load_cache_entry(&directory, &key)
+            .unwrap()
+            .unwrap()
+            .access_token()
+            .as_ref(),
+        "candidate"
+    );
+}
+
+#[test]
+fn renewal_compare_and_replace_retains_a_compatible_concurrent_winner() {
+    let temp = cache_dir();
+    let directory = temp.path().join("cache");
+    let now = OffsetDateTime::now_utc();
+    let root = root_entry("root", now + Duration::hours(1), "authority");
+    let CacheEntry::Root(root_data) = &root else {
+        panic!("expected root")
+    };
+    let generation = root_data.generation_fingerprint();
+    save_cache_entry(&directory, &root_key(), &root).unwrap();
+    let key = compute_cache_key("reader", "acme/api");
+    let selected = derived_entry("selected", now + Duration::minutes(5), &generation);
+    save_cache_entry(&directory, &key, &selected).unwrap();
+    let epoch = cache_epoch(&directory).unwrap();
+    delete_cache_entry(&directory, &key).unwrap();
+    let winner = derived_entry("winner", now + Duration::hours(1), &generation);
+    save_cache_entry(&directory, &key, &winner).unwrap();
+    let candidate = derived_entry("candidate", now + Duration::hours(1), &generation);
+
+    let result = replace_cache_candidate(
+        &directory,
+        &key,
+        &selected,
+        &candidate,
+        epoch,
+        (&root_key(), &generation),
+        now,
+    )
+    .unwrap();
+
+    let ReplaceCacheEntry::Retained(retained) = result else {
+        panic!("expected retained winner")
+    };
+    assert_eq!(retained.access_token().as_ref(), "winner");
 }
 
 #[test]
@@ -148,19 +255,18 @@ fn cache_entry_json_format_is_compatible() {
     let cases = [
         (
             CacheEntry::Root(RootCacheEntry {
-                version: 3,
+                version: CACHE_SCHEMA_VERSION,
                 profile: "developer".into(),
                 authority_fingerprint: "authority".into(),
                 github_user: "octocat".into(),
-                issued_at: "2026-08-09T10:00:00Z".into(),
                 expires_at: TokenExpiry::parse("2026-08-09T11:00:00Z").unwrap(),
                 access_token: "root-token".into(),
             }),
-            r#"{"kind":"root","version":3,"profile":"developer","authority_fingerprint":"authority","github_user":"octocat","issued_at":"2026-08-09T10:00:00Z","expires_at":"2026-08-09T11:00:00Z","access_token":"root-token"}"#,
+            r#"{"kind":"root","version":4,"profile":"developer","authority_fingerprint":"authority","github_user":"octocat","expires_at":"2026-08-09T11:00:00Z","access_token":"root-token"}"#,
         ),
         (
             CacheEntry::Derived(DerivedCacheEntry {
-                version: 3,
+                version: CACHE_SCHEMA_VERSION,
                 profile: "reader".into(),
                 source_profile: "developer".into(),
                 source_authority_fingerprint: "authority".into(),
@@ -168,15 +274,14 @@ fn cache_entry_json_format_is_compatible() {
                 policy_fingerprint: "policy".into(),
                 github_user: "octocat".into(),
                 repo_scope: "acme/api".into(),
-                issued_at: "2026-08-09T10:00:00Z".into(),
                 expires_at: TokenExpiry::parse("2026-08-09T11:00:00Z").unwrap(),
                 access_token: "derived-token".into(),
             }),
-            r#"{"kind":"derived","version":3,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","parent_generation":"generation","policy_fingerprint":"policy","github_user":"octocat","repo_scope":"acme/api","issued_at":"2026-08-09T10:00:00Z","expires_at":"2026-08-09T11:00:00Z","access_token":"derived-token"}"#,
+            r#"{"kind":"derived","version":4,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","parent_generation":"generation","policy_fingerprint":"policy","github_user":"octocat","repo_scope":"acme/api","expires_at":"2026-08-09T11:00:00Z","access_token":"derived-token"}"#,
         ),
         (
             CacheEntry::Run(RunCacheEntry {
-                version: 1,
+                version: RUN_CACHE_SCHEMA_VERSION,
                 run_id: "run-1".into(),
                 state: RunState::Running,
                 wrapper_pid: 100,
@@ -186,11 +291,10 @@ fn cache_entry_json_format_is_compatible() {
                 source_authority_fingerprint: "authority".into(),
                 github_user: "octocat".into(),
                 repo_scope: "acme/api".into(),
-                issued_at: "2026-08-09T10:00:00Z".into(),
                 expires_at: TokenExpiry::parse("2026-08-09T11:00:00Z").unwrap(),
                 access_token: "run-token".into(),
             }),
-            r#"{"kind":"run","version":1,"run_id":"run-1","state":"running","wrapper_pid":100,"child_pid":101,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","github_user":"octocat","repo_scope":"acme/api","issued_at":"2026-08-09T10:00:00Z","expires_at":"2026-08-09T11:00:00Z","access_token":"run-token"}"#,
+            r#"{"kind":"run","version":2,"run_id":"run-1","state":"running","wrapper_pid":100,"child_pid":101,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","github_user":"octocat","repo_scope":"acme/api","expires_at":"2026-08-09T11:00:00Z","access_token":"run-token"}"#,
         ),
     ];
 
@@ -200,6 +304,20 @@ fn cache_entry_json_format_is_compatible() {
             serde_json::from_str::<CacheEntry>(golden_json).unwrap(),
             entry
         );
+    }
+}
+
+#[test]
+fn predecessor_schemas_are_recognized_as_legacy() {
+    let predecessor_json = [
+        r#"{"kind":"root","version":3,"profile":"developer","authority_fingerprint":"authority","github_user":"octocat","issued_at":"2026-08-09T10:00:00Z","expires_at":"2026-08-09T11:00:00Z","access_token":"root-token"}"#,
+        r#"{"kind":"derived","version":3,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","parent_generation":"generation","policy_fingerprint":"policy","github_user":"octocat","repo_scope":"acme/api","issued_at":"2026-08-09T10:00:00Z","expires_at":"2026-08-09T11:00:00Z","access_token":"derived-token"}"#,
+        r#"{"kind":"run","version":1,"run_id":"run-1","state":"running","wrapper_pid":100,"child_pid":101,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","github_user":"octocat","repo_scope":"acme/api","issued_at":"2026-08-09T10:00:00Z","expires_at":"2026-08-09T11:00:00Z","access_token":"run-token"}"#,
+    ];
+
+    for json in predecessor_json {
+        let entry: CacheEntry = serde_json::from_str(json).unwrap();
+        assert!(!entry.is_current());
     }
 }
 
@@ -461,7 +579,6 @@ fn compatible_entry_is_retained_and_wrong_kind_fails_closed() {
         policy_fingerprint: "policy".into(),
         github_user: "octocat".into(),
         repo_scope: "all".into(),
-        issued_at: format_rfc3339(OffsetDateTime::now_utc()),
         expires_at: TokenExpiry::new(OffsetDateTime::now_utc() + Duration::hours(1)),
         access_token: "derived".into(),
     });

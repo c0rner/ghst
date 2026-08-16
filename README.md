@@ -146,6 +146,12 @@ its own `expires_at`. It may remain valid after the `ghst` root token—the sour
 access token—has expired or been individually revoked. An expired root token may validate an
 already-cached derived token but cannot mint a new one.
 
+Cached derived tokens are proactively renewed when they have 10 minutes or less remaining and the
+root token is still more than 30 seconds from expiry. If the root is no longer usable, `ghst`
+continues returning the provenance-matching cached child while that child remains more than 30
+seconds from expiry. Renewal atomically persists GitHub's exact replacement `expires_at` before
+revoking the displaced token.
+
 Root-token expiration or individual revocation must not be treated as revoking its children. `ghst revoke --all` attempts to revoke every cached live root, derived, and run token when its root client secret is available before removing its cache entry. A live secretless root is deleted locally, reported as potentially active remotely, and makes `revoke` return nonzero. See GitHub's [scoped-token endpoint](https://docs.github.com/en/rest/apps/apps#create-a-scoped-access-token) and [single-token revocation endpoint](https://docs.github.com/en/rest/apps/oauth-applications#delete-an-app-token).
 
 ---

@@ -332,7 +332,7 @@ mod tests {
     use super::*;
     use crate::cache::{
         RUN_CACHE_SCHEMA_VERSION, RunState, TokenExpiry, authority_fingerprint,
-        compute_run_cache_key, format_rfc3339, load_cache_entry, save_cache_entry,
+        compute_run_cache_key, load_cache_entry, save_cache_entry,
     };
     use std::cell::{Cell, RefCell};
     use time::Duration;
@@ -396,7 +396,6 @@ permissions = { contents = "read" }
             source_authority_fingerprint: authority_fingerprint("id", "acme"),
             github_user: "octocat".into(),
             repo_scope: "acme/api".into(),
-            issued_at: format_rfc3339(OffsetDateTime::now_utc()),
             expires_at: TokenExpiry::new(expiry),
             access_token: format!("token-{run_id}").into(),
         })

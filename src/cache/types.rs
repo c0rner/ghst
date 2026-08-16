@@ -7,9 +7,10 @@ use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
 use zeroize::Zeroizing;
 
-pub const CACHE_SCHEMA_VERSION: u32 = 3;
-pub const RUN_CACHE_SCHEMA_VERSION: u32 = 1;
+pub const CACHE_SCHEMA_VERSION: u32 = 4;
+pub const RUN_CACHE_SCHEMA_VERSION: u32 = 2;
 pub const TOKEN_SAFETY_MARGIN: Duration = Duration::seconds(30);
+pub const DERIVED_TOKEN_RENEWAL_WINDOW: Duration = Duration::minutes(10);
 
 /// A secret access token that is zeroized on drop and never exposed by `Debug`.
 #[derive(PartialEq, Eq, Serialize, Deserialize)]
@@ -63,8 +64,12 @@ impl TokenExpiry {
         OffsetDateTime::parse(value, &Rfc3339).map(Self)
     }
 
-    pub fn is_usable_at(self, now: OffsetDateTime) -> bool {
+    pub fn is_safe_to_handoff_at(self, now: OffsetDateTime) -> bool {
         self.0 > now + TOKEN_SAFETY_MARGIN
+    }
+
+    pub fn is_due_for_renewal_at(self, now: OffsetDateTime) -> bool {
+        self.0 <= now + DERIVED_TOKEN_RENEWAL_WINDOW
     }
 }
 
@@ -143,16 +148,16 @@ impl CacheEntry {
         }
     }
 
-    pub fn is_usable_at(&self, now: OffsetDateTime) -> bool {
+    pub fn is_safe_to_handoff_at(&self, now: OffsetDateTime) -> bool {
         match self {
-            Self::Root(entry) => entry.expires_at.is_usable_at(now),
-            Self::Derived(entry) => entry.expires_at.is_usable_at(now),
-            Self::Run(entry) => entry.expires_at.is_usable_at(now),
+            Self::Root(entry) => entry.expires_at.is_safe_to_handoff_at(now),
+            Self::Derived(entry) => entry.expires_at.is_safe_to_handoff_at(now),
+            Self::Run(entry) => entry.expires_at.is_safe_to_handoff_at(now),
         }
     }
 
     pub fn compatible_with(&self, candidate: &Self, now: OffsetDateTime) -> bool {
-        if !self.is_current() || !self.is_usable_at(now) {
+        if !self.is_current() || !self.is_safe_to_handoff_at(now) {
             return false;
         }
 
@@ -185,14 +190,13 @@ impl fmt::Debug for CacheEntry {
     }
 }
 
-#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RootCacheEntry {
     pub version: u32,
     pub profile: String,
     pub authority_fingerprint: String,
     pub github_user: String,
-    pub issued_at: String,
     pub expires_at: TokenExpiry,
     pub access_token: AccessToken,
 }
@@ -210,14 +214,13 @@ impl fmt::Debug for RootCacheEntry {
             .field("profile", &self.profile)
             .field("authority_fingerprint", &self.authority_fingerprint)
             .field("github_user", &self.github_user)
-            .field("issued_at", &self.issued_at)
             .field("expires_at", &self.expires_at)
             .field("access_token", &self.access_token)
             .finish()
     }
 }
 
-#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DerivedCacheEntry {
     pub version: u32,
@@ -228,7 +231,6 @@ pub struct DerivedCacheEntry {
     pub policy_fingerprint: String,
     pub github_user: String,
     pub repo_scope: String,
-    pub issued_at: String,
     pub expires_at: TokenExpiry,
     pub access_token: AccessToken,
 }
@@ -241,7 +243,7 @@ pub enum RunState {
     CleanupPending,
 }
 
-#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[derive(PartialEq, Eq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct RunCacheEntry {
     pub version: u32,
@@ -254,7 +256,6 @@ pub struct RunCacheEntry {
     pub source_authority_fingerprint: String,
     pub github_user: String,
     pub repo_scope: String,
-    pub issued_at: String,
     pub expires_at: TokenExpiry,
     pub access_token: AccessToken,
 }
@@ -275,7 +276,6 @@ impl fmt::Debug for RunCacheEntry {
             )
             .field("github_user", &self.github_user)
             .field("repo_scope", &self.repo_scope)
-            .field("issued_at", &self.issued_at)
             .field("expires_at", &self.expires_at)
             .field("access_token", &self.access_token)
             .finish()
@@ -296,7 +296,6 @@ impl fmt::Debug for DerivedCacheEntry {
             .field("policy_fingerprint", &self.policy_fingerprint)
             .field("github_user", &self.github_user)
             .field("repo_scope", &self.repo_scope)
-            .field("issued_at", &self.issued_at)
             .field("expires_at", &self.expires_at)
             .field("access_token", &self.access_token)
             .finish()
@@ -308,6 +307,123 @@ impl fmt::Debug for DerivedCacheEntry {
 pub enum SaveCacheEntry {
     Saved,
     Retained(Box<CacheEntry>),
+}
+
+/// Result of atomically replacing the exact derived entry selected for renewal.
+#[derive(Debug)]
+pub enum ReplaceCacheEntry {
+    Replaced(Box<CacheEntry>),
+    Retained(Box<CacheEntry>),
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RootCacheEntryWire {
+    version: u32,
+    profile: String,
+    authority_fingerprint: String,
+    github_user: String,
+    #[serde(default, rename = "issued_at")]
+    _legacy_issued_at: Option<String>,
+    expires_at: TokenExpiry,
+    access_token: AccessToken,
+}
+
+impl<'de> Deserialize<'de> for RootCacheEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = RootCacheEntryWire::deserialize(deserializer)?;
+        Ok(Self {
+            version: wire.version,
+            profile: wire.profile,
+            authority_fingerprint: wire.authority_fingerprint,
+            github_user: wire.github_user,
+            expires_at: wire.expires_at,
+            access_token: wire.access_token,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DerivedCacheEntryWire {
+    version: u32,
+    profile: String,
+    source_profile: String,
+    source_authority_fingerprint: String,
+    parent_generation: String,
+    policy_fingerprint: String,
+    github_user: String,
+    repo_scope: String,
+    #[serde(default, rename = "issued_at")]
+    _legacy_issued_at: Option<String>,
+    expires_at: TokenExpiry,
+    access_token: AccessToken,
+}
+
+impl<'de> Deserialize<'de> for DerivedCacheEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = DerivedCacheEntryWire::deserialize(deserializer)?;
+        Ok(Self {
+            version: wire.version,
+            profile: wire.profile,
+            source_profile: wire.source_profile,
+            source_authority_fingerprint: wire.source_authority_fingerprint,
+            parent_generation: wire.parent_generation,
+            policy_fingerprint: wire.policy_fingerprint,
+            github_user: wire.github_user,
+            repo_scope: wire.repo_scope,
+            expires_at: wire.expires_at,
+            access_token: wire.access_token,
+        })
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunCacheEntryWire {
+    version: u32,
+    run_id: String,
+    state: RunState,
+    wrapper_pid: u32,
+    child_pid: Option<u32>,
+    profile: String,
+    source_profile: String,
+    source_authority_fingerprint: String,
+    github_user: String,
+    repo_scope: String,
+    #[serde(default, rename = "issued_at")]
+    _legacy_issued_at: Option<String>,
+    expires_at: TokenExpiry,
+    access_token: AccessToken,
+}
+
+impl<'de> Deserialize<'de> for RunCacheEntry {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = RunCacheEntryWire::deserialize(deserializer)?;
+        Ok(Self {
+            version: wire.version,
+            run_id: wire.run_id,
+            state: wire.state,
+            wrapper_pid: wire.wrapper_pid,
+            child_pid: wire.child_pid,
+            profile: wire.profile,
+            source_profile: wire.source_profile,
+            source_authority_fingerprint: wire.source_authority_fingerprint,
+            github_user: wire.github_user,
+            repo_scope: wire.repo_scope,
+            expires_at: wire.expires_at,
+            access_token: wire.access_token,
+        })
+    }
 }
 
 pub fn format_rfc3339(value: OffsetDateTime) -> String {

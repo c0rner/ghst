@@ -5,7 +5,7 @@ use crate::cache::fs::{
     with_cache_lock, with_locked_file,
 };
 use crate::cache::key::{compute_cache_key, compute_run_cache_key, validate_cache_key};
-use crate::cache::types::{CacheEntry, RunCacheEntry, RunState, SaveCacheEntry};
+use crate::cache::types::{CacheEntry, ReplaceCacheEntry, RunCacheEntry, RunState, SaveCacheEntry};
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{Read, Write};
@@ -171,6 +171,58 @@ pub fn save_cache_candidate(
             }
         }
         save_unlocked(cache_dir, hash_key, entry, &json_bytes)
+    })
+}
+
+/// Replaces the exact derived entry selected for renewal under the cache lock.
+///
+/// A compatible entry written by a concurrent renewal is retained instead. The
+/// caller owns cleanup of either the displaced token or its unused candidate.
+pub fn replace_cache_candidate(
+    cache_dir: &Path,
+    hash_key: &str,
+    expected: &CacheEntry,
+    candidate: &CacheEntry,
+    epoch: u64,
+    expected_root: (&str, &str),
+    now: time::OffsetDateTime,
+) -> Result<ReplaceCacheEntry, CacheError> {
+    ensure_cache_dir(cache_dir)?;
+    validate_entry_key(hash_key, expected)?;
+    validate_entry_key(hash_key, candidate)?;
+    if !matches!(expected, CacheEntry::Derived(_)) || !matches!(candidate, CacheEntry::Derived(_)) {
+        return Err(CacheError::UnexpectedKind {
+            expected: "derived",
+            actual: candidate.kind_name(),
+        });
+    }
+    let json_bytes = serde_json::to_vec_pretty(candidate).map_err(CacheError::Json)?;
+    with_locked_file(cache_dir, LockMode::Exclusive, |lock| {
+        let actual = read_epoch(lock)?;
+        if actual != epoch {
+            return Err(CacheError::EpochChanged {
+                expected: epoch,
+                actual,
+            });
+        }
+        let (root_key, generation) = expected_root;
+        let root = read_cache_entry(&cache_file_path(cache_dir, root_key))?;
+        if !matches!(root, Some(CacheEntry::Root(ref root)) if root.generation_fingerprint() == generation)
+        {
+            return Err(CacheError::RootGenerationChanged);
+        }
+
+        let cache_file = cache_file_path(cache_dir, hash_key);
+        let current = read_cache_entry(&cache_file)?.ok_or(CacheError::RenewalEntryChanged)?;
+        validate_entry_key(hash_key, &current)?;
+        if &current == expected {
+            persist_cache_file(cache_dir, &cache_file, &json_bytes)?;
+            return Ok(ReplaceCacheEntry::Replaced(Box::new(current)));
+        }
+        if current.compatible_with(candidate, now) {
+            return Ok(ReplaceCacheEntry::Retained(Box::new(current)));
+        }
+        Err(CacheError::RenewalEntryChanged)
     })
 }
 

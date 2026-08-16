@@ -21,6 +21,7 @@ pub(super) struct PreparedScopedToken<'a> {
 pub(super) struct ValidatedScopedToken {
     pub access_token: AccessToken,
     pub expires_at: TokenExpiry,
+    pub received_at: OffsetDateTime,
 }
 
 pub(super) fn prepare<'a>(
@@ -69,12 +70,13 @@ pub(super) fn prepare<'a>(
     })
 }
 
-pub(super) fn issue<C: ScopedTokenClient>(
+pub(super) fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     client: &C,
     prepared: &PreparedScopedToken<'_>,
-    now: OffsetDateTime,
+    request_time: OffsetDateTime,
+    now: &mut N,
 ) -> Result<ValidatedScopedToken, TokenError> {
-    if !prepared.root.expires_at.is_usable_at(now) {
+    if !prepared.root.expires_at.is_safe_to_handoff_at(request_time) {
         return Err(TokenError::NoSourceTokenCached(
             prepared.profile.source.clone(),
         ));
@@ -85,10 +87,7 @@ pub(super) fn issue<C: ScopedTokenClient>(
         .client_secret
         .as_deref()
         .ok_or_else(|| TokenError::ClientSecretRequired(prepared.profile.source.clone()))?;
-    let IssuedScopedToken {
-        access_token,
-        expires_at,
-    } = client.create_scoped_token(&ScopedTokenRequest {
+    let response = client.create_scoped_token(&ScopedTokenRequest {
         client_id: &prepared.source.github_app.client_id,
         client_secret: secret,
         root_token: prepared.root.access_token.as_ref(),
@@ -96,10 +95,16 @@ pub(super) fn issue<C: ScopedTokenClient>(
         repositories: prepared.repositories.as_deref(),
         permissions: &prepared.permissions,
     })?;
-    match validate_scoped_expiry(expires_at.as_deref(), now) {
+    let received_at = now();
+    let IssuedScopedToken {
+        access_token,
+        expires_at,
+    } = response;
+    match validate_scoped_expiry(expires_at.as_deref(), received_at) {
         Ok(expires_at) => Ok(ValidatedScopedToken {
             access_token,
             expires_at,
+            received_at,
         }),
         Err(error) => Err(revoke_with_context(
             client,

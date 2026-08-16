@@ -27,6 +27,7 @@ pub enum CacheError {
         actual: u64,
     },
     RootGenerationChanged,
+    RenewalEntryChanged,
     Platform(&'static str),
 }
 
@@ -65,6 +66,9 @@ impl fmt::Display for CacheError {
             Self::RootGenerationChanged => {
                 write!(f, "source root generation changed while issuing a token")
             }
+            Self::RenewalEntryChanged => {
+                write!(f, "derived cache entry changed while renewing a token")
+            }
             Self::Platform(reason) => write!(f, "cache platform error: {reason}"),
         }
     }
@@ -85,6 +89,7 @@ impl std::error::Error for CacheError {
             | Self::EpochExhausted
             | Self::EpochChanged { .. }
             | Self::RootGenerationChanged
+            | Self::RenewalEntryChanged
             | Self::Platform(_) => None,
         }
     }

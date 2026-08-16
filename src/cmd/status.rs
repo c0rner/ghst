@@ -83,7 +83,7 @@ fn write_entry(
             };
             let state = if expiry.value() <= now {
                 "Expired"
-            } else if expiry.is_usable_at(now) {
+            } else if expiry.is_safe_to_handoff_at(now) {
                 "Usable"
             } else {
                 "Expiring"
@@ -112,7 +112,7 @@ mod tests {
     use super::*;
     use crate::cache::{
         AccessToken, CacheEntry, RUN_CACHE_SCHEMA_VERSION, RunCacheEntry, RunState, TokenExpiry,
-        authority_fingerprint, compute_run_cache_key, format_rfc3339, save_cache_entry,
+        authority_fingerprint, compute_run_cache_key, save_cache_entry,
     };
     use time::Duration;
 
@@ -150,7 +150,6 @@ permissions = { contents = "read" }
                 source_authority_fingerprint: authority_fingerprint("id", "acme"),
                 github_user: "octocat".into(),
                 repo_scope: "acme/api".into(),
-                issued_at: format_rfc3339(now),
                 expires_at: TokenExpiry::new(now + Duration::hours(1)),
                 access_token: AccessToken::from("status-secret"),
             }),

@@ -2,7 +2,6 @@ use crate::cache::TokenExpiry;
 use crate::config::Config;
 use std::fmt;
 use std::path::Path;
-use time::OffsetDateTime;
 
 pub struct AcquiredToken {
     pub access_token: crate::cache::AccessToken,
@@ -37,5 +36,4 @@ pub struct AcquireRequest<'a> {
     pub cache_dir: &'a Path,
     pub profile_name: &'a str,
     pub repositories: &'a [String],
-    pub now: OffsetDateTime,
 }

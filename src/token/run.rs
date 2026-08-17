@@ -1,7 +1,7 @@
 use super::{TokenError, revoke_with_context, root_cache_key};
 use crate::cache::{
     CacheEntry, RUN_CACHE_SCHEMA_VERSION, RunCacheEntry, RunState, SaveCacheEntry, cache_epoch,
-    compute_run_cache_key, format_rfc3339, save_cache_candidate,
+    compute_run_cache_key, save_cache_candidate,
 };
 use crate::config::Config;
 use crate::repository::RepositoryError;
@@ -16,7 +16,6 @@ pub struct MintRunRequest<'a> {
     pub profile_name: &'a str,
     pub repositories: &'a [String],
     pub wrapper_pid: u32,
-    pub now: OffsetDateTime,
 }
 
 pub struct PendingRun {
@@ -43,6 +42,19 @@ pub fn mint<C: ScopedTokenClient>(
     request: &MintRunRequest<'_>,
     resolve_auto: impl FnMut() -> Result<String, RepositoryError>,
 ) -> Result<PendingRun, TokenError> {
+    mint_with_clock(client, request, resolve_auto, OffsetDateTime::now_utc)
+}
+
+fn mint_with_clock<
+    C: ScopedTokenClient,
+    R: FnMut() -> Result<String, RepositoryError>,
+    N: FnMut() -> OffsetDateTime,
+>(
+    client: &C,
+    request: &MintRunRequest<'_>,
+    resolve_auto: R,
+    mut now: N,
+) -> Result<PendingRun, TokenError> {
     let prepared = super::scoped::prepare(
         request.config,
         request.cache_dir,
@@ -54,7 +66,8 @@ pub fn mint<C: ScopedTokenClient>(
     let cache_key = compute_run_cache_key(&run_id);
     let epoch = cache_epoch(request.cache_dir)?;
     let generation = prepared.root.generation_fingerprint();
-    let issued = super::scoped::issue(client, &prepared, request.now)?;
+    let request_time = now();
+    let issued = super::scoped::issue(client, &prepared, request_time, &mut now)?;
     let candidate = CacheEntry::Run(RunCacheEntry {
         version: RUN_CACHE_SCHEMA_VERSION,
         run_id: run_id.clone(),
@@ -69,7 +82,6 @@ pub fn mint<C: ScopedTokenClient>(
         ),
         github_user: prepared.root.github_user,
         repo_scope: prepared.scope,
-        issued_at: format_rfc3339(request.now),
         expires_at: issued.expires_at,
         access_token: issued.access_token,
     });
@@ -128,6 +140,11 @@ mod tests {
 
     struct MockClient(Cell<usize>);
 
+    struct LatencyClient {
+        expiry: TokenExpiry,
+        revoked: Cell<bool>,
+    }
+
     impl RevokeTokenClient for MockClient {
         fn delete_token(
             &self,
@@ -151,6 +168,30 @@ mod tests {
                 expires_at: Some(
                     TokenExpiry::new(OffsetDateTime::now_utc() + Duration::hours(1)).to_string(),
                 ),
+            })
+        }
+    }
+
+    impl RevokeTokenClient for LatencyClient {
+        fn delete_token(
+            &self,
+            _client_id: &str,
+            _client_secret: &str,
+            _access_token: &str,
+        ) -> Result<(), GitHubError> {
+            self.revoked.set(true);
+            Ok(())
+        }
+    }
+
+    impl ScopedTokenClient for LatencyClient {
+        fn create_scoped_token(
+            &self,
+            _request: &ScopedTokenRequest<'_>,
+        ) -> Result<IssuedScopedToken, GitHubError> {
+            Ok(IssuedScopedToken {
+                access_token: "late-run-token".into(),
+                expires_at: Some(self.expiry.to_string()),
             })
         }
     }
@@ -181,7 +222,6 @@ permissions = { contents = "read" }
                 profile: "developer".into(),
                 authority_fingerprint: authority_fingerprint("id", "acme"),
                 github_user: "octocat".into(),
-                issued_at: format_rfc3339(now),
                 expires_at: TokenExpiry::new(now + Duration::hours(1)),
                 access_token: "root".into(),
             }),
@@ -230,7 +270,6 @@ permissions = { contents = "read" }
                 policy_fingerprint: policy_fingerprint("acme", "acme/api", &permissions),
                 github_user: "octocat".into(),
                 repo_scope: "acme/api".into(),
-                issued_at: format_rfc3339(now),
                 expires_at: TokenExpiry::new(now + Duration::hours(1)),
                 access_token: "reusable".into(),
             }),
@@ -243,7 +282,6 @@ permissions = { contents = "read" }
             profile_name: "reader",
             repositories: &[],
             wrapper_pid: std::process::id(),
-            now,
         };
         let first = mint(&client, &request, || panic!("auto is not used")).unwrap();
         let second = mint(&client, &request, || panic!("auto is not used")).unwrap();
@@ -251,6 +289,37 @@ permissions = { contents = "read" }
         assert_eq!(second.access_token.as_ref(), "fresh-2");
         assert_ne!(first.cache_key, second.cache_key);
         assert_eq!(client.0.get(), 2);
+    }
+
+    #[test]
+    fn run_validates_expiry_at_response_receipt_time() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let now = OffsetDateTime::now_utc();
+        let config = config();
+        cache_root(&cache_dir, now);
+        let client = LatencyClient {
+            expiry: TokenExpiry::new(now + Duration::seconds(40)),
+            revoked: Cell::new(false),
+        };
+        let request = MintRunRequest {
+            config: &config,
+            cache_dir: &cache_dir,
+            profile_name: "reader",
+            repositories: &[],
+            wrapper_pid: std::process::id(),
+        };
+        let mut times = [now, now + Duration::seconds(15)].into_iter();
+
+        let result = mint_with_clock(
+            &client,
+            &request,
+            || panic!("auto is not used"),
+            || times.next().unwrap(),
+        );
+
+        assert!(matches!(result, Err(TokenError::InvalidLifetime { .. })));
+        assert!(client.revoked.get());
     }
 
     #[test]
@@ -266,7 +335,6 @@ permissions = { contents = "read" }
                 profile_name: "developer",
                 repositories: &[],
                 wrapper_pid: std::process::id(),
-                now: OffsetDateTime::now_utc(),
             },
             || panic!("auto is not used"),
         );

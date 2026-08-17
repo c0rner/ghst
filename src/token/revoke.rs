@@ -73,7 +73,7 @@ pub fn revoke_all<C: RevokeTokenClient>(
         for index in 0..transaction.entries().len() {
             let label = transaction.entries()[index].label.clone();
             let revocation = match &transaction.entries()[index].state {
-                CacheInspectionState::Current(entry) if entry.is_usable_at(now) => {
+                CacheInspectionState::Current(entry) if entry.is_safe_to_handoff_at(now) => {
                     match super::provenance::for_entry(config, entry) {
                         super::provenance::ConfiguredAuthority::Match(app) => {
                             if let Some(secret) = app.github_app.client_secret.as_deref() {
@@ -116,9 +116,7 @@ pub fn revoke_all<C: RevokeTokenClient>(
                         }
                     }
                 }
-                CacheInspectionState::Current(_)
-                | CacheInspectionState::Unsupported(_)
-                | CacheInspectionState::Invalid => false,
+                CacheInspectionState::Current(_) | CacheInspectionState::Invalid => false,
             };
             match transaction.delete(index) {
                 Ok(true) if revocation => report.remotely_inactive += 1,
@@ -146,8 +144,7 @@ mod tests {
     use crate::cache::{
         AccessToken, CACHE_SCHEMA_VERSION, CacheEntry, DerivedCacheEntry, RUN_CACHE_SCHEMA_VERSION,
         RootCacheEntry, RunCacheEntry, RunState, TokenExpiry, authority_fingerprint,
-        compute_cache_key, compute_run_cache_key, format_rfc3339, list_all_cache_entries,
-        save_cache_entry,
+        compute_cache_key, compute_run_cache_key, list_all_cache_entries, save_cache_entry,
     };
     use std::cell::Cell;
     use time::Duration;
@@ -185,7 +182,6 @@ mod tests {
             profile: "developer".into(),
             authority_fingerprint: authority_fingerprint("id", "acme"),
             github_user: "octocat".into(),
-            issued_at: format_rfc3339(OffsetDateTime::now_utc()),
             expires_at: TokenExpiry::new(expiry),
             access_token: AccessToken::from("root-token"),
         });
@@ -261,7 +257,6 @@ mod tests {
 
     fn mismatched_entries(expiry: OffsetDateTime) -> [(String, crate::cache::CacheEntry); 3] {
         let authority = authority_fingerprint("id", "acme");
-        let issued_at = format_rfc3339(OffsetDateTime::now_utc());
         [
             (
                 crate::token::root_cache_key("developer"),
@@ -270,7 +265,6 @@ mod tests {
                     profile: "developer".into(),
                     authority_fingerprint: authority.clone(),
                     github_user: "octocat".into(),
-                    issued_at: issued_at.clone(),
                     expires_at: TokenExpiry::new(expiry),
                     access_token: AccessToken::from("root-token"),
                 }),
@@ -286,7 +280,6 @@ mod tests {
                     policy_fingerprint: "policy".into(),
                     github_user: "octocat".into(),
                     repo_scope: "acme/api".into(),
-                    issued_at: issued_at.clone(),
                     expires_at: TokenExpiry::new(expiry),
                     access_token: AccessToken::from("derived-token"),
                 }),
@@ -304,7 +297,6 @@ mod tests {
                     source_authority_fingerprint: authority,
                     github_user: "octocat".into(),
                     repo_scope: "acme/api".into(),
-                    issued_at,
                     expires_at: TokenExpiry::new(expiry),
                     access_token: AccessToken::from("run-token"),
                 }),

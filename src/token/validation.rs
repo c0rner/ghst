@@ -21,7 +21,7 @@ pub fn validate_root_expiry(
             token_kind: "root",
             reason: "expires_in cannot be represented safely".into(),
         })?;
-    if !expiry.is_usable_at(now) {
+    if !expiry.is_safe_to_handoff_at(now) {
         return Err(TokenError::InvalidLifetime {
             token_kind: "root",
             reason: "expires_in is not beyond the 30-second safety margin".into(),
@@ -42,7 +42,7 @@ pub fn validate_scoped_expiry(
         token_kind: "scoped",
         reason: "expires_at is not valid RFC 3339".into(),
     })?;
-    if !expiry.is_usable_at(now) {
+    if !expiry.is_safe_to_handoff_at(now) {
         return Err(TokenError::InvalidLifetime {
             token_kind: "scoped",
             reason: "expires_at is not beyond the 30-second safety margin".into(),

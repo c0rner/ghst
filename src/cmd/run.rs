@@ -41,7 +41,6 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
             profile_name: &profile_name,
             repositories: &cmd.repo,
             wrapper_pid,
-            now: OffsetDateTime::now_utc(),
         },
         crate::git::resolve_origin_repo,
     )?;

@@ -4,7 +4,6 @@ use crate::repository::RepositoryError;
 use crate::token::{AcquireRequest, AcquiredToken, ScopedTokenClient};
 use std::io::{self, Write};
 use std::path::Path;
-use time::OffsetDateTime;
 
 /// Handles execution of the `ghst token` subcommand.
 pub fn run_token(args: &GhstCli, cmd: &TokenCmd) -> Result<(), CmdError> {
@@ -18,7 +17,6 @@ pub fn run_token(args: &GhstCli, cmd: &TokenCmd) -> Result<(), CmdError> {
             config: &config,
             cache_dir: &cache_dir,
             client: &client,
-            now: OffsetDateTime::now_utc(),
         },
         &profile_name,
         cmd,
@@ -31,7 +29,6 @@ struct TokenContext<'a, C> {
     config: &'a crate::config::Config,
     cache_dir: &'a Path,
     client: &'a C,
-    now: OffsetDateTime,
 }
 
 fn execute_token<C: ScopedTokenClient, W: Write>(
@@ -48,7 +45,6 @@ fn execute_token<C: ScopedTokenClient, W: Write>(
             cache_dir: context.cache_dir,
             profile_name,
             repositories: &cmd.repo,
-            now: context.now,
         },
         resolve_auto,
     )?;
@@ -92,7 +88,7 @@ fn shell_quote(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::cache::TokenExpiry;
-    use time::Duration;
+    use time::{Duration, OffsetDateTime};
 
     fn token(access_token: &str) -> AcquiredToken {
         AcquiredToken {

@@ -1,12 +1,12 @@
 use super::*;
 use crate::cache::{
     CACHE_SCHEMA_VERSION, CacheEntry, RootCacheEntry, TokenExpiry, authority_fingerprint,
-    cache_epoch, compute_cache_key, delete_cache_entry, format_rfc3339, load_cache_entry,
-    save_cache_entry,
+    cache_epoch, compute_cache_key, delete_cache_entry, load_cache_entry, save_cache_entry,
 };
 use crate::config::{Config, GitHubAppConfig, ProfileConfig};
 use crate::github::GitHubError;
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::path::Path;
 use time::{Duration, OffsetDateTime};
 
@@ -91,11 +91,45 @@ fn cache_root(cache_dir: &Path, now: OffsetDateTime, token: &str) {
         profile: "developer".into(),
         authority_fingerprint: authority_fingerprint("id", "acme"),
         github_user: "octocat".into(),
-        issued_at: format_rfc3339(now),
         expires_at: TokenExpiry::new(now + Duration::hours(2)),
         access_token: token.into(),
     });
     save_cache_entry(cache_dir, &root_cache_key("developer"), &entry).unwrap();
+}
+
+fn cache_derived(cache_dir: &Path, expiry: OffsetDateTime, token: &str) -> String {
+    let root_key = root_cache_key("developer");
+    let CacheEntry::Root(root) = load_cache_entry(cache_dir, &root_key).unwrap().unwrap() else {
+        panic!("expected root")
+    };
+    let permissions = BTreeMap::from([
+        ("contents".to_owned(), "read".to_owned()),
+        ("pull_requests".to_owned(), "write".to_owned()),
+    ]);
+    let cache_key = compute_cache_key("reader", "acme/api");
+    let entry = CacheEntry::Derived(crate::cache::DerivedCacheEntry {
+        version: CACHE_SCHEMA_VERSION,
+        profile: "reader".into(),
+        source_profile: "developer".into(),
+        source_authority_fingerprint: authority_fingerprint("id", "acme"),
+        parent_generation: root.generation_fingerprint(),
+        policy_fingerprint: crate::cache::policy_fingerprint("acme", "acme/api", &permissions),
+        github_user: "octocat".into(),
+        repo_scope: "acme/api".into(),
+        expires_at: TokenExpiry::new(expiry),
+        access_token: token.into(),
+    });
+    save_cache_entry(cache_dir, &cache_key, &entry).unwrap();
+    cache_key
+}
+
+fn no_response_client() -> MockClient {
+    MockClient {
+        scoped: RefCell::new(None),
+        request: RefCell::new(None),
+        revoked: RefCell::new(Vec::new()),
+        revoke_fails: false,
+    }
 }
 
 #[test]
@@ -131,6 +165,72 @@ fn scoped_lifetime_requires_a_valid_timestamp_beyond_the_margin() {
         validate_scoped_expiry(Some(&expiry.to_string()), now).unwrap(),
         expiry
     );
+}
+
+#[test]
+fn response_receipt_time_rejects_latency_crossing_the_handoff_margin() {
+    let now = OffsetDateTime::now_utc();
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    cache_root(&cache_dir, now, "root-token");
+    let client = client(IssuedScopedToken {
+        access_token: "too-late".into(),
+        expires_at: Some(TokenExpiry::new(now + Duration::seconds(40)).to_string()),
+    });
+    let config: Config = CONFIG.parse().unwrap();
+    let mut times = [now, now, now + Duration::seconds(15)].into_iter();
+
+    let result = super::acquire::acquire_with_clock(
+        &client,
+        &AcquireRequest {
+            config: &config,
+            cache_dir: &cache_dir,
+            profile_name: "reader",
+            repositories: &[],
+        },
+        || panic!("auto not expected"),
+        || times.next().unwrap(),
+    );
+
+    assert!(matches!(result, Err(TokenError::InvalidLifetime { .. })));
+    assert_eq!(&*client.revoked.borrow(), &["too-late"]);
+}
+
+#[test]
+fn scoped_expiry_round_trips_without_local_subtraction() {
+    let now = OffsetDateTime::now_utc();
+    let exact_expiry = TokenExpiry::new(now + Duration::hours(1));
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    cache_root(&cache_dir, now, "root-token");
+    let client = client(IssuedScopedToken {
+        access_token: "exact-expiry".into(),
+        expires_at: Some(exact_expiry.to_string()),
+    });
+    let config: Config = CONFIG.parse().unwrap();
+    let mut times = [now, now, now].into_iter();
+    let acquired = super::acquire::acquire_with_clock(
+        &client,
+        &AcquireRequest {
+            config: &config,
+            cache_dir: &cache_dir,
+            profile_name: "reader",
+            repositories: &[],
+        },
+        || panic!("auto not expected"),
+        || times.next().unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(acquired.expires_at, exact_expiry);
+    let CacheEntry::Derived(cached) =
+        load_cache_entry(&cache_dir, &compute_cache_key("reader", "acme/api"))
+            .unwrap()
+            .unwrap()
+    else {
+        panic!("expected derived entry")
+    };
+    assert_eq!(cached.expires_at, exact_expiry);
 }
 
 #[test]
@@ -178,7 +278,6 @@ fn root_acquisition_returns_cached_token_and_rejects_repository_scope() {
             cache_dir: &cache_dir,
             profile_name: "developer",
             repositories: &[],
-            now,
         },
         || panic!("auto not expected"),
     )
@@ -194,7 +293,6 @@ fn root_acquisition_returns_cached_token_and_rejects_repository_scope() {
                 cache_dir: &cache_dir,
                 profile_name: "developer",
                 repositories: &["acme/api".into()],
-                now,
             },
             || panic!("auto not expected"),
         ),
@@ -257,7 +355,6 @@ fn derived_acquisition_sends_exact_narrowing_request() {
             cache_dir: &cache_dir,
             profile_name: "reader",
             repositories: &[],
-            now,
         },
         || panic!("auto not expected"),
     )
@@ -296,7 +393,6 @@ fn invalid_scoped_response_is_revoked_without_cache_entry() {
                 cache_dir: &cache_dir,
                 profile_name: "reader",
                 repositories: &[],
-                now,
             },
             || panic!("auto not expected"),
         ),
@@ -365,7 +461,6 @@ fn root_generation_change_revokes_candidate_and_requests_retry() {
                 cache_dir: &cache_dir,
                 profile_name: "reader",
                 repositories: &[],
-                now,
             },
             || panic!("auto not expected"),
         ),
@@ -392,7 +487,6 @@ fn cached_derived_token_remains_usable_after_root_expiry() {
         cache_dir: &cache_dir,
         profile_name: "reader",
         repositories: &[],
-        now,
     };
     acquire(&first_client, &request, || panic!("auto not expected")).unwrap();
 
@@ -414,4 +508,180 @@ fn cached_derived_token_remains_usable_after_root_expiry() {
     let acquired = acquire(&unused_client, &request, || panic!("auto not expected")).unwrap();
     assert_eq!(acquired.access_token.as_ref(), "child-token");
     assert!(unused_client.request.borrow().is_none());
+}
+
+#[test]
+fn renewable_derived_token_is_replaced_and_displaced_token_is_revoked() {
+    let now = OffsetDateTime::now_utc();
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    cache_root(&cache_dir, now, "root-token");
+    let cache_key = cache_derived(&cache_dir, now + Duration::minutes(5), "renewable-child");
+    let exact_expiry = TokenExpiry::new(now + Duration::hours(1));
+    let client = client(IssuedScopedToken {
+        access_token: "renewed-child".into(),
+        expires_at: Some(exact_expiry.to_string()),
+    });
+    let config: Config = CONFIG.parse().unwrap();
+    let mut times = [now, now, now].into_iter();
+
+    let acquired = super::acquire::acquire_with_clock(
+        &client,
+        &AcquireRequest {
+            config: &config,
+            cache_dir: &cache_dir,
+            profile_name: "reader",
+            repositories: &[],
+        },
+        || panic!("auto not expected"),
+        || times.next().unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(acquired.access_token.as_ref(), "renewed-child");
+    assert_eq!(&*client.revoked.borrow(), &["renewable-child"]);
+    let CacheEntry::Derived(cached) = load_cache_entry(&cache_dir, &cache_key).unwrap().unwrap()
+    else {
+        panic!("expected derived entry")
+    };
+    assert_eq!(cached.access_token.as_ref(), "renewed-child");
+    assert_eq!(cached.expires_at, exact_expiry);
+}
+
+#[test]
+fn renewable_derived_token_falls_back_when_root_is_not_usable() {
+    let now = OffsetDateTime::now_utc();
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    cache_root(&cache_dir, now, "root-token");
+    cache_derived(&cache_dir, now + Duration::minutes(5), "renewable-child");
+    let root_key = root_cache_key("developer");
+    let CacheEntry::Root(mut root) = load_cache_entry(&cache_dir, &root_key).unwrap().unwrap()
+    else {
+        panic!("expected root")
+    };
+    delete_cache_entry(&cache_dir, &root_key).unwrap();
+    root.expires_at = TokenExpiry::new(now + Duration::seconds(30));
+    save_cache_entry(&cache_dir, &root_key, &CacheEntry::Root(root)).unwrap();
+    let client = no_response_client();
+    let config: Config = CONFIG.parse().unwrap();
+    let mut times = [now, now].into_iter();
+
+    let acquired = super::acquire::acquire_with_clock(
+        &client,
+        &AcquireRequest {
+            config: &config,
+            cache_dir: &cache_dir,
+            profile_name: "reader",
+            repositories: &[],
+        },
+        || panic!("auto not expected"),
+        || times.next().unwrap(),
+    )
+    .unwrap();
+
+    assert_eq!(acquired.access_token.as_ref(), "renewable-child");
+    assert!(client.request.borrow().is_none());
+}
+
+#[test]
+fn token_inside_handoff_margin_is_never_returned() {
+    let now = OffsetDateTime::now_utc();
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    cache_root(&cache_dir, now, "root-token");
+    cache_derived(&cache_dir, now + Duration::seconds(30), "unsafe-child");
+    let root_key = root_cache_key("developer");
+    let CacheEntry::Root(mut root) = load_cache_entry(&cache_dir, &root_key).unwrap().unwrap()
+    else {
+        panic!("expected root")
+    };
+    delete_cache_entry(&cache_dir, &root_key).unwrap();
+    root.expires_at = TokenExpiry::new(now + Duration::seconds(30));
+    save_cache_entry(&cache_dir, &root_key, &CacheEntry::Root(root)).unwrap();
+    let client = no_response_client();
+    let config: Config = CONFIG.parse().unwrap();
+    let mut times = [now, now].into_iter();
+
+    let result = super::acquire::acquire_with_clock(
+        &client,
+        &AcquireRequest {
+            config: &config,
+            cache_dir: &cache_dir,
+            profile_name: "reader",
+            repositories: &[],
+        },
+        || panic!("auto not expected"),
+        || times.next().unwrap(),
+    );
+
+    assert!(matches!(result, Err(TokenError::NoSourceTokenCached(_))));
+    assert!(client.request.borrow().is_none());
+}
+
+#[test]
+fn cached_child_is_not_returned_when_root_provenance_is_missing() {
+    let now = OffsetDateTime::now_utc();
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    cache_root(&cache_dir, now, "root-token");
+    cache_derived(&cache_dir, now + Duration::hours(1), "cached-child");
+    delete_cache_entry(&cache_dir, &root_cache_key("developer")).unwrap();
+    let client = no_response_client();
+    let config: Config = CONFIG.parse().unwrap();
+
+    let result = super::acquire::acquire_with_clock(
+        &client,
+        &AcquireRequest {
+            config: &config,
+            cache_dir: &cache_dir,
+            profile_name: "reader",
+            repositories: &[],
+        },
+        || panic!("auto not expected"),
+        || panic!("clock is not sampled before root provenance is established"),
+    );
+
+    assert!(matches!(result, Err(TokenError::NoSourceTokenCached(_))));
+    assert!(client.request.borrow().is_none());
+}
+
+#[test]
+fn failed_displaced_revocation_leaves_the_renewed_token_persisted() {
+    let now = OffsetDateTime::now_utc();
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    cache_root(&cache_dir, now, "root-token");
+    let cache_key = cache_derived(&cache_dir, now + Duration::minutes(5), "renewable-child");
+    let mut failing_client = client(IssuedScopedToken {
+        access_token: "persisted-child".into(),
+        expires_at: Some(TokenExpiry::new(now + Duration::hours(1)).to_string()),
+    });
+    failing_client.revoke_fails = true;
+    let config: Config = CONFIG.parse().unwrap();
+    let mut times = [now, now, now].into_iter();
+
+    let result = super::acquire::acquire_with_clock(
+        &failing_client,
+        &AcquireRequest {
+            config: &config,
+            cache_dir: &cache_dir,
+            profile_name: "reader",
+            repositories: &[],
+        },
+        || panic!("auto not expected"),
+        || times.next().unwrap(),
+    );
+
+    assert!(matches!(
+        result,
+        Err(TokenError::RevocationFailed { context, .. })
+            if matches!(&*context, TokenError::RenewalPersisted(profile) if profile == "reader")
+    ));
+    assert_eq!(&*failing_client.revoked.borrow(), &["renewable-child"]);
+    let CacheEntry::Derived(cached) = load_cache_entry(&cache_dir, &cache_key).unwrap().unwrap()
+    else {
+        panic!("expected derived entry")
+    };
+    assert_eq!(cached.access_token.as_ref(), "persisted-child");
 }

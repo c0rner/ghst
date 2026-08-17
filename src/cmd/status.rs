@@ -29,7 +29,7 @@ pub fn print_status<W: Write>(
     let mut unmatched = Vec::new();
     for (index, inspection) in inspections.iter().enumerate() {
         match &inspection.state {
-            CacheInspectionState::Current(entry) | CacheInspectionState::Unsupported(entry)
+            CacheInspectionState::Current(entry)
                 if config.profiles.contains_key(entry.profile()) =>
             {
                 grouped.entry(entry.profile()).or_default().push(index);
@@ -71,26 +71,22 @@ fn write_entry(
 ) -> io::Result<()> {
     match &inspection.state {
         CacheInspectionState::Invalid => writeln!(writer, "    Lifetime:    Invalid"),
-        CacheInspectionState::Unsupported(entry) => {
-            writeln!(writer, "    Lifetime:    Unsupported")?;
-            writeln!(writer, "    Repo Scope:  {}", entry.repo_scope())
-        }
         CacheInspectionState::Current(entry) => {
-            let expiry = match entry {
+            let expiry = match entry.as_ref() {
                 CacheEntry::Root(value) => value.expires_at,
                 CacheEntry::Derived(value) => value.expires_at,
                 CacheEntry::Run(value) => value.expires_at,
             };
             let state = if expiry.value() <= now {
                 "Expired"
-            } else if expiry.is_usable_at(now) {
+            } else if expiry.is_safe_to_handoff_at(now) {
                 "Usable"
             } else {
                 "Expiring"
             };
             writeln!(writer, "    Lifetime:    {state}")?;
             writeln!(writer, "    Repo Scope:  {}", entry.repo_scope())?;
-            if let CacheEntry::Run(entry) = entry {
+            if let CacheEntry::Run(entry) = entry.as_ref() {
                 let state = match entry.state {
                     crate::cache::RunState::Pending => "Pending",
                     crate::cache::RunState::Running => "Running",
@@ -112,7 +108,7 @@ mod tests {
     use super::*;
     use crate::cache::{
         AccessToken, CacheEntry, RUN_CACHE_SCHEMA_VERSION, RunCacheEntry, RunState, TokenExpiry,
-        authority_fingerprint, compute_run_cache_key, format_rfc3339, save_cache_entry,
+        authority_fingerprint, compute_run_cache_key, save_cache_entry,
     };
     use time::Duration;
 
@@ -150,7 +146,6 @@ permissions = { contents = "read" }
                 source_authority_fingerprint: authority_fingerprint("id", "acme"),
                 github_user: "octocat".into(),
                 repo_scope: "acme/api".into(),
-                issued_at: format_rfc3339(now),
                 expires_at: TokenExpiry::new(now + Duration::hours(1)),
                 access_token: AccessToken::from("status-secret"),
             }),

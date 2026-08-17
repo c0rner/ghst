@@ -5,15 +5,14 @@ use crate::cache::fs::{
     with_cache_lock, with_locked_file,
 };
 use crate::cache::key::{compute_cache_key, compute_run_cache_key, validate_cache_key};
-use crate::cache::types::{CacheEntry, RunCacheEntry, RunState, SaveCacheEntry};
+use crate::cache::types::{CacheEntry, ReplaceCacheEntry, RunCacheEntry, RunState, SaveCacheEntry};
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 pub enum CacheInspectionState {
-    Current(CacheEntry),
-    Unsupported(CacheEntry),
+    Current(Box<CacheEntry>),
     Invalid,
 }
 
@@ -52,7 +51,9 @@ pub fn inspect_cache(cache_dir: &Path) -> Result<Vec<CacheInspection>, CacheErro
     if !cache_dir_exists(cache_dir)? {
         return Ok(Vec::new());
     }
-    with_cache_lock(cache_dir, LockMode::Shared, || inspect_unlocked(cache_dir))
+    with_cache_lock(cache_dir, LockMode::Exclusive, || {
+        inspect_unlocked(cache_dir)
+    })
 }
 
 pub fn revoke_transaction<T>(
@@ -104,15 +105,14 @@ fn inspect_unlocked(cache_dir: &Path) -> Result<Vec<CacheInspection>, CacheError
                 let consistent = cache_key
                     .as_deref()
                     .is_some_and(|key| validate_entry_key(key, &entry).is_ok());
-                if !consistent {
-                    CacheInspectionState::Invalid
-                } else if entry.is_current() {
-                    CacheInspectionState::Current(entry)
+                if consistent {
+                    CacheInspectionState::Current(Box::new(entry))
                 } else {
-                    CacheInspectionState::Unsupported(entry)
+                    CacheInspectionState::Invalid
                 }
             }
-            Ok(None) | Err(_) => CacheInspectionState::Invalid,
+            Ok(None) => continue,
+            Err(_) => CacheInspectionState::Invalid,
         };
         entries.push(CacheInspection {
             path,
@@ -127,9 +127,9 @@ fn inspect_unlocked(cache_dir: &Path) -> Result<Vec<CacheInspection>, CacheError
 
 /// Saves a `CacheEntry` to `cache_dir/<hash_key>.json`.
 ///
-/// A compatible current entry is retained. A legacy, expired, or same-kind
+/// A compatible current entry is retained. An expired or same-kind
 /// stale-provenance entry is atomically replaced. Malformed, inconsistent, or
-/// wrong-kind entries fail closed.
+/// wrong-kind entries fail closed. Unsupported schemas are discarded.
 #[cfg(test)]
 pub fn save_cache_entry(
     cache_dir: &Path,
@@ -171,6 +171,58 @@ pub fn save_cache_candidate(
             }
         }
         save_unlocked(cache_dir, hash_key, entry, &json_bytes)
+    })
+}
+
+/// Replaces the exact derived entry selected for renewal under the cache lock.
+///
+/// A compatible entry written by a concurrent renewal is retained instead. The
+/// caller owns cleanup of either the displaced token or its unused candidate.
+pub fn replace_cache_candidate(
+    cache_dir: &Path,
+    hash_key: &str,
+    expected: &CacheEntry,
+    candidate: &CacheEntry,
+    epoch: u64,
+    expected_root: (&str, &str),
+    now: time::OffsetDateTime,
+) -> Result<ReplaceCacheEntry, CacheError> {
+    ensure_cache_dir(cache_dir)?;
+    validate_entry_key(hash_key, expected)?;
+    validate_entry_key(hash_key, candidate)?;
+    if !matches!(expected, CacheEntry::Derived(_)) || !matches!(candidate, CacheEntry::Derived(_)) {
+        return Err(CacheError::UnexpectedKind {
+            expected: "derived",
+            actual: candidate.kind_name(),
+        });
+    }
+    let json_bytes = serde_json::to_vec_pretty(candidate).map_err(CacheError::Json)?;
+    with_locked_file(cache_dir, LockMode::Exclusive, |lock| {
+        let actual = read_epoch(lock)?;
+        if actual != epoch {
+            return Err(CacheError::EpochChanged {
+                expected: epoch,
+                actual,
+            });
+        }
+        let (root_key, generation) = expected_root;
+        let root = read_cache_entry(&cache_file_path(cache_dir, root_key))?;
+        if !matches!(root, Some(CacheEntry::Root(ref root)) if root.generation_fingerprint() == generation)
+        {
+            return Err(CacheError::RootGenerationChanged);
+        }
+
+        let cache_file = cache_file_path(cache_dir, hash_key);
+        let current = read_cache_entry(&cache_file)?.ok_or(CacheError::RenewalEntryChanged)?;
+        validate_entry_key(hash_key, &current)?;
+        if &current == expected {
+            persist_cache_file(cache_dir, &cache_file, &json_bytes)?;
+            return Ok(ReplaceCacheEntry::Replaced(Box::new(current)));
+        }
+        if current.compatible_with(candidate, now) {
+            return Ok(ReplaceCacheEntry::Retained(Box::new(current)));
+        }
+        Err(CacheError::RenewalEntryChanged)
     })
 }
 
@@ -424,7 +476,7 @@ pub fn load_cache_entry(
     }
 
     validate_cache_key(hash_key)?;
-    with_cache_lock(cache_dir, LockMode::Shared, || {
+    with_cache_lock(cache_dir, LockMode::Exclusive, || {
         read_cache_entry(&cache_file_path(cache_dir, hash_key))
     })
 }
@@ -472,7 +524,7 @@ pub fn list_all_cache_entries(cache_dir: &Path) -> Result<CacheFileEntries, Cach
         return Ok(Vec::new());
     }
 
-    with_cache_lock(cache_dir, LockMode::Shared, || {
+    with_cache_lock(cache_dir, LockMode::Exclusive, || {
         let mut entries = Vec::new();
         let read_dir = fs::read_dir(cache_dir).map_err(CacheError::Io)?;
         for entry in read_dir {
@@ -510,6 +562,26 @@ fn read_cache_entry(cache_file: &Path) -> Result<Option<CacheEntry>, CacheError>
             open_private_file(cache_file, false)?
                 .read_to_string(&mut content)
                 .map_err(CacheError::Io)?;
+            let header: CacheSchemaHeader =
+                serde_json::from_str(&content).map_err(CacheError::Json)?;
+            let expected_version = match header.kind.as_str() {
+                "root" | "derived" => Some(crate::cache::CACHE_SCHEMA_VERSION),
+                "run" => Some(crate::cache::RUN_CACHE_SCHEMA_VERSION),
+                _ => None,
+            };
+            if expected_version.is_some() && header.version != expected_version {
+                tracing::warn!(
+                    kind = %header.kind,
+                    version = ?header.version,
+                    "discarding cache entry with unsupported schema"
+                );
+                fs::remove_file(cache_file).map_err(CacheError::Io)?;
+                let cache_dir = cache_file
+                    .parent()
+                    .ok_or(CacheError::Platform("cache entry has no parent directory"))?;
+                sync_cache_dir(cache_dir)?;
+                return Ok(None);
+            }
             serde_json::from_str(&content)
                 .map(Some)
                 .map_err(CacheError::Json)
@@ -517,4 +589,10 @@ fn read_cache_entry(cache_file: &Path) -> Result<Option<CacheEntry>, CacheError>
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(err) => Err(CacheError::Io(err)),
     }
+}
+
+#[derive(serde::Deserialize)]
+struct CacheSchemaHeader {
+    kind: String,
+    version: Option<u32>,
 }

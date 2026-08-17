@@ -47,9 +47,6 @@ fn write_report(writer: &mut impl Write, report: &CleanupReport) -> io::Result<(
             CleanupFailure::InvalidEntry { entry } => {
                 writeln!(writer, "  - {entry}: invalid cache entry retained")?;
             }
-            CleanupFailure::UnsupportedEntry { entry } => {
-                writeln!(writer, "  - {entry}: unsupported cache entry retained")?;
-            }
             CleanupFailure::Configuration { entry } => {
                 writeln!(
                     writer,

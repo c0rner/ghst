@@ -3,7 +3,7 @@ use super::{
 };
 use crate::cache::{
     CACHE_SCHEMA_VERSION, CacheEntry, RootCacheEntry, SaveCacheEntry, authority_fingerprint,
-    compute_cache_key, format_rfc3339, load_cache_entry, save_cache_candidate,
+    compute_cache_key, load_cache_entry, save_cache_candidate,
 };
 use crate::config::{GitHubAppConfig, RootProfile};
 use crate::token::{IssuedRootToken, RootTokenClient};
@@ -22,7 +22,7 @@ pub fn load_valid_root_entry(
 ) -> Result<Option<RootCacheEntry>, TokenError> {
     Ok(
         load_current_root_entry(cache_dir, profile_name, &profile.github_app)?
-            .filter(|entry| entry.expires_at.is_usable_at(now)),
+            .filter(|entry| entry.expires_at.is_safe_to_handoff_at(now)),
     )
 }
 
@@ -100,7 +100,6 @@ pub fn persist_root_response<C: RootTokenClient>(
             &profile.github_app.account,
         ),
         github_user: user.login,
-        issued_at: format_rfc3339(now),
         expires_at: expiry,
         access_token,
     });

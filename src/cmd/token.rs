@@ -74,7 +74,12 @@ fn write_token(
                     "repo": token.repo_scope.as_str(),
                 }),
             )
-            .map_err(io::Error::other)?;
+            .map_err(|source| {
+                io::Error::new(
+                    source.io_error_kind().unwrap_or(io::ErrorKind::Other),
+                    source,
+                )
+            })?;
             writer.write_all(b"\n")
         }
     }
@@ -130,7 +135,7 @@ mod tests {
         let error = write_token(
             &mut FailingWriter,
             &token("secret-token"),
-            OutputFormat::Text,
+            OutputFormat::Json,
         )
         .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);

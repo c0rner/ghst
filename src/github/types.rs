@@ -6,7 +6,7 @@ use zeroize::Zeroizing;
 use crate::cache::AccessToken;
 
 /// Response from `POST /login/device/code`
-#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Deserialize)]
 pub struct DeviceCodeResponse {
     pub device_code: Zeroizing<String>,
     pub user_code: String,
@@ -34,14 +34,11 @@ const fn default_poll_interval() -> u64 {
 }
 
 /// Response from `POST /login/oauth/access_token`
-#[derive(PartialEq, Eq, Deserialize)]
+#[derive(Deserialize)]
 pub struct AccessTokenResponse {
     pub access_token: AccessToken,
-    pub token_type: String,
     pub expires_in: Option<u64>,
     pub refresh_token: Option<Zeroizing<String>>,
-    pub refresh_token_expires_in: Option<u64>,
-    pub scope: Option<String>,
 }
 
 // Hand-written Debug to redact access_token and refresh_token
@@ -49,25 +46,19 @@ impl fmt::Debug for AccessTokenResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AccessTokenResponse")
             .field("access_token", &"[REDACTED]")
-            .field("token_type", &self.token_type)
             .field("expires_in", &self.expires_in)
             .field(
                 "refresh_token",
                 &self.refresh_token.as_ref().map(|_| "[REDACTED]"),
             )
-            .field("refresh_token_expires_in", &self.refresh_token_expires_in)
-            .field("scope", &self.scope)
             .finish()
     }
 }
 
 /// Response from `GET /user`
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Deserialize)]
 pub struct UserResponse {
     pub login: String,
-    pub id: u64,
-    pub name: Option<String>,
-    pub email: Option<String>,
 }
 
 /// Request for `POST /applications/{client_id}/token/scoped`
@@ -93,12 +84,10 @@ impl fmt::Debug for ScopedTokenRequest<'_> {
 }
 
 /// Response from `POST /applications/{client_id}/token/scoped`
-#[derive(PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Deserialize)]
 pub struct ScopedTokenResponse {
     pub token: AccessToken,
     pub expires_at: Option<String>,
-    pub permissions: Option<BTreeMap<String, String>>,
-    pub repositories: Option<Vec<RepositoryInfo>>,
 }
 
 // Hand-written Debug to redact token
@@ -107,15 +96,6 @@ impl fmt::Debug for ScopedTokenResponse {
         f.debug_struct("ScopedTokenResponse")
             .field("token", &"[REDACTED]")
             .field("expires_at", &self.expires_at)
-            .field("permissions", &self.permissions)
-            .field("repositories", &self.repositories)
             .finish()
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RepositoryInfo {
-    pub id: u64,
-    pub name: String,
-    pub full_name: String,
 }

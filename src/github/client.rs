@@ -338,8 +338,6 @@ mod tests {
 
         let res: UserResponse = serde_json::from_str(json_data).unwrap();
         assert_eq!(res.login, "octocat");
-        assert_eq!(res.id, 583_231);
-        assert_eq!(res.name.as_deref(), Some("The Octocat"));
 
         assert_eq!(
             narrow_user(res),

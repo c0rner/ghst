@@ -197,43 +197,6 @@ fn response_receipt_time_rejects_latency_crossing_the_handoff_margin() {
 }
 
 #[test]
-fn scoped_expiry_round_trips_without_local_subtraction() {
-    let now = OffsetDateTime::now_utc();
-    let exact_expiry = TokenExpiry::new(now + Duration::hours(1));
-    let temp = tempfile::tempdir().unwrap();
-    let cache_dir = temp.path().join("cache");
-    cache_root(&cache_dir, now, "root-token");
-    let client = client(IssuedScopedToken {
-        access_token: "exact-expiry".into(),
-        expires_at: Some(exact_expiry.to_string()),
-    });
-    let config: Config = CONFIG.parse().unwrap();
-    let mut times = [now, now, now].into_iter();
-    let acquired = super::acquire::acquire_with_clock(
-        &client,
-        &AcquireRequest {
-            config: &config,
-            cache_dir: &cache_dir,
-            profile_name: "reader",
-            repositories: &[],
-        },
-        || panic!("auto not expected"),
-        || times.next().unwrap(),
-    )
-    .unwrap();
-
-    assert_eq!(acquired.expires_at, exact_expiry);
-    let CacheEntry::Derived(cached) =
-        load_cache_entry(&cache_dir, &compute_cache_key("reader", "acme/api"))
-            .unwrap()
-            .unwrap()
-    else {
-        panic!("expected derived entry")
-    };
-    assert_eq!(cached.expires_at, exact_expiry);
-}
-
-#[test]
 fn root_authority_and_kind_are_validated() {
     let now = OffsetDateTime::now_utc();
     let temp = tempfile::tempdir().unwrap();
@@ -342,10 +305,10 @@ fn derived_acquisition_sends_exact_narrowing_request() {
     let temp = tempfile::tempdir().unwrap();
     let cache_dir = temp.path().join("cache");
     cache_root(&cache_dir, now, "root-token");
-    let expiry = TokenExpiry::new(OffsetDateTime::now_utc() + Duration::hours(6)).to_string();
+    let exact_expiry = TokenExpiry::new(now + Duration::hours(6));
     let client = client(IssuedScopedToken {
         access_token: "child-token".into(),
-        expires_at: Some(expiry),
+        expires_at: Some(exact_expiry.to_string()),
     });
     let config: Config = CONFIG.parse().unwrap();
     let acquired = acquire(
@@ -360,6 +323,7 @@ fn derived_acquisition_sends_exact_narrowing_request() {
     )
     .unwrap();
     assert_eq!(acquired.access_token.as_ref(), "child-token");
+    assert_eq!(acquired.expires_at, exact_expiry);
     assert_eq!(acquired.repo_scope, "acme/api");
     assert_eq!(
         client.request.borrow().as_ref().unwrap(),
@@ -372,6 +336,14 @@ fn derived_acquisition_sends_exact_narrowing_request() {
             "permissions": {"contents": "read", "pull_requests": "write"},
         })
     );
+    let CacheEntry::Derived(cached) =
+        load_cache_entry(&cache_dir, &compute_cache_key("reader", "acme/api"))
+            .unwrap()
+            .unwrap()
+    else {
+        panic!("expected derived entry")
+    };
+    assert_eq!(cached.expires_at, exact_expiry);
 }
 
 #[test]

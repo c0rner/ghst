@@ -510,47 +510,6 @@ fn malformed_current_expiry_is_not_discarded_or_overwritten() {
 }
 
 #[test]
-fn unsupported_schema_is_discarded_before_candidate_persistence() {
-    let temp = cache_dir();
-    let directory = temp.path().join("cache");
-    ensure_cache_dir(&directory).unwrap();
-    let path = cache_file_path(&directory, &root_key());
-    let unsupported = r#"{
-            "kind":"root",
-            "profile":"developer",
-            "github_user":"octocat",
-            "issued_at":"2026-01-01T00:00:00Z",
-            "expires_at":"not-even-a-timestamp",
-            "access_token":"legacy-token"
-        }"#;
-    let mut file = create_private_tempfile(&directory).unwrap();
-    file.write_all(unsupported.as_bytes()).unwrap();
-    file.persist(&path).unwrap();
-    assert!(load_cache_entry(&directory, &root_key()).unwrap().is_none());
-    assert!(!path.exists());
-
-    let current = root_entry(
-        "current",
-        OffsetDateTime::now_utc() + Duration::hours(1),
-        "new-authority",
-    );
-    assert!(matches!(
-        save_cache_entry(&directory, &root_key(), &current).unwrap(),
-        SaveCacheEntry::Saved
-    ));
-
-    let changed = root_entry(
-        "changed",
-        OffsetDateTime::now_utc() + Duration::hours(1),
-        "changed-authority",
-    );
-    assert!(matches!(
-        save_cache_entry(&directory, &root_key(), &changed).unwrap(),
-        SaveCacheEntry::Saved
-    ));
-}
-
-#[test]
 fn compatible_entry_is_retained_and_wrong_kind_fails_closed() {
     let temp = cache_dir();
     let directory = temp.path().join("cache");

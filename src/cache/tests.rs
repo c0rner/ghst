@@ -251,7 +251,7 @@ fn secrets_are_redacted_and_zeroizing_type_serializes() {
 }
 
 #[test]
-fn cache_entry_json_format_is_compatible() {
+fn current_cache_schema_is_stable_and_round_trips() {
     let cases = [
         (
             CacheEntry::Root(RootCacheEntry {
@@ -298,10 +298,13 @@ fn cache_entry_json_format_is_compatible() {
         ),
     ];
 
+    // Intentional structural changes require a schema-version bump and matching golden update.
     for (entry, golden_json) in cases {
-        assert_eq!(serde_json::to_string(&entry).unwrap(), golden_json);
+        let serialized = serde_json::to_value(&entry).unwrap();
+        let golden: serde_json::Value = serde_json::from_str(golden_json).unwrap();
+        assert_eq!(serialized, golden);
         assert_eq!(
-            serde_json::from_str::<CacheEntry>(golden_json).unwrap(),
+            serde_json::from_value::<CacheEntry>(serialized).unwrap(),
             entry
         );
     }

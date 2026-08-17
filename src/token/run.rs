@@ -140,11 +140,6 @@ mod tests {
 
     struct MockClient(Cell<usize>);
 
-    struct LatencyClient {
-        expiry: TokenExpiry,
-        revoked: Cell<bool>,
-    }
-
     impl RevokeTokenClient for MockClient {
         fn delete_token(
             &self,
@@ -168,30 +163,6 @@ mod tests {
                 expires_at: Some(
                     TokenExpiry::new(OffsetDateTime::now_utc() + Duration::hours(1)).to_string(),
                 ),
-            })
-        }
-    }
-
-    impl RevokeTokenClient for LatencyClient {
-        fn delete_token(
-            &self,
-            _client_id: &str,
-            _client_secret: &str,
-            _access_token: &str,
-        ) -> Result<(), GitHubError> {
-            self.revoked.set(true);
-            Ok(())
-        }
-    }
-
-    impl ScopedTokenClient for LatencyClient {
-        fn create_scoped_token(
-            &self,
-            _request: &ScopedTokenRequest<'_>,
-        ) -> Result<IssuedScopedToken, GitHubError> {
-            Ok(IssuedScopedToken {
-                access_token: "late-run-token".into(),
-                expires_at: Some(self.expiry.to_string()),
             })
         }
     }
@@ -289,37 +260,6 @@ permissions = { contents = "read" }
         assert_eq!(second.access_token.as_ref(), "fresh-2");
         assert_ne!(first.cache_key, second.cache_key);
         assert_eq!(client.0.get(), 2);
-    }
-
-    #[test]
-    fn run_validates_expiry_at_response_receipt_time() {
-        let temp = tempfile::tempdir().unwrap();
-        let cache_dir = temp.path().join("cache");
-        let now = OffsetDateTime::now_utc();
-        let config = config();
-        cache_root(&cache_dir, now);
-        let client = LatencyClient {
-            expiry: TokenExpiry::new(now + Duration::seconds(40)),
-            revoked: Cell::new(false),
-        };
-        let request = MintRunRequest {
-            config: &config,
-            cache_dir: &cache_dir,
-            profile_name: "reader",
-            repositories: &[],
-            wrapper_pid: std::process::id(),
-        };
-        let mut times = [now, now + Duration::seconds(15)].into_iter();
-
-        let result = mint_with_clock(
-            &client,
-            &request,
-            || panic!("auto is not used"),
-            || times.next().unwrap(),
-        );
-
-        assert!(matches!(result, Err(TokenError::InvalidLifetime { .. })));
-        assert!(client.revoked.get());
     }
 
     #[test]

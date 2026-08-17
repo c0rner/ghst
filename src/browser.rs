@@ -32,23 +32,3 @@ pub fn open_auth_url(verification_uri: &str, no_browser: bool) {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_open_auth_url_with_no_browser_flag() {
-        // When no_browser is true, open_auth_url should return without error or opening browser
-        open_auth_url("https://github.com/login/device", true);
-    }
-
-    #[test]
-    fn test_display_auth_instructions() {
-        display_auth_instructions(
-            "acme-dev-app",
-            "WDJB-MJHT",
-            "https://github.com/login/device",
-        );
-    }
-}

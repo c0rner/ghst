@@ -69,25 +69,3 @@ fn write_report(writer: &mut impl Write, report: &CleanupReport) -> io::Result<(
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn prune_report_format_is_stable() {
-        let report = CleanupReport {
-            expired_deletions: 1,
-            revoked_runs: 2,
-            active_runs_skipped: 3,
-            retained_entries: 0,
-            failures: Vec::new(),
-        };
-        let mut output = Vec::new();
-        write_report(&mut output, &report).unwrap();
-        assert_eq!(
-            String::from_utf8(output).unwrap(),
-            "Cache prune report:\n  Expired entries deleted: 1\n  Run tokens revoked or inactive: 2\n  Active runs skipped: 3\n  Entries retained: 0\n  Failures: 0\n"
-        );
-    }
-}

@@ -503,17 +503,6 @@ pub fn delete_cache_entry(cache_dir: &Path, hash_key: &str) -> Result<bool, Cach
     })
 }
 
-/// Lists all `(hash_key, CacheEntry)` pairs stored in `cache_dir`.
-#[cfg(test)]
-pub fn list_cache_entries(cache_dir: &Path) -> Result<Vec<(String, CacheEntry)>, CacheError> {
-    let raw = list_all_cache_entries(cache_dir)?;
-    let mut valid = Vec::new();
-    for (key, item) in raw {
-        valid.push((key, item?));
-    }
-    Ok(valid)
-}
-
 #[cfg(test)]
 pub type CacheFileEntries = Vec<(String, Result<CacheEntry, CacheError>)>;
 

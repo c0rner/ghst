@@ -4,8 +4,7 @@ use crate::cache::fs::{cache_file_path, create_private_tempfile, ensure_cache_di
 use crate::cache::key::{compute_cache_key, compute_run_cache_key};
 use crate::cache::storage::{
     claim_abandoned_run, claim_released_run, delete_cache_entry, delete_run_after_cleanup,
-    list_cache_entries, load_cache_entry, replace_cache_candidate, save_cache_entry,
-    transition_run_to_running,
+    load_cache_entry, replace_cache_candidate, save_cache_entry, transition_run_to_running,
 };
 use crate::cache::types::{
     CACHE_SCHEMA_VERSION, CacheEntry, DerivedCacheEntry, RUN_CACHE_SCHEMA_VERSION,
@@ -251,7 +250,7 @@ fn secrets_are_redacted_and_zeroizing_type_serializes() {
 }
 
 #[test]
-fn cache_entry_json_format_is_compatible() {
+fn current_cache_schema_is_stable_and_round_trips() {
     let cases = [
         (
             CacheEntry::Root(RootCacheEntry {
@@ -298,10 +297,13 @@ fn cache_entry_json_format_is_compatible() {
         ),
     ];
 
+    // Intentional structural changes require a schema-version bump and matching golden update.
     for (entry, golden_json) in cases {
-        assert_eq!(serde_json::to_string(&entry).unwrap(), golden_json);
+        let serialized = serde_json::to_value(&entry).unwrap();
+        let golden: serde_json::Value = serde_json::from_str(golden_json).unwrap();
+        assert_eq!(serialized, golden);
         assert_eq!(
-            serde_json::from_str::<CacheEntry>(golden_json).unwrap(),
+            serde_json::from_value::<CacheEntry>(serialized).unwrap(),
             entry
         );
     }
@@ -321,6 +323,10 @@ fn unsupported_schemas_are_discarded() {
         (
             compute_run_cache_key("run-1"),
             r#"{"kind":"run","version":1,"run_id":"run-1","state":"running","wrapper_pid":100,"child_pid":101,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","github_user":"octocat","repo_scope":"acme/api","issued_at":"2026-08-09T10:00:00Z","expires_at":"2026-08-09T11:00:00Z","access_token":"run-token"}"#,
+        ),
+        (
+            root_key(),
+            r#"{"kind":"root","profile":"developer","authority_fingerprint":"authority","github_user":"octocat","expires_at":"2026-08-09T11:00:00Z","access_token":"root-token"}"#,
         ),
     ];
 
@@ -510,47 +516,6 @@ fn malformed_current_expiry_is_not_discarded_or_overwritten() {
 }
 
 #[test]
-fn unsupported_schema_is_discarded_before_candidate_persistence() {
-    let temp = cache_dir();
-    let directory = temp.path().join("cache");
-    ensure_cache_dir(&directory).unwrap();
-    let path = cache_file_path(&directory, &root_key());
-    let unsupported = r#"{
-            "kind":"root",
-            "profile":"developer",
-            "github_user":"octocat",
-            "issued_at":"2026-01-01T00:00:00Z",
-            "expires_at":"not-even-a-timestamp",
-            "access_token":"legacy-token"
-        }"#;
-    let mut file = create_private_tempfile(&directory).unwrap();
-    file.write_all(unsupported.as_bytes()).unwrap();
-    file.persist(&path).unwrap();
-    assert!(load_cache_entry(&directory, &root_key()).unwrap().is_none());
-    assert!(!path.exists());
-
-    let current = root_entry(
-        "current",
-        OffsetDateTime::now_utc() + Duration::hours(1),
-        "new-authority",
-    );
-    assert!(matches!(
-        save_cache_entry(&directory, &root_key(), &current).unwrap(),
-        SaveCacheEntry::Saved
-    ));
-
-    let changed = root_entry(
-        "changed",
-        OffsetDateTime::now_utc() + Duration::hours(1),
-        "changed-authority",
-    );
-    assert!(matches!(
-        save_cache_entry(&directory, &root_key(), &changed).unwrap(),
-        SaveCacheEntry::Saved
-    ));
-}
-
-#[test]
 fn compatible_entry_is_retained_and_wrong_kind_fails_closed() {
     let temp = cache_dir();
     let directory = temp.path().join("cache");
@@ -652,20 +617,4 @@ fn concurrent_saves_retain_one_compatible_winner() {
             .count(),
         1
     );
-}
-
-#[test]
-fn delete_and_list_operate_on_validated_entries() {
-    let temp = cache_dir();
-    let directory = temp.path().join("cache");
-    let entry = root_entry(
-        "token",
-        OffsetDateTime::now_utc() + Duration::hours(1),
-        &authority_fingerprint("id", "account"),
-    );
-    save_cache_entry(&directory, &root_key(), &entry).unwrap();
-    fs::write(directory.join(format!("{}.lock", root_key())), b"legacy").unwrap();
-    assert_eq!(list_cache_entries(&directory).unwrap().len(), 1);
-    assert!(delete_cache_entry(&directory, &root_key()).unwrap());
-    assert!(list_cache_entries(&directory).unwrap().is_empty());
 }

@@ -74,7 +74,12 @@ fn write_token(
                     "repo": token.repo_scope.as_str(),
                 }),
             )
-            .map_err(io::Error::other)?;
+            .map_err(|source| {
+                io::Error::new(
+                    source.io_error_kind().unwrap_or(io::ErrorKind::Other),
+                    source,
+                )
+            })?;
             writer.write_all(b"\n")
         }
     }
@@ -126,21 +131,21 @@ mod tests {
     }
 
     #[test]
-    fn writer_failures_propagate() {
+    fn output_write_failures_are_reported() {
         let error = write_token(
             &mut FailingWriter,
             &token("secret-token"),
             OutputFormat::Json,
         )
         .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::Other);
+        assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
     }
 
     struct FailingWriter;
 
     impl Write for FailingWriter {
         fn write(&mut self, _buffer: &[u8]) -> io::Result<usize> {
-            Err(io::Error::other("writer failed"))
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "writer failed"))
         }
 
         fn flush(&mut self) -> io::Result<()> {

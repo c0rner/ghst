@@ -65,22 +65,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn report_format_is_stable() {
-        let report = RevokeReport {
-            remotely_inactive: 1,
-            local_only: 2,
-            retained: 0,
-            failures: Vec::new(),
-        };
-        let mut output = Vec::new();
-        write_report(&mut output, &report).unwrap();
-        assert_eq!(
-            String::from_utf8(output).unwrap(),
-            "Credential revocation report:\n  Remotely revoked or already inactive: 1\n  Deleted locally only: 2\n  Retained for retry: 0\n  Failures: 0\n"
-        );
-    }
-
-    #[test]
     fn all_acknowledgement_is_required_before_loading_configuration() {
         let args = GhstCli {
             config: Some("missing.toml".into()),

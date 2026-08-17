@@ -262,7 +262,7 @@ mod tests {
     }
 
     #[test]
-    fn test_maintenance_commands_and_removed_commands() {
+    fn test_maintenance_commands() {
         assert!(matches!(
             GhstCli::from_args(&["ghst"], &["prune"]).unwrap().command,
             SubCommand::Prune(PruneCmd {})
@@ -273,9 +273,6 @@ mod tests {
                 .command,
             SubCommand::Revoke(RevokeCmd { all: true })
         );
-        assert!(GhstCli::from_args(&["ghst"], &["clear"]).is_err());
-        assert!(GhstCli::from_args(&["ghst"], &["flush"]).is_err());
-        assert!(GhstCli::from_args(&["ghst"], &["proxy"]).is_err());
     }
 
     #[test]

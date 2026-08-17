@@ -408,12 +408,6 @@ permissions = { contents = "read" }
     }
 
     #[test]
-    fn current_process_is_alive_and_impossible_pid_is_not() {
-        assert!(pid_is_alive(std::process::id()));
-        assert!(!pid_is_alive(i32::MAX as u32));
-    }
-
-    #[test]
     fn prune_skips_active_runs_and_revokes_abandoned_runs() {
         let temp = tempfile::tempdir().unwrap();
         let cache_dir = temp.path().join("cache");

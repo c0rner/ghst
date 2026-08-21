@@ -1,6 +1,72 @@
 # ghst - GitHub Scoped Tokens
 
-`ghst` (pronounced "ghost") is a local, developer-focused CLI tool that issues short-lived GitHub App user access tokens for humans and AI coding tools. It replaces long-lived personal access credentials with user-attributed, strictly scoped access tokens.
+`ghst` (pronounced "ghost") puts a secure credential lifetime around AI coding agents and developer CLI tools.
+
+Instead of handing tools broad, long-lived Personal Access Tokens (PATs) or leaving reusable credentials in your shell, `ghst run` mints short-lived, user-attributed GitHub tokens scoped strictly to the current repository; and **revokes them the instant the tool exits**.
+
+```bash
+# Run your AI agent with an auto-scoped token that dies on exit:
+ghst run  -- codex
+
+# Restrict to a specific permission profile (e.g. read-only):
+ghst run --profile reader -- aider
+
+# Pair with a kernel sandbox (e.g. nono) for complete process & credential isolation:
+ghst run -- nono run --allow . -- claude
+```
+
+---
+
+## Why `ghst run`?
+
+When running autonomous or semi-autonomous AI coding tools, credential isolation is critical. A compromised prompt, rogue script, or hallucinated command shouldn't have the keys to your entire GitHub account or organization.
+
+### What happens during `ghst run`:
+1. **Repository Auto-Detection:** Automatically resolves the current git repository remote (`repo = "auto"`).
+2. **Least-Privilege Minting:** Requests a fresh, scoped GitHub App User Access Token matching your configured profile (e.g. `contents=read`, `pull_requests=write`).
+3. **Subprocess-Only Injection:** Injects `GH_TOKEN` and `GITHUB_TOKEN` directly into the child process without leaking into your parent shell environment, history, or `.env` files.
+4. **Instant Revocation:** When the command exits (or receives `SIGINT`/`SIGTERM`), `ghst` immediately revokes the token on GitHub and cleans up local recovery entries. Refresh tokens are destroyed in memory upon receipt and never persisted.
+
+---
+
+## Prerequisites: Dedicated GitHub App
+
+To issue user-attributed, scoped tokens with remote revocation, `ghst` requires a **dedicated GitHub App** registered under your personal account or organization:
+
+- **Device Flow Enabled:** Authenticates via `https://github.com/login/device` without local web servers or redirect URIs.
+- **User-to-Server Token Expiration:** Requires GitHub's expiring user access tokens.
+- **Client Secret:** Configured in `profiles.toml` to allow `ghst` to mint scoped child tokens and perform remote revocation.
+- **No Private Keys:** `ghst` strictly operates with human-authorized User Access Tokens. Never generate private keys for the App (see [No Private Keys](SECURITY.md#no-private-keys)).
+
+> [!TIP]
+> Setting up the GitHub App takes about two minutes. See [SECURITY.md: Required GitHub App Configuration](SECURITY.md#required-github-app-configuration) for the complete checklist and security rationale.
+
+---
+
+## CLI Quickstart & Reference
+
+```bash
+# 1. Authenticate a root profile via OAuth Device Flow
+ghst login
+
+# 2. Run a command with a fresh derived token (auto-revoked on exit)
+ghst run -- codex
+ghst run --profile contributor --repo auto -- aider
+
+# 3. Mint or retrieve a scoped token for shell scripts or custom tools
+ghst token                                    # Plain token string for default profile
+eval $(ghst token --format env)               # Export GH_TOKEN & GITHUB_TOKEN into shell
+ghst token --profile reader --format json     # JSON metadata including exact expiry
+
+# 4. Inspect profiles and cached token status
+ghst profiles                                 # Concise profile summary
+ghst profiles -v                              # Detailed profile inspection
+ghst status                                   # Inspect cached token lifetimes and validity
+
+# 5. Revocation & maintenance
+ghst revoke --all                             # Revoke all cached credentials remotely
+ghst prune                                    # Recover abandoned run tokens and remove expired entries
+```
 
 ---
 
@@ -13,23 +79,9 @@
 
 ---
 
-## Ephemeral Command Execution with `ghst run`
+## Sandboxing & Execution Lifecycle
 
-`ghst run` puts a credential lifetime around one foreground command. Each invocation uses a derived
-profile to mint a fresh scoped user access token, sets `GH_TOKEN` and `GITHUB_TOKEN`, and launches
-the command directly without a shell. When the command exits, `ghst` revokes the token and returns
-the command's exit result.
-
-This avoids exporting a reusable token into a shell or giving an AI tool access to the broader
-authority of a root profile:
-
-```bash
-ghst run --profile contributor --repo auto -- codex
-```
-
-`ghst run` controls GitHub authority and credential lifetime; it is not a sandbox. Combine it with
-a kernel sandbox such as [nono](https://nono.sh/) to also restrict filesystem, network, and host
-access:
+`ghst run` controls GitHub authority and credential lifetime; it is not a sandbox. Combine it with a kernel sandbox such as [nono](https://nono.sh/) to also restrict filesystem, network, and host access:
 
 ```bash
 ghst run --profile contributor --repo auto -- \
@@ -157,34 +209,6 @@ Root-token expiration or individual revocation must not be treated as revoking i
 Cache formats are intentionally forward-only. After an incompatible schema upgrade, `ghst`
 discards old entries with a warning and reacquires credentials as needed; it does not migrate
 ephemeral cache state.
-
----
-
-## CLI Reference
-
-```bash
-# List configured profiles
-ghst profiles          # Concise summary
-ghst profiles -v       # Detailed profile inspection
-
-# Authenticate a root profile via OAuth Device Flow
-ghst login [--profile name] [--no-browser]
-
-# Return a root token or mint/retrieve a scoped token
-ghst token [--profile name] [--repo all|auto|owner/repo]... [--format text|json|env]
-
-# Display active token status
-ghst status
-
-# Revoke all cached credentials and remove their local entries
-ghst revoke --all
-
-# Run one command with a fresh derived token
-ghst run [--profile name] [--repo all|auto|owner/repo]... -- <command> [args...]
-
-# Recover abandoned run tokens and remove issuer-expired entries
-ghst prune
-```
 
 ---
 

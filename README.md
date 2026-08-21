@@ -86,7 +86,7 @@ ghst run --profile contributor --repo auto -- aider
 
 # 3. Mint or retrieve a scoped token for shell scripts or custom tools
 ghst token                                    # Plain token string for default profile
-eval $(ghst token --format env)               # Export GH_TOKEN & GITHUB_TOKEN into shell
+eval $(ghst token --format env)               # Export GITHUB_TOKEN into shell
 ghst token --profile reader --format json     # JSON metadata including exact expiry
 
 # 4. Inspect profiles and cached token status

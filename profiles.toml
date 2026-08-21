@@ -1,0 +1,49 @@
+#        /       _/_
+#  __,  /_,  __  /
+# (__/ /  / __) (__
+# __/ ephemeral access - explicit scope
+#
+# For a full list of permissions see:
+# https://docs.github.com/en/rest/apps/apps#create-a-scoped-access-token
+
+version = 1
+default_profile = "contributor"
+
+# ==============================================================================
+# Root Profiles (Backed directly by GitHub Apps)
+# ==============================================================================
+
+[profile.developer]
+description = "Full developer privilege ceiling backed by the Dev GitHub App"
+github_app.account = "acme-corp"
+github_app.client_id = "Iv1.8888888888888888"
+github_app.client_secret = "secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+
+[profile.security-manager]
+description = "Security manager privilege ceiling with vulnerability access"
+github_app.account = "acme-corp"
+github_app.client_id = "Iv1.7777777777777777"
+github_app.client_secret = "secret_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+
+# ==============================================================================
+# Derived Profiles (Scoped subsets of root profiles)
+# ==============================================================================
+
+[profile.reader]
+source = "developer"
+description = "Read-only access to repository contents, pull requests, and issues"
+repo = "auto"
+permissions = { contents = "read", pull_requests = "read", issues = "read" }
+
+[profile.contributor]
+source = "developer"
+description = "Write access to code and pull requests"
+repo = "auto"
+permissions = { contents = "write", pull_requests = "write", issues = "write" }
+
+[profile.security-reviewer]
+source = "security-manager"
+description = "Read access focused on vulnerability alerts and security events"
+repo = "all"
+permissions = { contents = "read", security_events = "read", vulnerability_alerts = "read" }
+

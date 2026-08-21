@@ -43,9 +43,40 @@ To issue user-attributed, scoped tokens with remote revocation, `ghst` requires 
 
 ---
 
+## Installation
+
+`ghst` supports **Linux** and **macOS**, where it can rely on standard Unix file-descriptor and permission semantics.
+
+### Shell Installer (Recommended)
+
+Prebuilt binaries are available for macOS and glibc-based Linux:
+
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/c0rner/ghst/releases/latest/download/ghst-installer.sh | sh
+```
+
+### Via Cargo
+
+Requires a Rust toolchain:
+
+```bash
+cargo install --locked ghst
+```
+
+### From GitHub Releases
+
+Prebuilt archives for macOS and glibc-based Linux (`x86_64` and `aarch64` / Apple Silicon) are available on [GitHub Releases](https://github.com/c0rner/ghst/releases).
+
+---
+
 ## CLI Quickstart & Reference
 
 ```bash
+# 0. Initial configuration setup (requires strict 0700/0600 permissions)
+mkdir -p ~/.config/ghst && chmod 700 ~/.config/ghst
+# Copy or create ~/.config/ghst/profiles.toml with your GitHub App details
+chmod 600 ~/.config/ghst/profiles.toml
+
 # 1. Authenticate a root profile via OAuth Device Flow
 ghst login
 

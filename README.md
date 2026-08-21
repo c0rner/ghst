@@ -78,7 +78,7 @@ mkdir -p ~/.config/ghst && chmod 700 ~/.config/ghst
 chmod 600 ~/.config/ghst/profiles.toml
 
 # 1. Authenticate a root profile via OAuth Device Flow
-ghst login
+ghst login --profile developer
 
 # 2. Run a command with a fresh derived token (auto-revoked on exit)
 ghst run -- codex

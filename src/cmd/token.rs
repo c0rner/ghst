@@ -59,11 +59,10 @@ fn write_token(
 ) -> io::Result<()> {
     match format {
         OutputFormat::Text => writeln!(writer, "{}", token.access_token.as_ref()),
-        OutputFormat::Env => writeln!(
-            writer,
-            "export GITHUB_TOKEN={}",
-            shell_quote(token.access_token.as_ref())
-        ),
+        OutputFormat::Env => {
+            let quoted = shell_quote(token.access_token.as_ref());
+            writeln!(writer, "export GH_TOKEN={quoted} GITHUB_TOKEN={quoted}")
+        }
         OutputFormat::Json => {
             serde_json::to_writer(
                 &mut *writer,
@@ -113,7 +112,10 @@ mod tests {
 
         let mut env = Vec::new();
         write_token(&mut env, &token, OutputFormat::Env).unwrap();
-        assert_eq!(env, b"export GITHUB_TOKEN='secret-token'\n");
+        assert_eq!(
+            env,
+            b"export GH_TOKEN='secret-token' GITHUB_TOKEN='secret-token'\n"
+        );
 
         let mut json = Vec::new();
         write_token(&mut json, &token, OutputFormat::Json).unwrap();
@@ -127,7 +129,10 @@ mod tests {
     fn environment_output_quotes_embedded_single_quotes() {
         let mut output = Vec::new();
         write_token(&mut output, &token("a'b"), OutputFormat::Env).unwrap();
-        assert_eq!(output, b"export GITHUB_TOKEN='a'\"'\"'b'\n");
+        assert_eq!(
+            output,
+            b"export GH_TOKEN='a'\"'\"'b' GITHUB_TOKEN='a'\"'\"'b'\n"
+        );
     }
 
     #[test]

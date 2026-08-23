@@ -324,9 +324,12 @@ fn validate_config_dir_metadata(
 
 #[cfg(unix)]
 fn enforce_config_file_permissions(path: &Path) -> Result<(), ConfigError> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::OpenOptionsExt;
 
-    let flags = open_flags(path, rustix::fs::OFlags::NOFOLLOW)?;
+    let flags = open_flags(
+        path,
+        rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK,
+    )?;
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(flags)
@@ -335,11 +338,22 @@ fn enforce_config_file_permissions(path: &Path) -> Result<(), ConfigError> {
             path: path.to_path_buf(),
             source,
         })?;
+    repair_config_file_permissions(path, &file, rustix::process::geteuid().as_raw())
+}
+
+#[cfg(unix)]
+fn repair_config_file_permissions(
+    path: &Path,
+    file: &File,
+    effective_uid: u32,
+) -> Result<(), ConfigError> {
+    use std::os::unix::fs::PermissionsExt;
+
     let metadata = file.metadata().map_err(|source| ConfigError::Io {
         path: path.to_path_buf(),
         source,
     })?;
-    validate_config_file_identity(path, &metadata, rustix::process::geteuid().as_raw())?;
+    validate_config_file_identity(path, &metadata, effective_uid)?;
     file.set_permissions(fs::Permissions::from_mode(0o600))
         .map_err(|source| ConfigError::Io {
             path: path.to_path_buf(),
@@ -349,7 +363,7 @@ fn enforce_config_file_permissions(path: &Path) -> Result<(), ConfigError> {
         path: path.to_path_buf(),
         source,
     })?;
-    validate_config_file_metadata(path, &metadata, rustix::process::geteuid().as_raw())
+    validate_config_file_metadata(path, &metadata, effective_uid)
 }
 
 #[cfg(unix)]
@@ -382,16 +396,11 @@ fn validate_config_file_identity(
 
 #[cfg(unix)]
 fn enforce_config_dir_permissions(path: &Path) -> Result<(), ConfigError> {
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    use std::os::unix::fs::OpenOptionsExt;
 
-    let metadata = fs::symlink_metadata(path).map_err(|source| ConfigError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    validate_config_dir_identity(path, &metadata, rustix::process::geteuid().as_raw())?;
     let flags = open_flags(
         path,
-        rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::NOFOLLOW,
+        rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK,
     )?;
     let directory = OpenOptions::new()
         .read(true)
@@ -401,6 +410,22 @@ fn enforce_config_dir_permissions(path: &Path) -> Result<(), ConfigError> {
             path: path.to_path_buf(),
             source,
         })?;
+    repair_config_dir_permissions(path, &directory, rustix::process::geteuid().as_raw())
+}
+
+#[cfg(unix)]
+fn repair_config_dir_permissions(
+    path: &Path,
+    directory: &File,
+    effective_uid: u32,
+) -> Result<(), ConfigError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = directory.metadata().map_err(|source| ConfigError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    validate_config_dir_identity(path, &metadata, effective_uid)?;
     directory
         .set_permissions(fs::Permissions::from_mode(0o700))
         .map_err(|source| ConfigError::Io {
@@ -411,7 +436,7 @@ fn enforce_config_dir_permissions(path: &Path) -> Result<(), ConfigError> {
         path: path.to_path_buf(),
         source,
     })?;
-    validate_config_dir_metadata(path, &metadata, rustix::process::geteuid().as_raw())
+    validate_config_dir_metadata(path, &metadata, effective_uid)
 }
 
 #[cfg(unix)]
@@ -1092,5 +1117,71 @@ permissions = {}
             std::fs::metadata(target).unwrap().permissions().mode() & 0o7777,
             0o644
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn permission_repair_validates_descriptors_before_mutation() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+        let temp = tempfile::tempdir().unwrap();
+        let config_file = temp.path().join(CONFIG_FILE);
+        std::fs::write(&config_file, STARTER_TEMPLATE).unwrap();
+        std::fs::set_permissions(&config_file, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let file = File::open(&config_file).unwrap();
+        let wrong_uid = file.metadata().unwrap().uid().wrapping_add(1);
+
+        assert!(matches!(
+            repair_config_file_permissions(&config_file, &file, wrong_uid),
+            Err(ConfigError::InsecurePath {
+                reason: "not owned by the effective user",
+                ..
+            })
+        ));
+        assert_eq!(
+            file.metadata().unwrap().permissions().mode() & 0o7777,
+            0o644
+        );
+
+        let directory = temp.path().join(CONFIG_DIRECTORY);
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let descriptor = File::open(&directory).unwrap();
+        let wrong_uid = descriptor.metadata().unwrap().uid().wrapping_add(1);
+
+        assert!(matches!(
+            repair_config_dir_permissions(&directory, &descriptor, wrong_uid),
+            Err(ConfigError::InsecurePath {
+                reason: "not owned by the effective user",
+                ..
+            })
+        ));
+        assert_eq!(
+            descriptor.metadata().unwrap().permissions().mode() & 0o7777,
+            0o755
+        );
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn permission_repair_rejects_a_fifo_without_blocking() {
+        let temp = tempfile::tempdir().unwrap();
+        let fifo = temp.path().join("profiles.fifo");
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            &fifo,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::RWXU,
+            0,
+        )
+        .unwrap();
+
+        assert!(matches!(
+            enforce_config_file_permissions(&fifo),
+            Err(ConfigError::InsecurePath {
+                reason: "expected a regular file",
+                ..
+            })
+        ));
     }
 }

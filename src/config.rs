@@ -206,7 +206,10 @@ fn create_initial_config(path: &Path) -> Result<bool, ConfigError> {
 fn open_config_file(path: &Path) -> Result<File, ConfigError> {
     use std::os::unix::fs::OpenOptionsExt;
 
-    let flags = open_flags(path, rustix::fs::OFlags::NOFOLLOW)?;
+    let flags = open_flags(
+        path,
+        rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::NONBLOCK,
+    )?;
     let file = OpenOptions::new()
         .read(true)
         .custom_flags(flags)
@@ -256,7 +259,10 @@ fn open_default_config_file(config_dir: &Path) -> Result<File, ConfigError> {
     let descriptor = rustix::fs::openat(
         &directory,
         CONFIG_FILE,
-        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::CLOEXEC | rustix::fs::OFlags::NOFOLLOW,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::CLOEXEC
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::NONBLOCK,
         rustix::fs::Mode::empty(),
     )
     .map_err(|source| ConfigError::Io {
@@ -1178,6 +1184,52 @@ permissions = {}
 
         assert!(matches!(
             enforce_config_file_permissions(&fifo),
+            Err(ConfigError::InsecurePath {
+                reason: "expected a regular file",
+                ..
+            })
+        ));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn configuration_loaders_reject_fifos_without_blocking() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let custom_fifo = temp.path().join("custom.fifo");
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            &custom_fifo,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::RWXU,
+            0,
+        )
+        .unwrap();
+        std::fs::set_permissions(&custom_fifo, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(matches!(
+            load(Some(&custom_fifo)),
+            Err(ConfigError::InsecurePath {
+                reason: "expected a regular file",
+                ..
+            })
+        ));
+
+        let config_dir = temp.path().join(CONFIG_DIRECTORY);
+        std::fs::create_dir(&config_dir).unwrap();
+        std::fs::set_permissions(&config_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let default_fifo = config_dir.join(CONFIG_FILE);
+        rustix::fs::mknodat(
+            rustix::fs::CWD,
+            &default_fifo,
+            rustix::fs::FileType::Fifo,
+            rustix::fs::Mode::RWXU,
+            0,
+        )
+        .unwrap();
+        std::fs::set_permissions(&default_fifo, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(matches!(
+            open_default_config_file(&config_dir),
             Err(ConfigError::InsecurePath {
                 reason: "expected a regular file",
                 ..

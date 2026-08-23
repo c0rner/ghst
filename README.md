@@ -77,6 +77,11 @@ warns and continues without verification when that command is unavailable. The i
 remotely supplied shell code, so use it only if that bootstrap trust model is acceptable. It is
 provided as a convenience, not as the recommended installation method.
 
+```bash
+curl --proto '=https' --tlsv1.2 -LsSf \
+  https://github.com/c0rner/ghst/releases/latest/download/ghst-installer.sh | sh
+```
+
 ## Configure and run
 
 The default configuration is `~/.config/ghst/profiles.toml`. Its directory and file contain

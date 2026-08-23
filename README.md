@@ -39,20 +39,24 @@ file-descriptor guarantees. It requires a dedicated GitHub App configured with:
 - a client secret when derived profiles or remote revocation are required; and
 - **no private keys**.
 
-The exact App settings are part of the security boundary. Follow the
-[required GitHub App configuration](SECURITY.md#required-github-app-configuration) before logging
-in. In particular, never generate a private key for an App used by `ghst`.
+> [!IMPORTANT]
+> The exact App settings are part of the security boundary. Follow the
+> [required GitHub App configuration](SECURITY.md#required-github-app-configuration) before logging
+> in. In particular, never generate a private key for an App used by `ghst`.
 
 ## Installation
 
-### Shell installer (recommended)
+### GitHub Releases
 
-Prebuilt binaries are available for macOS and glibc-based Linux:
+Prebuilt archives for macOS and glibc-based Linux (`x86_64` and `aarch64` / Apple Silicon) are
+available on [GitHub Releases](https://github.com/c0rner/ghst/releases). Each archive has a matching
+`.sha256` file, and each release includes a combined `sha256.sum`. Download the archive and its
+checksum before extracting it, then verify them with `sha256sum --check` on Linux or
+`shasum --algorithm 256 --check` on macOS.
 
-```bash
-curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/c0rner/ghst/releases/latest/download/ghst-installer.sh | sh
-```
+These checksums detect corruption or a mismatch between files downloaded from the release. Because
+the checksums and archives are published together, they do not provide independent authentication
+of the release publisher.
 
 ### Cargo
 
@@ -62,10 +66,16 @@ With a Rust toolchain installed:
 cargo install --locked ghst
 ```
 
-### GitHub Releases
+This builds the published crate and its locked dependency graph locally. As with other Cargo
+installations, the build may execute code from build dependencies and build scripts.
 
-Prebuilt archives for macOS and glibc-based Linux (`x86_64` and `aarch64` / Apple Silicon) are
-available on [GitHub Releases](https://github.com/c0rner/ghst/releases).
+### Shell installer (convenience)
+
+Releases also include a generated `ghst-installer.sh` that selects and downloads the appropriate
+prebuilt archive. It verifies the embedded SHA-256 checksum when `sha256sum` is installed, but
+warns and continues without verification when that command is unavailable. The installer is
+remotely supplied shell code, so use it only if that bootstrap trust model is acceptable. It is
+provided as a convenience, not as the recommended installation method.
 
 ## Configure and run
 

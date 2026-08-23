@@ -4,7 +4,7 @@ This document answers common questions regarding `ghst`'s security architecture,
 
 ---
 
-## 🧭 General & Motivation
+## Background & Motivation
 
 ### What problem does `ghst` solve?
 Modern AI coding tools (such as Claude Code, Codex, Aider, OpenCode, and Cursor) often require GitHub access to read issues, inspect code, create branches, or open pull requests. Typically, developers hand these tools broad Personal Access Tokens (PATs) or rely on ambient GitHub CLI credentials (`gh auth login`).
@@ -24,7 +24,7 @@ Workload Identity Federation and GitHub Actions OIDC tokens are designed for aut
 
 ---
 
-## 🛡️ Security & Threat Model
+## Security & Threat Model
 
 ### Is `ghst` a process sandbox?
 **No.** `ghst` manages **GitHub authority and credential lifetime**; it is not a host process sandbox.
@@ -73,7 +73,7 @@ The [Device Flow and Human Authorization](SECURITY.md#device-flow-and-human-auth
 
 ---
 
-## 🤖 AI Agents & CLI Tooling
+## AI Agents & CLI Tooling
 
 ### Which tools work with `ghst`?
 Tools that honor the standard GitHub authentication environment variables (`GH_TOKEN` or `GITHUB_TOKEN`) work without a `ghst`-specific integration. This includes:
@@ -97,7 +97,7 @@ will identify abandoned run leases and revoke them with GitHub once network conn
 
 ---
 
-## 🏢 Enterprise & Team Deployments
+## Enterprise & Team Deployments
 
 ### Can an enterprise security team deploy a shared GitHub App?
 **Yes.** An organization admin can register a single dedicated GitHub App at the organization level with an approved permissions ceiling. The admin distributes the App's `client_id` (and optionally `client_secret`) to developers via standard workstation configuration profiles (`profiles.toml`).
@@ -117,7 +117,7 @@ While secretless profiles cannot dynamically derive finer-grained sub-tokens or 
 
 ---
 
-## 🧼 Credential Hygiene & Best Practices
+## Credential Hygiene & Best Practices
 
 ### Should I log out of GitHub CLI (`gh auth logout`)?
 **Yes, this is strongly recommended.**

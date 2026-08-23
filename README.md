@@ -94,9 +94,10 @@ ghst edit --init
 The command creates the directory with mode `0700` and the file atomically with mode `0600`, then
 opens the file using `VISUAL`, `EDITOR`, or an available `nano`, `vim`, or `vi`. On editor exit,
 `ghst` securely reopens a regular configuration file without following links, restores private
-permissions, and validates the complete configuration. A target that cannot be safely opened and
-identified is rejected instead of repaired through its path. Edit the starter root profile for the
-dedicated App and the derived profiles for the authority to delegate:
+permissions, and rejects a target that cannot be safely opened and identified instead of repairing
+it through its path. After a successful editor exit, `ghst` validates the complete configuration.
+Edit the starter root profile for the dedicated App and the derived profiles for the authority to
+delegate:
 
 ```toml
 version = 1

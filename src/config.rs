@@ -171,7 +171,7 @@ fn create_initial_config(path: &Path) -> Result<bool, ConfigError> {
     let mut temporary = builder
         .tempfile_in(directory)
         .map_err(|source| ConfigError::Io {
-            path: path.to_path_buf(),
+            path: directory.to_path_buf(),
             source,
         })?;
     temporary
@@ -1070,6 +1070,20 @@ permissions = {}
             std::fs::read_to_string(config_file).unwrap(),
             "existing credentials"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn initialization_reports_the_failed_tempfile_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let not_a_directory = temp.path().join("not-a-directory");
+        std::fs::write(&not_a_directory, "regular file").unwrap();
+        let config_file = not_a_directory.join(CONFIG_FILE);
+
+        assert!(matches!(
+            create_initial_config(&config_file),
+            Err(ConfigError::Io { path, .. }) if path == not_a_directory
+        ));
     }
 
     #[cfg(unix)]

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 pub enum ConfigError {
     ConfigDirNotFound,
     CacheDirNotFound,
+    MissingParent(PathBuf),
     Io {
         path: PathBuf,
         source: std::io::Error,
@@ -43,8 +44,13 @@ impl fmt::Display for ConfigError {
         match self {
             Self::ConfigDirNotFound => write!(f, "could not determine user config directory"),
             Self::CacheDirNotFound => write!(f, "could not determine user cache directory"),
+            Self::MissingParent(path) => write!(
+                f,
+                "configuration path '{}' has no parent directory",
+                path.display()
+            ),
             Self::Io { path, source } => {
-                write!(f, "IO error reading '{}': {source}", path.display())
+                write!(f, "I/O error for '{}': {source}", path.display())
             }
             Self::InsecurePath { path, reason } => {
                 write!(
@@ -90,6 +96,7 @@ impl std::error::Error for ConfigError {
             Self::Parse(err) => Some(err),
             Self::ConfigDirNotFound
             | Self::CacheDirNotFound
+            | Self::MissingParent(_)
             | Self::InsecurePath { .. }
             | Self::UnsupportedVersion(_)
             | Self::MissingDefaultProfile(_)
@@ -105,6 +112,7 @@ impl std::error::Error for ConfigError {
 #[cfg(test)]
 mod tests {
     use super::ConfigError;
+    use std::path::PathBuf;
 
     #[test]
     fn directory_resolution_errors_are_distinct() {
@@ -115,6 +123,18 @@ mod tests {
         assert_eq!(
             ConfigError::CacheDirNotFound.to_string(),
             "could not determine user cache directory"
+        );
+    }
+
+    #[test]
+    fn io_errors_do_not_misreport_the_operation() {
+        let error = ConfigError::Io {
+            path: PathBuf::from("/tmp/profiles.toml"),
+            source: std::io::Error::other("disk full"),
+        };
+        assert_eq!(
+            error.to_string(),
+            "I/O error for '/tmp/profiles.toml': disk full"
         );
     }
 }

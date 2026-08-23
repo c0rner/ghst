@@ -1,3 +1,4 @@
+pub mod edit;
 pub mod error;
 pub mod login;
 pub mod profiles;
@@ -27,6 +28,7 @@ authority from less-trusted processes running on the same machine.\n\
 It does not attempt to prevent the operator themselves from bypassing local \
 profiles or directly invoking the GitHub API.",
     example = "\
+{command_name} edit --init
 {command_name} login --profile developer
 {command_name} token --profile reader --repo acme/api --format env
 {command_name} run --profile contributor --repo auto -- llm_tool"
@@ -43,6 +45,7 @@ pub struct GhstCli {
 #[derive(FromArgs, PartialEq, Eq, Debug)]
 #[argh(subcommand)]
 pub enum SubCommand {
+    Edit(EditCmd),
     Login(LoginCmd),
     Token(TokenCmd),
     Status(StatusCmd),
@@ -50,6 +53,15 @@ pub enum SubCommand {
     Revoke(RevokeCmd),
     Prune(PruneCmd),
     Run(RunCmd),
+}
+
+/// Open and validate the active configuration in your preferred editor.
+#[derive(FromArgs, PartialEq, Eq, Debug)]
+#[argh(subcommand, name = "edit")]
+pub struct EditCmd {
+    /// create a starter configuration when none exists
+    #[argh(switch)]
+    pub init: bool,
 }
 
 /// Authenticate a profile via GitHub App OAuth Device Flow.
@@ -272,6 +284,24 @@ mod tests {
                 .unwrap()
                 .command,
             SubCommand::Revoke(RevokeCmd { all: true })
+        );
+    }
+
+    #[test]
+    fn test_edit_cmd_parsing() {
+        assert_eq!(
+            GhstCli::from_args(&["ghst"], &["edit"]).unwrap(),
+            GhstCli {
+                config: None,
+                command: SubCommand::Edit(EditCmd { init: false }),
+            }
+        );
+        assert_eq!(
+            GhstCli::from_args(&["ghst"], &["edit", "--init"]).unwrap(),
+            GhstCli {
+                config: None,
+                command: SubCommand::Edit(EditCmd { init: true }),
+            }
         );
     }
 

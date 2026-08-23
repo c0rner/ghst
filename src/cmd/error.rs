@@ -3,6 +3,7 @@ use crate::config::ConfigError;
 use crate::github::GitHubError;
 use crate::token::TokenError;
 use std::fmt;
+use std::path::PathBuf;
 
 #[derive(Debug)]
 pub enum CmdError {
@@ -10,15 +11,35 @@ pub enum CmdError {
     Cache(CacheError),
     GitHub(GitHubError),
     Token(TokenError),
+    ConfigNotFound(PathBuf),
+    NoEditorFound,
+    InvalidEditorCommand {
+        variable: &'static str,
+    },
+    EditorLaunch {
+        editor: String,
+        source: std::io::Error,
+    },
+    EditorFailed {
+        editor: String,
+        code: Option<i32>,
+    },
     ProfileNotFound(String),
     ProfileRequired,
-    DerivedLoginNotAllowed { profile: String, source: String },
+    DerivedLoginNotAllowed {
+        profile: String,
+        source: String,
+    },
     InvalidOutputFormat(String),
     OAuthExpired,
     OAuthAccessDenied,
-    PruneIncomplete { failures: usize },
+    PruneIncomplete {
+        failures: usize,
+    },
     RevokeAllRequired,
-    RevokeIncomplete { failures: usize },
+    RevokeIncomplete {
+        failures: usize,
+    },
     MissingRunCommand,
     Io(std::io::Error),
 }
@@ -42,6 +63,25 @@ impl fmt::Display for CmdError {
                 "root profile '{profile}' cannot be repository-scoped; omit --repo to return its raw root token"
             ),
             Self::Token(err) => err.fmt(f),
+            Self::ConfigNotFound(path) => write!(
+                f,
+                "configuration not found at {}. Run 'ghst edit --init' to create a starter configuration.",
+                path.display()
+            ),
+            Self::NoEditorFound => write!(
+                f,
+                "no editor found; set VISUAL or EDITOR, or install nano, vim, or vi"
+            ),
+            Self::InvalidEditorCommand { variable } => {
+                write!(f, "{variable} contains an invalid editor command")
+            }
+            Self::EditorLaunch { editor, source } => {
+                write!(f, "failed to launch editor '{editor}': {source}")
+            }
+            Self::EditorFailed { editor, code } => match code {
+                Some(code) => write!(f, "editor '{editor}' exited with status {code}"),
+                None => write!(f, "editor '{editor}' was terminated by a signal"),
+            },
             Self::ProfileNotFound(profile) => {
                 write!(f, "profile '{profile}' is not defined in configuration")
             }
@@ -89,8 +129,13 @@ impl std::error::Error for CmdError {
             Self::Cache(err) => Some(err),
             Self::GitHub(err) => Some(err),
             Self::Token(err) => Some(err),
+            Self::EditorLaunch { source, .. } => Some(source),
             Self::Io(err) => Some(err),
-            Self::ProfileNotFound(_)
+            Self::ConfigNotFound(_)
+            | Self::NoEditorFound
+            | Self::InvalidEditorCommand { .. }
+            | Self::EditorFailed { .. }
+            | Self::ProfileNotFound(_)
             | Self::ProfileRequired
             | Self::DerivedLoginNotAllowed { .. }
             | Self::InvalidOutputFormat(_)
@@ -152,5 +197,12 @@ mod tests {
             CmdError::Token(TokenError::RootScopeRejected("developer".into())).to_string(),
             "root profile 'developer' cannot be repository-scoped; omit --repo to return its raw root token"
         );
+    }
+
+    #[test]
+    fn missing_configuration_has_initialization_guidance() {
+        let error = CmdError::ConfigNotFound("/tmp/ghst/profiles.toml".into()).to_string();
+        assert!(error.contains("/tmp/ghst/profiles.toml"));
+        assert!(error.contains("ghst edit --init"));
     }
 }

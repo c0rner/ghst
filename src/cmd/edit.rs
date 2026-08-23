@@ -44,14 +44,18 @@ pub fn run_edit(args: &GhstCli, cmd: &EditCmd) -> Result<(), CmdError> {
         None => {}
     }
 
-    let editor = discover_editor(
-        env::var_os("VISUAL"),
-        env::var_os("EDITOR"),
-        env::var_os("PATH").as_deref(),
-    )?;
+    let editor = discover_editor()?;
     edit_configuration(&location, &editor)?;
     println!("Configuration is valid.");
     Ok(())
+}
+
+fn discover_editor() -> Result<EditorCommand, CmdError> {
+    discover_editor_from(
+        env::var_os("VISUAL"),
+        env::var_os("EDITOR"),
+        env::var_os("PATH").as_deref(),
+    )
 }
 
 fn edit_configuration(location: &ConfigLocation, editor: &EditorCommand) -> Result<(), CmdError> {
@@ -81,7 +85,7 @@ fn edit_configuration(location: &ConfigLocation, editor: &EditorCommand) -> Resu
     Ok(())
 }
 
-fn discover_editor(
+fn discover_editor_from(
     visual: Option<OsString>,
     editor: Option<OsString>,
     path: Option<&OsStr>,
@@ -249,7 +253,7 @@ mod tests {
     fn editor_discovery_prefers_visual_then_editor_then_path() {
         use std::os::unix::fs::PermissionsExt;
 
-        let selected = discover_editor(
+        let selected = discover_editor_from(
             Some("visual-editor --wait".into()),
             Some("other-editor".into()),
             None,
@@ -262,7 +266,7 @@ mod tests {
         std::fs::write(&fallback, "").unwrap();
         std::fs::set_permissions(&fallback, std::fs::Permissions::from_mode(0o700)).unwrap();
         let search_path = env::join_paths([temp.path()]).unwrap();
-        let selected = discover_editor(Some("  ".into()), None, Some(&search_path)).unwrap();
+        let selected = discover_editor_from(Some("  ".into()), None, Some(&search_path)).unwrap();
         assert_eq!(selected.executable, OsString::from("vim"));
     }
 

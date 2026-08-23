@@ -5,6 +5,7 @@ use std::path::PathBuf;
 pub enum ConfigError {
     ConfigDirNotFound,
     CacheDirNotFound,
+    MissingParent(PathBuf),
     Io {
         path: PathBuf,
         source: std::io::Error,
@@ -43,6 +44,11 @@ impl fmt::Display for ConfigError {
         match self {
             Self::ConfigDirNotFound => write!(f, "could not determine user config directory"),
             Self::CacheDirNotFound => write!(f, "could not determine user cache directory"),
+            Self::MissingParent(path) => write!(
+                f,
+                "configuration path '{}' has no parent directory",
+                path.display()
+            ),
             Self::Io { path, source } => {
                 write!(f, "IO error reading '{}': {source}", path.display())
             }
@@ -90,6 +96,7 @@ impl std::error::Error for ConfigError {
             Self::Parse(err) => Some(err),
             Self::ConfigDirNotFound
             | Self::CacheDirNotFound
+            | Self::MissingParent(_)
             | Self::InsecurePath { .. }
             | Self::UnsupportedVersion(_)
             | Self::MissingDefaultProfile(_)

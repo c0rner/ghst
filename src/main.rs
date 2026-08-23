@@ -24,6 +24,7 @@ fn main() {
     let args: GhstCli = argh::from_env();
 
     let exit_code = match &args.command {
+        SubCommand::Edit(cmd) => command_exit(cmd::edit::run_edit(&args, cmd)),
         SubCommand::Run(cmd) => match cmd::run::run_run(&args, cmd) {
             cmd::run::RunOutcome::ChildExit(code) => code,
             cmd::run::RunOutcome::GhstError(error) => {

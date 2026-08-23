@@ -84,16 +84,17 @@ curl --proto '=https' --tlsv1.2 -LsSf \
 
 ## Configure and run
 
-The default configuration is `~/.config/ghst/profiles.toml`. Its directory and file contain
-credential material and must be private:
+The default configuration is `~/.config/ghst/profiles.toml`. Create and open a private starter
+configuration with:
 
 ```bash
-mkdir -p ~/.config/ghst
-chmod 700 ~/.config/ghst
+ghst edit --init
 ```
 
-Create `~/.config/ghst/profiles.toml` with a root profile for the dedicated App and a derived
-profile for the authority to delegate:
+The command creates the directory with mode `0700` and the file atomically with mode `0600`, then
+opens the file using `VISUAL`, `EDITOR`, or an available `nano`, `vim`, or `vi`. On editor exit,
+`ghst` restores private permissions and validates the complete configuration. Edit the starter
+root profile for the dedicated App and the derived profiles for the authority to delegate:
 
 ```toml
 version = 1
@@ -112,10 +113,9 @@ repo = "auto"
 permissions = { contents = "read", pull_requests = "read", issues = "read" }
 ```
 
-Then protect the file, authenticate the root profile, and start the tool:
+Then authenticate the root profile and start the tool:
 
 ```bash
-chmod 600 ~/.config/ghst/profiles.toml
 ghst login --profile developer
 ghst run -- codex
 ```
@@ -143,6 +143,7 @@ needs more than one repository. The complete authority model is documented under
 ## Common commands
 
 ```bash
+ghst edit                                  # Edit, secure, and validate the configuration
 ghst token --profile reader --format env   # Emit a reusable token as environment assignments
 ghst profiles -v                           # Inspect configured profiles
 ghst status                                # Inspect cached token status and lifetimes

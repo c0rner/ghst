@@ -310,7 +310,13 @@ fn derived_acquisition_sends_exact_narrowing_request() {
         access_token: "child-token".into(),
         expires_at: Some(exact_expiry.to_string()),
     });
-    let config: Config = CONFIG.parse().unwrap();
+    let config: Config = CONFIG
+        .replace(
+            "repo = \"acme/api\"",
+            "repo = [\"acme/web\", \"ACME/api\", \"acme/web\"]",
+        )
+        .parse()
+        .unwrap();
     let acquired = acquire(
         &client,
         &AcquireRequest {
@@ -324,7 +330,7 @@ fn derived_acquisition_sends_exact_narrowing_request() {
     .unwrap();
     assert_eq!(acquired.access_token.as_ref(), "child-token");
     assert_eq!(acquired.expires_at, exact_expiry);
-    assert_eq!(acquired.repo_scope, "acme/api");
+    assert_eq!(acquired.repo_scope, "acme/api,acme/web");
     assert_eq!(
         client.request.borrow().as_ref().unwrap(),
         &serde_json::json!({
@@ -332,15 +338,16 @@ fn derived_acquisition_sends_exact_narrowing_request() {
             "client_secret": "secret",
             "root_token": "root-token",
             "target": "acme",
-            "repositories": ["api"],
+            "repositories": ["api", "web"],
             "permissions": {"contents": "read", "pull_requests": "write"},
         })
     );
-    let CacheEntry::Derived(cached) =
-        load_cache_entry(&cache_dir, &compute_cache_key("reader", "acme/api"))
-            .unwrap()
-            .unwrap()
-    else {
+    let CacheEntry::Derived(cached) = load_cache_entry(
+        &cache_dir,
+        &compute_cache_key("reader", "acme/api,acme/web"),
+    )
+    .unwrap()
+    .unwrap() else {
         panic!("expected derived entry")
     };
     assert_eq!(cached.expires_at, exact_expiry);

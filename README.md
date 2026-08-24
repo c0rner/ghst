@@ -112,7 +112,7 @@ github_app.client_secret = "secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 [profile.reader]
 source = "developer"
 description = "Read-only repository access"
-repo = "auto"
+repo = ["acme-corp/application", "acme-corp/shared-library", "auto"]
 permissions = { contents = "read", pull_requests = "read", issues = "read" }
 ```
 
@@ -136,11 +136,22 @@ A root profile identifies the dedicated GitHub App whose installation/user inter
 the authority ceiling. A derived profile is a local scoping recipe: its
 `source` names one root, while `repo` and `permissions` describe the narrower token to request.
 
-`repo = "auto"` resolves the current Git remote, an explicit `owner/repository` selects that
-repository, and `all` applies no additional repository narrowing. None of these choices can widen
-the repositories or permissions granted by GitHub to the App and authorizing user. Choose the
-narrowest useful default profile, then use repeated `--repo` options only when a task genuinely
-needs more than one repository. The complete authority model is documented under
+`repo` accepts one selection as a string or several selections as a TOML array. `auto` resolves the
+current Git remote, an explicit `owner/repository` selects that repository, and `all` applies no
+additional repository narrowing. For example, a profile can combine stable dependencies with the
+current repository:
+
+```toml
+repo = ["acme-corp/application", "acme-corp/shared-library", "auto"]
+```
+
+After resolving `auto`, `ghst` sorts and deduplicates explicit repositories and requires every
+owner to match the source root profile's configured account. `all` cannot be combined with another
+selection. When one or more `--repo` options are supplied, they replace the complete configured
+selection rather than adding to it; repeated CLI values may still mix explicit repositories and
+`auto`. None of these choices can widen the repositories or permissions granted by GitHub to the
+App and authorizing user. Choose the narrowest useful default profile, then override it only when a
+task genuinely needs a different repository set. The complete authority model is documented under
 [Permission Ceiling and Scope Intersection](SECURITY.md#permission-ceiling-and-scope-intersection).
 
 ## Common commands

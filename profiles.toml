@@ -38,7 +38,7 @@ permissions = { contents = "read", pull_requests = "read", issues = "read" }
 [profile.contributor]
 source = "developer"
 description = "Write access to code and pull requests"
-repo = "auto"
+repo = ["acme-corp/application", "acme-corp/shared-library", "auto"]
 permissions = { contents = "write", pull_requests = "write", issues = "write" }
 
 [profile.security-reviewer]
@@ -46,4 +46,3 @@ source = "security-manager"
 description = "Read access focused on vulnerability alerts and security events"
 repo = "all"
 permissions = { contents = "read", security_events = "read", vulnerability_alerts = "read" }
-

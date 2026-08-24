@@ -61,6 +61,11 @@ pub(super) fn prepare<'a>(
         profile = profile_name,
         source_profile = profile.source,
         account = source.github_app.account,
+        selection_source = if repositories.is_empty() {
+            "profile"
+        } else {
+            "cli"
+        },
         repo_scope = scope,
         repositories = ?repository_names,
         permissions = ?profile.permissions,

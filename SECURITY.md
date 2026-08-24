@@ -318,11 +318,18 @@ the suspected credentials:
    account. This removes the App side of the intersection for that installation and affects every
    user relying on it there.
 4. **Break glass across the App.** If refresh tokens may be attacker-controlled, unknown, or spread
-   across workstations, an App owner can use GitHub's **Revoke all user tokens** control in the App's
-   settings. This irreversible App-wide action invalidates every user's authorization, forces every
-   user to authorize the App again, and deletes SSH keys created by the App. A dedicated App limits
-   this collateral impact. See GitHub's documentation for
-   [resetting all user authorization tokens](https://docs.github.com/en/apps/maintaining-github-apps/modifying-a-github-app-registration#resetting-all-user-authorization-tokens).
+   across workstations, local cleanup is insufficient. At the time of writing, GitHub App settings
+   provide a red **Revoke all user tokens** button. Its confirmation warns that every user must
+   authorize the App again and that SSH keys created by the App will be deleted. Treat this as an
+   irreversible App-wide emergency action, not a normal `ghst` workflow. GitHub's
+   [security-log reference](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/security-log-events#integration)
+   identifies the resulting `integration.revoke_all_tokens` event, but GitHub does not publicly
+   document the UI procedure or its effects. Do not assume revocation is instantaneous: one
+   [GitHub Community report](https://github.com/orgs/community/discussions/173651) observed a user
+   access token remain usable briefly before a later request confirmed revocation. Verify that
+   affected tokens no longer work and contact GitHub Support if they remain active. Confirm the
+   warning shown by GitHub before proceeding; the control may change. A dedicated App limits the
+   collateral impact.
 
 Delete any exposed private key immediately; because it could have minted installation access
 tokens, review every installation and suspend or uninstall the App as appropriate. Rotate an

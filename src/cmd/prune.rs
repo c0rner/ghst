@@ -6,6 +6,7 @@ use std::io::{self, Write};
 pub fn run_prune(args: &GhstCli, _cmd: &PruneCmd) -> Result<(), CmdError> {
     let config = crate::config::load(args.config.as_deref())?;
     let cache_dir = crate::config::cache_dir()?;
+    tracing::debug!(cache_dir = %cache_dir.display(), "pruning expired and abandoned cache entries");
     let report = crate::token::cleanup::cleanup(
         &GitHubClient::new(),
         &config,
@@ -13,6 +14,14 @@ pub fn run_prune(args: &GhstCli, _cmd: &PruneCmd) -> Result<(), CmdError> {
         CleanupScope::Prune,
         time::OffsetDateTime::now_utc(),
     )?;
+    tracing::debug!(
+        expired_deletions = report.expired_deletions,
+        revoked_runs = report.revoked_runs,
+        active_runs_skipped = report.active_runs_skipped,
+        retained_entries = report.retained_entries,
+        failures = report.failures.len(),
+        "cache pruning completed"
+    );
     write_report(&mut io::stdout().lock(), &report)?;
     if report.is_complete() {
         Ok(())

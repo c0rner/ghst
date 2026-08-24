@@ -9,6 +9,11 @@ use std::io::{self, Write};
 /// Returns `CmdError` if loading configuration or printing profiles fails.
 pub fn run_profiles(args: &GhstCli, cmd: &ProfilesCmd) -> Result<(), CmdError> {
     let config = crate::config::load(args.config.as_deref())?;
+    tracing::debug!(
+        profiles = config.profiles.len(),
+        verbose = cmd.verbose,
+        "listing configured profiles"
+    );
 
     print_profiles(&mut io::stdout(), &config, cmd.verbose)?;
     Ok(())

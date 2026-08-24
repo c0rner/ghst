@@ -20,10 +20,26 @@ pub fn load_valid_root_entry(
     profile: &RootProfile,
     now: OffsetDateTime,
 ) -> Result<Option<RootCacheEntry>, TokenError> {
-    Ok(
-        load_current_root_entry(cache_dir, profile_name, &profile.github_app)?
-            .filter(|entry| entry.expires_at.is_safe_to_handoff_at(now)),
-    )
+    let entry = load_current_root_entry(cache_dir, profile_name, &profile.github_app)?;
+    match entry {
+        Some(entry) if entry.expires_at.is_safe_to_handoff_at(now) => {
+            tracing::debug!(
+                profile = profile_name,
+                expires_at = %entry.expires_at,
+                "cached root token is safe to use"
+            );
+            Ok(Some(entry))
+        }
+        Some(entry) => {
+            tracing::debug!(
+                profile = profile_name,
+                expires_at = %entry.expires_at,
+                "cached root token is inside the handoff safety margin"
+            );
+            Ok(None)
+        }
+        None => Ok(None),
+    }
 }
 
 pub fn load_valid_root_status(
@@ -42,6 +58,11 @@ pub fn load_current_root_entry(
 ) -> Result<Option<RootCacheEntry>, TokenError> {
     let key = root_cache_key(profile_name);
     let Some(entry) = load_cache_entry(cache_dir, &key)? else {
+        tracing::debug!(
+            profile = profile_name,
+            cache_key = key,
+            "root token cache miss"
+        );
         return Ok(None);
     };
     if entry.profile() != profile_name {
@@ -51,9 +72,33 @@ pub fn load_current_root_entry(
         });
     }
     match entry {
-        CacheEntry::Root(entry) => Ok((entry.version == CACHE_SCHEMA_VERSION
-            && super::provenance::matches(github_app, &entry.authority_fingerprint))
-        .then_some(entry)),
+        CacheEntry::Root(entry) => {
+            if entry.version != CACHE_SCHEMA_VERSION {
+                tracing::debug!(
+                    profile = profile_name,
+                    cached_version = entry.version,
+                    expected_version = CACHE_SCHEMA_VERSION,
+                    "cached root token was rejected because its schema is not current"
+                );
+                return Ok(None);
+            }
+            if !super::provenance::matches(github_app, &entry.authority_fingerprint) {
+                tracing::debug!(
+                    profile = profile_name,
+                    account = github_app.account,
+                    client_id = github_app.client_id,
+                    "cached root token was rejected because its configured authority changed"
+                );
+                return Ok(None);
+            }
+            tracing::debug!(
+                profile = profile_name,
+                github_user = entry.github_user,
+                expires_at = %entry.expires_at,
+                "root token cache hit"
+            );
+            Ok(Some(entry))
+        }
         other @ (CacheEntry::Derived(_) | CacheEntry::Run(_)) => {
             Err(TokenError::UnexpectedCacheKind {
                 profile: profile_name.to_owned(),
@@ -79,11 +124,16 @@ pub fn persist_root_response<C: RootTokenClient>(
     } = response;
     let expiry = match validate_root_expiry(expires_in, now) {
         Ok(expiry) => expiry,
-        Err(error) => return Err(revoke_with_context(client, profile, &access_token, error)),
+        Err(error) => {
+            tracing::debug!(profile = profile_name, error = %error, "issued root token had an invalid lifetime");
+            return Err(revoke_with_context(client, profile, &access_token, error));
+        }
     };
+    tracing::debug!(profile = profile_name, expires_at = %expiry, "validated issued root token lifetime");
     let user = match client.get_user(access_token.as_ref()) {
         Ok(user) => user,
         Err(error) => {
+            tracing::debug!(profile = profile_name, error = %error, "failed to identify the GitHub user for issued root token");
             return Err(revoke_with_context(
                 client,
                 profile,
@@ -112,6 +162,7 @@ pub fn persist_root_response<C: RootTokenClient>(
     ) {
         Ok(result) => result,
         Err(error) => {
+            tracing::debug!(profile = profile_name, error = %error, "failed to persist issued root token");
             return Err(revoke_with_context(
                 client,
                 profile,
@@ -122,11 +173,18 @@ pub fn persist_root_response<C: RootTokenClient>(
     };
     match result {
         SaveCacheEntry::Saved => match candidate {
-            CacheEntry::Root(entry) => Ok(RootPersistence::Saved(root_status(entry))),
+            CacheEntry::Root(entry) => {
+                tracing::debug!(profile = profile_name, "persisted issued root token");
+                Ok(RootPersistence::Saved(root_status(entry)))
+            }
             CacheEntry::Derived(_) | CacheEntry::Run(_) => unreachable!("candidate is root"),
         },
         SaveCacheEntry::Retained(entry) => match *entry {
             CacheEntry::Root(entry) => {
+                tracing::debug!(
+                    profile = profile_name,
+                    "a compatible concurrent root token won the cache race; revoking unused candidate"
+                );
                 let cleanup = revoke_with_context(
                     client,
                     profile,

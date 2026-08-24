@@ -36,12 +36,25 @@ fn revoke_with_context<C: RevokeTokenClient + ?Sized>(
         );
         return context;
     };
+    tracing::debug!(
+        client_id = profile.github_app.client_id,
+        "revoking unused token after a failed or concurrent operation"
+    );
     match client.delete_token(&profile.github_app.client_id, secret, token.as_ref()) {
-        Ok(()) => context,
-        Err(source) => TokenError::RevocationFailed {
-            context: Box::new(context),
-            source,
-        },
+        Ok(()) => {
+            tracing::debug!(
+                client_id = profile.github_app.client_id,
+                "unused token revoked"
+            );
+            context
+        }
+        Err(source) => {
+            tracing::debug!(client_id = profile.github_app.client_id, error = %source, "failed to revoke unused token");
+            TokenError::RevocationFailed {
+                context: Box::new(context),
+                source,
+            }
+        }
     }
 }
 

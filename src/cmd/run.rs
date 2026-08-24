@@ -33,6 +33,12 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
     let cache_dir = crate::config::cache_dir()?;
     let client = GitHubClient::new();
     let wrapper_pid = std::process::id();
+    tracing::debug!(
+        profile = profile_name,
+        requested_repositories = ?cmd.repo,
+        wrapper_pid,
+        "minting a fresh run token"
+    );
     let pending = crate::token::run::mint(
         &client,
         &MintRunRequest {
@@ -44,7 +50,6 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
         },
         crate::git::resolve_origin_repo,
     )?;
-
     #[cfg(unix)]
     let signals = match Forwarder::prepare() {
         Ok(signals) => signals,
@@ -54,6 +59,7 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
         }
     };
 
+    tracing::debug!(executable = ?cmd.command[0], "spawning run child process");
     let mut child = match spawn_command(cmd, pending.access_token.as_ref()) {
         Ok(child) => child,
         Err(error) => {
@@ -62,6 +68,7 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
         }
     };
     let child_pid = child.id();
+    tracing::debug!(child_pid, "run child process spawned");
 
     #[cfg(unix)]
     let forwarder = match signals.start(child_pid) {
@@ -80,18 +87,24 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
         wrapper_pid,
         child_pid,
     ) {
+        tracing::debug!(child_pid, error = %error, "failed to transition run recovery entry to running");
         #[cfg(unix)]
         forwarder.stop();
         terminate_and_wait(&mut child);
         cleanup_before_handoff(&client, &config, &cache_dir, &pending, Some(child_pid));
         return Err(CmdError::Cache(error));
     }
+    tracing::debug!(child_pid, "run recovery entry transitioned to running");
 
     let status = child.wait();
     #[cfg(unix)]
     forwarder.stop();
     let code = match status {
-        Ok(status) => child_exit_code(status),
+        Ok(status) => {
+            let code = child_exit_code(status);
+            tracing::debug!(child_pid, exit_code = code, "run child process exited");
+            code
+        }
         Err(error) => {
             tracing::warn!("failed to wait for run child: {error}");
             1
@@ -109,13 +122,34 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
         }),
         OffsetDateTime::now_utc(),
     );
-    match report {
-        Ok(report) if report.is_complete() => {}
-        Ok(_) | Err(_) => eprintln!(
-            "Warning: run token cleanup was incomplete; recovery state was retained for `ghst prune`"
-        ),
-    }
+    report_cleanup(child_pid, report);
     Ok(code)
+}
+
+fn report_cleanup(
+    child_pid: u32,
+    report: Result<crate::token::cleanup::CleanupReport, crate::cache::CacheError>,
+) {
+    match report {
+        Ok(report) if report.is_complete() => {
+            tracing::debug!(
+                child_pid,
+                "run token was remotely revoked and recovery state deleted"
+            );
+        }
+        Ok(report) => {
+            tracing::debug!(child_pid, report = ?report, "run token cleanup was incomplete");
+            eprintln!(
+                "Warning: run token cleanup was incomplete; recovery state was retained for `ghst prune`"
+            );
+        }
+        Err(error) => {
+            tracing::debug!(child_pid, error = %error, "run token cleanup failed");
+            eprintln!(
+                "Warning: run token cleanup was incomplete; recovery state was retained for `ghst prune`"
+            );
+        }
+    }
 }
 
 fn spawn_command(cmd: &RunCmd, token: &str) -> std::io::Result<std::process::Child> {
@@ -145,10 +179,21 @@ fn cleanup_before_handoff(
     )
     .map(|entry| cleanup_marked_run(client, config, cache_dir, &pending.cache_key, &entry));
     match report {
-        Ok(report) if report.is_complete() => {}
-        Ok(_) | Err(_) => eprintln!(
-            "Warning: run token cleanup was incomplete; recovery state was retained for `ghst prune`"
-        ),
+        Ok(report) if report.is_complete() => {
+            tracing::debug!("pending run token was cleaned up before child handoff");
+        }
+        Ok(report) => {
+            tracing::debug!(report = ?report, "pending run token cleanup was incomplete before child handoff");
+            eprintln!(
+                "Warning: run token cleanup was incomplete; recovery state was retained for `ghst prune`"
+            );
+        }
+        Err(error) => {
+            tracing::debug!(error = %error, "failed to mark pending run token for cleanup");
+            eprintln!(
+                "Warning: run token cleanup was incomplete; recovery state was retained for `ghst prune`"
+            );
+        }
     }
 }
 

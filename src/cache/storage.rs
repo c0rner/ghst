@@ -112,7 +112,10 @@ fn inspect_unlocked(cache_dir: &Path) -> Result<Vec<CacheInspection>, CacheError
                 }
             }
             Ok(None) => continue,
-            Err(_) => CacheInspectionState::Invalid,
+            Err(error) => {
+                tracing::debug!(path = %path.display(), error = %error, "failed to inspect cache entry");
+                CacheInspectionState::Invalid
+            }
         };
         entries.push(CacheInspection {
             path,
@@ -476,9 +479,18 @@ pub fn load_cache_entry(
     }
 
     validate_cache_key(hash_key)?;
-    with_cache_lock(cache_dir, LockMode::Exclusive, || {
+    let result = with_cache_lock(cache_dir, LockMode::Exclusive, || {
         read_cache_entry(&cache_file_path(cache_dir, hash_key))
-    })
+    });
+    if let Err(error) = &result {
+        tracing::debug!(
+            cache_dir = %cache_dir.display(),
+            cache_key = hash_key,
+            error = %error,
+            "cache lookup failed"
+        );
+    }
+    result
 }
 
 /// Deletes a cache entry file `cache_dir/<hash_key>.json`.
@@ -552,7 +564,10 @@ fn read_cache_entry(cache_file: &Path) -> Result<Option<CacheEntry>, CacheError>
                 .read_to_string(&mut content)
                 .map_err(CacheError::Io)?;
             let header: CacheSchemaHeader =
-                serde_json::from_str(&content).map_err(CacheError::Json)?;
+                serde_json::from_str(&content).map_err(|error| {
+                    tracing::debug!(path = %cache_file.display(), error = %error, "failed to decode cache entry header");
+                    CacheError::Json(error)
+                })?;
             let expected_version = match header.kind.as_str() {
                 "root" | "derived" => Some(crate::cache::CACHE_SCHEMA_VERSION),
                 "run" => Some(crate::cache::RUN_CACHE_SCHEMA_VERSION),
@@ -560,6 +575,7 @@ fn read_cache_entry(cache_file: &Path) -> Result<Option<CacheEntry>, CacheError>
             };
             if expected_version.is_some() && header.version != expected_version {
                 tracing::warn!(
+                    path = %cache_file.display(),
                     kind = %header.kind,
                     version = ?header.version,
                     "discarding cache entry with unsupported schema"
@@ -573,7 +589,10 @@ fn read_cache_entry(cache_file: &Path) -> Result<Option<CacheEntry>, CacheError>
             }
             serde_json::from_str(&content)
                 .map(Some)
-                .map_err(CacheError::Json)
+                .map_err(|error| {
+                    tracing::debug!(path = %cache_file.display(), error = %error, "failed to decode current cache entry");
+                    CacheError::Json(error)
+                })
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(err) => Err(CacheError::Io(err)),

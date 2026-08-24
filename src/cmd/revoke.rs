@@ -9,12 +9,20 @@ pub fn run_revoke(args: &GhstCli, cmd: &RevokeCmd) -> Result<(), CmdError> {
     }
     let config = crate::config::load(args.config.as_deref())?;
     let cache_dir = crate::config::cache_dir()?;
+    tracing::debug!(cache_dir = %cache_dir.display(), "revoking all cached credentials");
     let report = crate::token::revoke::revoke_all(
         &GitHubClient::new(),
         &config,
         &cache_dir,
         time::OffsetDateTime::now_utc(),
     )?;
+    tracing::debug!(
+        remotely_inactive = report.remotely_inactive,
+        local_only = report.local_only,
+        retained = report.retained,
+        failures = report.failures.len(),
+        "credential revocation completed"
+    );
     write_report(&mut io::stdout().lock(), &report)?;
     if report.failures.is_empty() {
         Ok(())

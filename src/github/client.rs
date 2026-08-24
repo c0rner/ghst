@@ -67,14 +67,36 @@ impl GitHubClient {
         let url = format!("{}/login/device/code", self.base_url);
         let body = serde_json::json!({ "client_id": client_id });
 
+        debug!(
+            method = "POST",
+            endpoint = "/login/device/code",
+            client_id,
+            "requesting GitHub device code"
+        );
         let res = self
             .agent
             .post(&url)
             .header("Accept", "application/json")
             .send_json(&body)
-            .map_err(map_ureq_error)?;
+            .map_err(map_ureq_error);
+        let res = match res {
+            Ok(response) => response,
+            Err(error) => {
+                debug!(method = "POST", endpoint = "/login/device/code", error = %error, "GitHub device code request failed");
+                return Err(error);
+            }
+        };
 
-        decode_response(res)
+        let response: Result<DeviceCodeResponse, GitHubError> = decode_response(res);
+        match &response {
+            Ok(device) => debug!(
+                expires_in_seconds = device.expires_in,
+                poll_interval_seconds = device.interval,
+                "GitHub device code request succeeded"
+            ),
+            Err(error) => debug!(error = %error, "failed to decode GitHub device code response"),
+        }
+        response
     }
 
     /// 2. Poll for token (`POST /login/oauth/access_token`).
@@ -94,14 +116,31 @@ impl GitHubClient {
             "grant_type": "urn:ietf:params:oauth:grant-type:device_code"
         });
 
+        tracing::trace!(
+            method = "POST",
+            endpoint = "/login/oauth/access_token",
+            client_id,
+            "polling GitHub device authorization"
+        );
         let mut res = self
             .agent
             .post(&url)
             .header("Accept", "application/json")
             .send_json(&body)
-            .map_err(map_ureq_error)?;
+            .map_err(map_ureq_error)
+            .map_err(|error| {
+                debug!(method = "POST", endpoint = "/login/oauth/access_token", error = %error, "GitHub device authorization poll failed");
+                error
+            })?;
 
-        let value: serde_json::Value = res.body_mut().read_json().map_err(map_ureq_error)?;
+        let value: serde_json::Value =
+            res.body_mut()
+                .read_json()
+                .map_err(map_ureq_error)
+                .map_err(|error| {
+                    debug!(error = %error, "failed to decode GitHub device authorization response");
+                    error
+                })?;
 
         if value.get("error").is_some() {
             return Err(oauth_error_from_value(&value));
@@ -109,6 +148,7 @@ impl GitHubClient {
 
         let response: AccessTokenResponse =
             serde_json::from_value(value).map_err(GitHubError::Json)?;
+        debug!("GitHub device authorization succeeded");
         Ok(narrow_root_token(response))
     }
 }
@@ -165,7 +205,17 @@ impl RevokeTokenClient for GitHubClient {
             .body(body_bytes)
             .map_err(|error| GitHubError::Io(std::io::Error::other(error)))?;
 
-        self.agent.run(request).map_err(map_ureq_error)?;
+        debug!(
+            method = "DELETE",
+            endpoint = "/applications/:client_id/token",
+            client_id,
+            "revoking GitHub token"
+        );
+        self.agent.run(request).map_err(map_ureq_error).map_err(|error| {
+            debug!(method = "DELETE", endpoint = "/applications/:client_id/token", client_id, error = %error, "GitHub token revocation failed");
+            error
+        })?;
+        debug!(client_id, "GitHub token revocation succeeded");
         Ok(())
     }
 }
@@ -186,7 +236,13 @@ impl ScopedTokenClient for GitHubClient {
             permissions: request.permissions,
         };
 
-        debug!("Creating scoped token with request body: {body:?}");
+        debug!(
+            method = "POST",
+            endpoint = "/applications/{client_id}/token/scoped",
+            client_id = request.client_id,
+            request = ?body,
+            "creating GitHub scoped token"
+        );
         let response = self
             .agent
             .post(&url)
@@ -195,23 +251,54 @@ impl ScopedTokenClient for GitHubClient {
                 &basic_auth_header(request.client_id, request.client_secret),
             )
             .send_json(&body)
-            .map_err(map_ureq_error)?;
+            .map_err(map_ureq_error)
+            .map_err(|error| {
+                debug!(
+                    method = "POST",
+                    endpoint = "/applications/{client_id}/token/scoped",
+                    client_id = request.client_id,
+                    error = %error,
+                    "GitHub scoped token request failed"
+                );
+                error
+            })?;
 
-        decode_response(response).map(narrow_scoped_token)
+        let response = decode_response(response).map(narrow_scoped_token);
+        match &response {
+            Ok(issued) => {
+                debug!(expires_at = ?issued.expires_at, "GitHub scoped token request succeeded");
+            }
+            Err(error) => debug!(error = %error, "failed to decode GitHub scoped token response"),
+        }
+        response
     }
 }
 
 impl RootTokenClient for GitHubClient {
     fn get_user(&self, access_token: &str) -> Result<GitHubUser, GitHubError> {
         let url = format!("{}/user", self.api_url);
+        debug!(
+            method = "GET",
+            endpoint = "/user",
+            "identifying GitHub user for issued root token"
+        );
         let response = self
             .agent
             .get(&url)
             .header("Authorization", &format!("Bearer {access_token}"))
             .call()
-            .map_err(map_ureq_error)?;
+            .map_err(map_ureq_error)
+            .map_err(|error| {
+                debug!(method = "GET", endpoint = "/user", error = %error, "GitHub user request failed");
+                error
+            })?;
 
-        decode_response(response).map(narrow_user)
+        let response = decode_response(response).map(narrow_user);
+        match &response {
+            Ok(user) => debug!(github_user = user.login, "identified GitHub user"),
+            Err(error) => debug!(error = %error, "failed to decode GitHub user response"),
+        }
+        response
     }
 }
 

@@ -55,6 +55,21 @@ pub enum SubCommand {
     Run(RunCmd),
 }
 
+impl SubCommand {
+    pub const fn name(&self) -> &'static str {
+        match self {
+            Self::Edit(_) => "edit",
+            Self::Login(_) => "login",
+            Self::Token(_) => "token",
+            Self::Status(_) => "status",
+            Self::Profiles(_) => "profiles",
+            Self::Revoke(_) => "revoke",
+            Self::Prune(_) => "prune",
+            Self::Run(_) => "run",
+        }
+    }
+}
+
 /// Open and validate the active configuration in your preferred editor.
 #[derive(FromArgs, PartialEq, Eq, Debug)]
 #[argh(subcommand, name = "edit")]
@@ -161,18 +176,26 @@ impl FromStr for OutputFormat {
 
 fn resolve_profile_name(cli_profile: Option<&str>, config: &Config) -> Result<String, CmdError> {
     if let Some(profile) = cli_profile {
+        tracing::debug!(profile, source = "command_line", "resolved profile");
         return Ok(profile.to_owned());
     }
     if let Ok(profile) = env::var("GHST_PROFILE") {
         let profile = profile.trim();
         if !profile.is_empty() {
+            tracing::debug!(profile, source = "environment", "resolved profile");
             return Ok(profile.to_owned());
         }
     }
-    config
+    let profile = config
         .default_profile
         .clone()
-        .ok_or(CmdError::ProfileRequired)
+        .ok_or(CmdError::ProfileRequired)?;
+    tracing::debug!(
+        profile,
+        source = "configuration_default",
+        "resolved profile"
+    );
+    Ok(profile)
 }
 
 #[cfg(test)]

@@ -148,9 +148,11 @@ human approval on GitHub.
 
 If an attacker starts a flow and persuades a user to approve it, the attacker polling that flow
 receives the user access token and its refresh token. Because a Device-Flow refresh does not require
-the client secret, that access can be renewed until GitHub invalidates the authorization or the
-current refresh token is allowed to expire. `ghst` can destroy only the refresh tokens returned to
-its own process; it cannot destroy a token returned to an attacker-controlled flow.
+the client secret, that access can continue beyond the lifetime of one refresh token: a successful
+refresh rotates both the access token and refresh token. Access can therefore continue until the
+authorization, the user's access, the App's access, or the credentials are revoked, or the current
+refresh token expires before it is used. `ghst` can destroy only the refresh tokens returned to its
+own process; it cannot destroy a token returned to an attacker-controlled flow.
 
 > [!IMPORTANT]
 > Authorize a device code only when all of these are true:
@@ -233,7 +235,9 @@ depend on App permissions.
 
 1. `ghst` accepts the GitHub-issued lifetime rather than synthesizing or extending one locally.
    With user-to-server token expiration enabled, GitHub currently documents an eight-hour user
-   access token and a six-month refresh token.
+   access token and a six-month lifetime for each refresh token. Six months is not a hard limit on
+   the authorization: a successful refresh rotates both tokens and starts a new refresh-token
+   lifetime.
 2. Refresh tokens are wrapped in zeroizing memory, dropped immediately after parsing, never cached,
    and never returned to downstream tools.
 3. `ghst` root tokens and reusable derived tokens are stored under `~/.cache/ghst/`. One-off run
@@ -287,28 +291,51 @@ lease does not follow arbitrary descendants.
 | **Client secret exposure alone** | Does not directly grant repository access under the required configuration. Rotate it anyway, inspect App settings, and investigate whether it was paired with a user token or authorization artifact. |
 | **Client secret plus root-token exposure** | Allows additional scoped user tokens with independent lifetimes, but cannot exceed the root's App/user intersection. Protect configuration and cache together. |
 | **Refresh-token exposure** | Enables renewable user access. `ghst` destroys only refresh tokens it receives; it cannot protect an attacker-controlled flow. |
+| **Departing or malicious developer retains a refresh token** | Outside the trusted-operator boundary. A workstation owner can complete Device Flow outside `ghst` and retain the rotating refresh token, bypassing local lifetime policy. Offboarding must remove the user's GitHub access and authorization; suspected unknown credentials require the centralized App controls below. |
 | **Private key present or exposed** | Outside the threat model and critical. It enables App JWTs and installation access tokens without a user intersection. Delete the key and treat every App installation as potentially affected. |
 | **GitHub App administrator compromise** | Outside the local boundary. An administrator can change permissions, authorization settings, installations, secrets, and private keys. |
 | **Derived-token exfiltration** | Bounded by the profile, App/user intersection, and token expiry, but usable until revoked or expired. |
 | **Root-token exfiltration** | Bounded by the App/user intersection and expiry. Pairing it with the client secret enables scoped-token creation. |
-| **Cleanup interruption** | Issuer expiry is the final bound. `ghst prune` retries abandoned run-token cleanup; `ghst revoke --all` attempts full remote revocation and local purge. |
+| **Cleanup interruption** | Issuer expiry is the final bound. `ghst prune` retries abandoned run-token cleanup; `ghst revoke --all` attempts remote revocation and local purge for credentials represented in this workstation's cache. |
 | **Trusted operator bypass** | Out of scope. A workstation owner can use another GitHub credential or deliberately expose local state. |
 
 ---
 
 ## Responding to Credential or Configuration Exposure
 
-1. Stop authorizing Device Flows and inspect the GitHub App registration for changed permissions,
-   installations, OAuth settings, and any private keys.
-2. Run `ghst revoke --all` when the configured client secret is still usable. Treat a nonzero result
-   as incomplete cleanup.
-3. Delete and replace an exposed client secret in GitHub, then update `profiles.toml`. Secret
-   rotation does not prove that previously issued access tokens were revoked.
-4. If a private key existed, delete it immediately. Because it could have minted installation
-   tokens across installations, review or suspend/uninstall the App as appropriate.
-5. If an unauthorized Device Flow may have been approved, revoke the GitHub App authorization from
-   the affected user account and review GitHub audit and security logs. Rotating the client secret
-   alone does not invalidate a Device-Flow refresh token.
+Stop authorizing Device Flows and inspect the GitHub App registration for changed permissions,
+installations, OAuth settings, and any private keys. Then use the narrowest control that contains
+the suspected credentials:
+
+1. **Clean up this workstation.** Run `ghst revoke --all` while the configured client secret is
+   still usable. It immediately deletes all locally cached credentials and attempts to revoke each
+   live credential it can identify. Treat a nonzero result as incomplete cleanup. This command
+   cannot discover or revoke refresh tokens retained by another client or workstation.
+2. **Offboard one user.** Remove the user's repository and organization access, or disable the
+   account, to remove the user side of the App/user permission intersection. Where possible, also
+   revoke that user's authorization of the GitHub App from the user's GitHub application settings.
+3. **Contain one installation.** Suspend or uninstall the App for an affected organization or user
+   account. This removes the App side of the intersection for that installation and affects every
+   user relying on it there.
+4. **Break glass across the App.** If refresh tokens may be attacker-controlled, unknown, or spread
+   across workstations, local cleanup is insufficient. At the time of writing, GitHub App settings
+   provide a red **Revoke all user tokens** button. Its confirmation warns that every user must
+   authorize the App again and that SSH keys created by the App will be deleted. Treat this as an
+   irreversible App-wide emergency action, not a normal `ghst` workflow. GitHub's
+   [security-log reference](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/security-log-events#integration)
+   identifies the resulting `integration.revoke_all_tokens` event, but GitHub does not publicly
+   document the UI procedure or its effects. Do not assume revocation is instantaneous: one
+   [GitHub Community report](https://github.com/orgs/community/discussions/173651) observed a user
+   access token remain usable briefly before a later request confirmed revocation. Verify that
+   affected tokens no longer work and contact GitHub Support if they remain active. Confirm the
+   warning shown by GitHub before proceeding; the control may change. A dedicated App limits the
+   collateral impact.
+
+Delete any exposed private key immediately; because it could have minted installation access
+tokens, review every installation and suspend or uninstall the App as appropriate. Rotate an
+exposed client secret and update `profiles.toml`, but do not treat secret rotation as token
+revocation: Device-Flow refresh does not require the client secret, so rotating it alone does not
+invalidate Device-Flow refresh tokens.
 
 ---
 

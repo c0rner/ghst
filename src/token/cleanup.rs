@@ -103,6 +103,13 @@ pub fn cleanup<C: RevokeTokenClient>(
 ) -> Result<CleanupReport, crate::cache::CacheError> {
     match scope {
         CleanupScope::ReleasedRun(released) => {
+            tracing::debug!(
+                cache_key = released.cache_key,
+                run_id = released.run_id,
+                wrapper_pid = released.wrapper_pid,
+                child_pid = released.child_pid,
+                "claiming released run for cleanup"
+            );
             let mut report = CleanupReport::default();
             match claim_released_run(
                 cache_dir,
@@ -111,21 +118,30 @@ pub fn cleanup<C: RevokeTokenClient>(
                 released.wrapper_pid,
                 released.child_pid,
             ) {
-                Ok(entry) => cleanup_run_entry(
-                    client,
-                    config,
-                    cache_dir,
-                    &released.cache_key,
-                    &entry,
-                    &mut report,
-                ),
-                Err(source) => retain(
-                    &mut report,
-                    CleanupFailure::Ownership {
-                        entry: released.cache_key.clone(),
-                        source,
-                    },
-                ),
+                Ok(entry) => {
+                    tracing::debug!(
+                        cache_key = released.cache_key,
+                        "released run claimed for cleanup"
+                    );
+                    cleanup_run_entry(
+                        client,
+                        config,
+                        cache_dir,
+                        &released.cache_key,
+                        &entry,
+                        &mut report,
+                    );
+                }
+                Err(source) => {
+                    tracing::debug!(cache_key = released.cache_key, error = %source, "failed to claim released run for cleanup");
+                    retain(
+                        &mut report,
+                        CleanupFailure::Ownership {
+                            entry: released.cache_key.clone(),
+                            source,
+                        },
+                    );
+                }
             }
             Ok(report)
         }
@@ -161,30 +177,55 @@ fn prune<C: RevokeTokenClient>(
     now: OffsetDateTime,
 ) -> Result<CleanupReport, crate::cache::CacheError> {
     let mut report = CleanupReport::default();
-    for inspection in inspect_cache(cache_dir)? {
+    let inspections = inspect_cache(cache_dir)?;
+    tracing::debug!(cache_dir = %cache_dir.display(), entries = inspections.len(), "inspecting cache entries for pruning");
+    for inspection in inspections {
         let label = inspection.label;
         let Some(cache_key) = inspection.cache_key else {
+            tracing::debug!(
+                entry = label,
+                "retaining cache entry with an invalid file name"
+            );
             retain(&mut report, CleanupFailure::InvalidEntry { entry: label });
             continue;
         };
         match inspection.state {
             CacheInspectionState::Invalid => {
+                tracing::debug!(
+                    entry = label,
+                    "retaining invalid cache entry for manual inspection"
+                );
                 retain(&mut report, CleanupFailure::InvalidEntry { entry: label });
             }
             CacheInspectionState::Current(entry) => {
                 if expiry(&entry).value() <= now {
+                    tracing::debug!(
+                        entry = label,
+                        kind = entry.kind_name(),
+                        "deleting expired cache entry"
+                    );
                     match delete_entry_if_unchanged(cache_dir, &cache_key, &entry) {
-                        Ok(true) => report.expired_deletions += 1,
+                        Ok(true) => {
+                            report.expired_deletions += 1;
+                            tracing::debug!(entry = label, "deleted expired cache entry");
+                        }
                         Ok(false) => {
+                            tracing::debug!(
+                                entry = label,
+                                "expired cache entry changed or disappeared before deletion"
+                            );
                             retain(&mut report, CleanupFailure::InvalidEntry { entry: label });
                         }
-                        Err(source) => retain(
-                            &mut report,
-                            CleanupFailure::CacheDeletion {
-                                entry: label,
-                                source,
-                            },
-                        ),
+                        Err(source) => {
+                            tracing::debug!(entry = label, error = %source, "failed to delete expired cache entry");
+                            retain(
+                                &mut report,
+                                CleanupFailure::CacheDeletion {
+                                    entry: label,
+                                    source,
+                                },
+                            );
+                        }
                     }
                     continue;
                 }
@@ -205,8 +246,10 @@ fn prune<C: RevokeTokenClient>(
                             || entry.child_pid.is_some_and(pid_is_alive) =>
                     {
                         report.active_runs_skipped += 1;
+                        tracing::debug!(entry = label, wrapper_pid = entry.wrapper_pid, child_pid = ?entry.child_pid, "skipping active run during pruning");
                     }
                     RunState::Pending | RunState::Running => {
+                        tracing::debug!(entry = label, "claiming abandoned run for cleanup");
                         match claim_abandoned_run(cache_dir, &cache_key, &entry) {
                             Ok(claimed) => cleanup_run_entry(
                                 client,
@@ -216,13 +259,16 @@ fn prune<C: RevokeTokenClient>(
                                 &claimed,
                                 &mut report,
                             ),
-                            Err(source) => retain(
-                                &mut report,
-                                CleanupFailure::Ownership {
-                                    entry: label,
-                                    source,
-                                },
-                            ),
+                            Err(source) => {
+                                tracing::debug!(entry = label, error = %source, "failed to claim abandoned run for cleanup");
+                                retain(
+                                    &mut report,
+                                    CleanupFailure::Ownership {
+                                        entry: label,
+                                        source,
+                                    },
+                                );
+                            }
                         }
                     }
                 }
@@ -242,10 +288,20 @@ fn cleanup_run_entry<C: RevokeTokenClient>(
 ) {
     let label = cache_key.to_owned();
     let Some(root) = validated_root(config, entry) else {
+        tracing::debug!(
+            cache_key,
+            source_profile = entry.source_profile,
+            "run token source authority no longer matches configuration"
+        );
         retain(report, CleanupFailure::Configuration { entry: label });
         return;
     };
     let Some(secret) = root.github_app.client_secret.as_deref() else {
+        tracing::debug!(
+            cache_key,
+            source_profile = entry.source_profile,
+            "run token cannot be remotely revoked because the source profile has no client secret"
+        );
         retain(
             report,
             CleanupFailure::ClientSecretUnavailable { entry: label },
@@ -257,9 +313,12 @@ fn cleanup_run_entry<C: RevokeTokenClient>(
         secret,
         entry.access_token.as_ref(),
     ) {
-        Ok(()) => {}
-        Err(source) if source.is_not_found() => {}
+        Ok(()) => tracing::debug!(cache_key, "run token remotely revoked"),
+        Err(source) if source.is_not_found() => {
+            tracing::debug!(cache_key, "run token was already inactive on GitHub");
+        }
         Err(source) => {
+            tracing::debug!(cache_key, error = %source, "failed to revoke run token");
             retain(
                 report,
                 CleanupFailure::GitHubRevocation {
@@ -271,14 +330,20 @@ fn cleanup_run_entry<C: RevokeTokenClient>(
         }
     }
     match delete_run_after_cleanup(cache_dir, cache_key, entry) {
-        Ok(_) => report.revoked_runs += 1,
-        Err(source) => retain(
-            report,
-            CleanupFailure::CacheDeletion {
-                entry: label,
-                source,
-            },
-        ),
+        Ok(_) => {
+            report.revoked_runs += 1;
+            tracing::debug!(cache_key, "deleted run recovery entry after remote cleanup");
+        }
+        Err(source) => {
+            tracing::debug!(cache_key, error = %source, "failed to delete run recovery entry after remote cleanup");
+            retain(
+                report,
+                CleanupFailure::CacheDeletion {
+                    entry: label,
+                    source,
+                },
+            );
+        }
     }
 }
 
@@ -303,6 +368,7 @@ const fn expiry(entry: &CacheEntry) -> crate::cache::TokenExpiry {
 }
 
 fn retain(report: &mut CleanupReport, failure: CleanupFailure) {
+    tracing::debug!(failure = ?failure, "retaining cache entry for inspection or retry");
     report.retained_entries += 1;
     report.failures.push(failure);
 }

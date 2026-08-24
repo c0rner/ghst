@@ -10,6 +10,12 @@ pub fn run_token(args: &GhstCli, cmd: &TokenCmd) -> Result<(), CmdError> {
     let config = crate::config::load(args.config.as_deref())?;
     let profile_name = resolve_profile_name(cmd.profile.as_deref(), &config)?;
     let cache_dir = crate::config::cache_dir()?;
+    tracing::debug!(
+        profile = profile_name,
+        requested_repositories = ?cmd.repo,
+        output_format = ?cmd.format,
+        "acquiring token"
+    );
     let client = GitHubClient::new();
     let mut stdout = io::stdout().lock();
     execute_token(
@@ -48,6 +54,12 @@ fn execute_token<C: ScopedTokenClient, W: Write>(
         },
         resolve_auto,
     )?;
+    tracing::debug!(
+        profile = token.profile,
+        repo_scope = token.repo_scope,
+        expires_at = %token.expires_at,
+        "token acquired; writing requested output format"
+    );
     write_token(writer, &token, cmd.format)?;
     Ok(())
 }

@@ -89,7 +89,17 @@ impl FromStr for Config {
 ///
 /// Returns `ConfigError` if path resolution, file IO, TOML parsing, or validation fails.
 pub fn load(path: Option<&Path>) -> Result<Config, ConfigError> {
-    config_location(path)?.load()
+    let location = config_location(path)?;
+    tracing::debug!(path = %location.path().display(), "loading configuration");
+    let config = location.load()?;
+    tracing::debug!(
+        path = %location.path().display(),
+        version = config.version,
+        profiles = config.profiles.len(),
+        default_profile = config.default_profile.as_deref().unwrap_or("<unset>"),
+        "configuration loaded and validated"
+    );
+    Ok(config)
 }
 
 pub fn config_location(path: Option<&Path>) -> Result<ConfigLocation, ConfigError> {
@@ -542,10 +552,14 @@ fn open_default_config_file(config_dir: &Path) -> Result<File, ConfigError> {
 /// Returns `ConfigError::CacheDirNotFound` if `GHST_CACHE_DIR` is unset and the user cache directory cannot be resolved.
 pub fn cache_dir() -> Result<PathBuf, ConfigError> {
     if let Some(value) = std::env::var_os("GHST_CACHE_DIR") {
-        return Ok(PathBuf::from(value));
+        let path = PathBuf::from(value);
+        tracing::debug!(path = %path.display(), source = "environment", "resolved cache directory");
+        return Ok(path);
     }
     let cache_dir = sysdirs::cache_dir().ok_or(ConfigError::CacheDirNotFound)?;
-    Ok(cache_dir.join("ghst"))
+    let path = cache_dir.join("ghst");
+    tracing::debug!(path = %path.display(), source = "platform_default", "resolved cache directory");
+    Ok(path)
 }
 
 #[cfg(test)]

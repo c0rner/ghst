@@ -26,6 +26,7 @@ impl EditorCommand {
 /// enforcement, or configuration validation fails.
 pub fn run_edit(args: &GhstCli, cmd: &EditCmd) -> Result<(), CmdError> {
     let location = config::config_location(args.config.as_deref())?;
+    tracing::debug!(path = %location.path().display(), initialize = cmd.init, "resolved configuration for editing");
     let initialized = if cmd.init {
         Some(location.initialize()?)
     } else if location.exists()? {
@@ -45,7 +46,9 @@ pub fn run_edit(args: &GhstCli, cmd: &EditCmd) -> Result<(), CmdError> {
     }
 
     let editor = discover_editor()?;
+    tracing::debug!(editor = editor.name(), path = %location.path().display(), "launching configuration editor");
     edit_configuration(&location, &editor)?;
+    tracing::debug!(path = %location.path().display(), "edited configuration passed security and schema validation");
     println!("Configuration is valid.");
     Ok(())
 }

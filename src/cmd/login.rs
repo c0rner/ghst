@@ -3,7 +3,7 @@ use crate::cache::cache_epoch;
 use crate::cmd::{CmdError, GhstCli, LoginCmd, resolve_profile_name};
 use crate::config::ProfileConfig;
 use crate::github::{GitHubClient, GitHubError};
-use crate::token::RootPersistence;
+use crate::token::{IssuedRootToken, RootPersistence};
 use std::thread;
 use time::OffsetDateTime;
 use tracing::{debug, info, warn};
@@ -24,21 +24,29 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
     };
 
     let cache_dir = crate::config::cache_dir()?;
-    debug!("Resolved cache directory: {:?}", cache_dir);
+    debug!(
+        profile = profile_name,
+        "checking for a reusable cached root token"
+    );
     if let Some(status) = crate::token::load_valid_root_status(
         &cache_dir,
         &profile_name,
         root_profile,
         OffsetDateTime::now_utc(),
     )? {
-        debug!("Found valid cached root token for profile '{profile_name}'");
+        debug!(
+            profile = profile_name,
+            github_user = status.github_user,
+            expires_at = %status.expires_at,
+            "reusing cached root token"
+        );
         report_existing(&profile_name, &status);
         return Ok(());
     }
 
     let client = GitHubClient::new();
     let epoch = cache_epoch(&cache_dir)?;
-    info!("Initiating OAuth Device Flow for profile '{profile_name}'...");
+    info!(profile = profile_name, "initiating OAuth Device Flow");
     let device = client.request_device_code(&root_profile.github_app.client_id)?;
     display_auth_instructions(
         &root_profile.github_app.account,
@@ -51,21 +59,24 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
     );
     println!("Waiting for authorization in browser...");
 
-    let mut interval = device.interval;
-    let response = loop {
-        thread::sleep(std::time::Duration::from_secs(interval));
-        match client.poll_access_token(&root_profile.github_app.client_id, &device.device_code) {
-            Ok(response) => break response,
-            Err(GitHubError::OAuthPending) => {}
-            Err(GitHubError::OAuthSlowDown) => {
-                interval += 5;
-                warn!("Polling rate limited by GitHub; increasing interval to {interval}s");
-            }
-            Err(GitHubError::OAuthExpired) => return Err(CmdError::OAuthExpired),
-            Err(GitHubError::OAuthAccessDenied) => return Err(CmdError::OAuthAccessDenied),
-            Err(error) => return Err(CmdError::GitHub(error)),
-        }
-    };
+    let interval = device.interval;
+    debug!(
+        profile = profile_name,
+        expires_in_seconds = device.expires_in,
+        poll_interval_seconds = interval,
+        "device authorization request created"
+    );
+    let response = poll_for_authorization(
+        &client,
+        &root_profile.github_app.client_id,
+        &device.device_code,
+        interval,
+        &profile_name,
+    )?;
+    debug!(
+        profile = profile_name,
+        "device authorization completed; validating and caching root token"
+    );
 
     match crate::token::persist_root_response(
         &client,
@@ -76,10 +87,57 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
         OffsetDateTime::now_utc(),
         epoch,
     )? {
-        RootPersistence::Saved(entry) => report_saved(&profile_name, &entry),
-        RootPersistence::Retained(entry) => report_existing(&profile_name, &entry),
+        RootPersistence::Saved(entry) => {
+            debug!(profile = profile_name, expires_at = %entry.expires_at, "cached new root token");
+            report_saved(&profile_name, &entry);
+        }
+        RootPersistence::Retained(entry) => {
+            debug!(profile = profile_name, expires_at = %entry.expires_at, "retained compatible root token cached by a concurrent login");
+            report_existing(&profile_name, &entry);
+        }
     }
     Ok(())
+}
+
+fn poll_for_authorization(
+    client: &GitHubClient,
+    client_id: &str,
+    device_code: &str,
+    mut interval: u64,
+    profile_name: &str,
+) -> Result<IssuedRootToken, CmdError> {
+    loop {
+        thread::sleep(std::time::Duration::from_secs(interval));
+        match client.poll_access_token(client_id, device_code) {
+            Ok(response) => return Ok(response),
+            Err(GitHubError::OAuthPending) => {
+                tracing::trace!(
+                    profile = profile_name,
+                    "device authorization is still pending"
+                );
+            }
+            Err(GitHubError::OAuthSlowDown) => {
+                interval += 5;
+                warn!(
+                    profile = profile_name,
+                    poll_interval_seconds = interval,
+                    "GitHub requested slower device authorization polling"
+                );
+            }
+            Err(GitHubError::OAuthExpired) => {
+                debug!(profile = profile_name, "device authorization expired");
+                return Err(CmdError::OAuthExpired);
+            }
+            Err(GitHubError::OAuthAccessDenied) => {
+                debug!(profile = profile_name, "device authorization was denied");
+                return Err(CmdError::OAuthAccessDenied);
+            }
+            Err(error) => {
+                debug!(profile = profile_name, error = %error, "device authorization failed");
+                return Err(CmdError::GitHub(error));
+            }
+        }
+    }
 }
 
 fn report_saved(profile_name: &str, status: &crate::token::RootTokenStatus) {

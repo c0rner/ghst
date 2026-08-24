@@ -70,57 +70,32 @@ pub fn revoke_all<C: RevokeTokenClient>(
 ) -> Result<RevokeReport, crate::cache::CacheError> {
     revoke_transaction(cache_dir, |transaction| {
         let mut report = RevokeReport::default();
+        tracing::debug!(cache_dir = %cache_dir.display(), entries = transaction.entries().len(), "started cache-wide credential revocation transaction");
         for index in 0..transaction.entries().len() {
             let label = transaction.entries()[index].label.clone();
-            let revocation = match &transaction.entries()[index].state {
-                CacheInspectionState::Current(entry) if entry.is_safe_to_handoff_at(now) => {
-                    match super::provenance::for_entry(config, entry) {
-                        super::provenance::ConfiguredAuthority::Match(app) => {
-                            if let Some(secret) = app.github_app.client_secret.as_deref() {
-                                match client.delete_token(
-                                    &app.github_app.client_id,
-                                    secret,
-                                    entry.access_token().as_ref(),
-                                ) {
-                                    Ok(()) => true,
-                                    Err(source) if source.is_not_found() => true,
-                                    Err(source) => {
-                                        report.retained += 1;
-                                        report.failures.push(RevokeFailure::GitHubRevocation {
-                                            entry: label,
-                                            source,
-                                        });
-                                        continue;
-                                    }
-                                }
-                            } else {
-                                report
-                                    .failures
-                                    .push(RevokeFailure::ClientSecretUnavailable {
-                                        entry: label.clone(),
-                                    });
-                                false
-                            }
-                        }
-                        super::provenance::ConfiguredAuthority::Mismatch => {
-                            report.failures.push(RevokeFailure::AuthorityMismatch {
-                                entry: label.clone(),
-                            });
-                            false
-                        }
-                        super::provenance::ConfiguredAuthority::Missing => {
-                            report.failures.push(RevokeFailure::MissingAppCredentials {
-                                entry: label.clone(),
-                            });
-                            false
-                        }
-                    }
-                }
-                CacheInspectionState::Current(_) | CacheInspectionState::Invalid => false,
+            tracing::debug!(entry = label, "processing cached credential for revocation");
+            let Some(revocation) = attempt_remote_revocation(
+                client,
+                config,
+                &transaction.entries()[index].state,
+                &label,
+                now,
+                &mut report,
+            ) else {
+                continue;
             };
             match transaction.delete(index) {
-                Ok(true) if revocation => report.remotely_inactive += 1,
-                Ok(true) => report.local_only += 1,
+                Ok(true) if revocation => {
+                    report.remotely_inactive += 1;
+                    tracing::debug!(
+                        entry = label,
+                        "deleted remotely inactive credential from local cache"
+                    );
+                }
+                Ok(true) => {
+                    report.local_only += 1;
+                    tracing::debug!(entry = label, "deleted credential from local cache only");
+                }
                 Ok(false) => report.failures.push(RevokeFailure::CacheDeletion {
                     entry: label,
                     source: crate::cache::CacheError::Io(std::io::Error::new(
@@ -128,14 +103,103 @@ pub fn revoke_all<C: RevokeTokenClient>(
                         "cache entry disappeared",
                     )),
                 }),
-                Err(source) => report.failures.push(RevokeFailure::CacheDeletion {
-                    entry: label,
-                    source,
-                }),
+                Err(source) => {
+                    tracing::debug!(entry = label, error = %source, "failed to delete credential from local cache");
+                    report.failures.push(RevokeFailure::CacheDeletion {
+                        entry: label,
+                        source,
+                    });
+                }
             }
         }
         report
     })
+}
+
+fn attempt_remote_revocation<C: RevokeTokenClient>(
+    client: &C,
+    config: &Config,
+    state: &CacheInspectionState,
+    label: &str,
+    now: OffsetDateTime,
+    report: &mut RevokeReport,
+) -> Option<bool> {
+    let CacheInspectionState::Current(entry) = state else {
+        tracing::debug!(
+            entry = label,
+            "cache entry is invalid; deleting locally without remote revocation"
+        );
+        return Some(false);
+    };
+    if !entry.is_safe_to_handoff_at(now) {
+        tracing::debug!(
+            entry = label,
+            "cached credential is expired or inside the handoff margin; deleting locally without remote revocation"
+        );
+        return Some(false);
+    }
+    match super::provenance::for_entry(config, entry) {
+        super::provenance::ConfiguredAuthority::Match(app) => {
+            let Some(secret) = app.github_app.client_secret.as_deref() else {
+                tracing::debug!(
+                    entry = label,
+                    "client secret unavailable; deleting cached credential locally only"
+                );
+                report
+                    .failures
+                    .push(RevokeFailure::ClientSecretUnavailable {
+                        entry: label.to_owned(),
+                    });
+                return Some(false);
+            };
+            match client.delete_token(
+                &app.github_app.client_id,
+                secret,
+                entry.access_token().as_ref(),
+            ) {
+                Ok(()) => {
+                    tracing::debug!(entry = label, "cached credential remotely revoked");
+                    Some(true)
+                }
+                Err(source) if source.is_not_found() => {
+                    tracing::debug!(
+                        entry = label,
+                        "cached credential was already inactive on GitHub"
+                    );
+                    Some(true)
+                }
+                Err(source) => {
+                    tracing::debug!(entry = label, error = %source, "failed to remotely revoke cached credential; retaining it for retry");
+                    report.retained += 1;
+                    report.failures.push(RevokeFailure::GitHubRevocation {
+                        entry: label.to_owned(),
+                        source,
+                    });
+                    None
+                }
+            }
+        }
+        super::provenance::ConfiguredAuthority::Mismatch => {
+            tracing::debug!(
+                entry = label,
+                "cached credential authority differs from configuration; deleting locally only"
+            );
+            report.failures.push(RevokeFailure::AuthorityMismatch {
+                entry: label.to_owned(),
+            });
+            Some(false)
+        }
+        super::provenance::ConfiguredAuthority::Missing => {
+            tracing::debug!(
+                entry = label,
+                "cached credential source profile is missing; deleting locally only"
+            );
+            report.failures.push(RevokeFailure::MissingAppCredentials {
+                entry: label.to_owned(),
+            });
+            Some(false)
+        }
+    }
 }
 
 #[cfg(test)]

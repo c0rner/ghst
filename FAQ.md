@@ -113,6 +113,27 @@ will identify abandoned run leases and revoke them with GitHub once network conn
 ### Can I run background daemons with `ghst run`?
 **No.** `ghst run` is designed for foreground process invocations. When the launcher command finishes, `ghst` requests revocation of the token on GitHub. If you launch a detached daemon (e.g. `nono run --detached`), it should not rely on that token remaining available after the parent exits. For long-running or detached workloads, use `ghst token` and manage the token lifecycle manually.
 
+### Why does derived token creation fail with HTTP 403?
+A derived profile can only narrow the authority available to the authorizing user through the
+configured GitHub App installation. The App installation is the authority ceiling: if the derived
+profile requests a permission the App was not granted, or repository access outside the App's
+installation selection, GitHub rejects scoped token creation with HTTP 403.
+
+Check both sides of the request:
+
+1. In GitHub settings, verify the source profile's App installation permissions and repository
+   access.
+2. In `~/.config/ghst/profiles.toml`, verify the derived profile's `permissions` and `repo` values.
+
+For the complete decision path, enable debug diagnostics:
+
+```bash
+RUST_LOG=debug ghst token --profile reader --repo acme/api
+```
+
+Diagnostics are written to stderr so token output on stdout remains machine-readable. Access
+tokens, root tokens, client secrets, device codes, and authorization headers are not logged.
+
 ---
 
 ## Enterprise & Team Deployments

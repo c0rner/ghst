@@ -62,12 +62,20 @@ fn mint_with_clock<
         request.repositories,
         resolve_auto,
     )?;
+    tracing::debug!(
+        profile = request.profile_name,
+        source_profile = prepared.profile.source,
+        repo_scope = prepared.scope,
+        wrapper_pid = request.wrapper_pid,
+        "prepared fresh run token request"
+    );
     let run_id = generate_run_id()?;
     let cache_key = compute_run_cache_key(&run_id);
     let epoch = cache_epoch(request.cache_dir)?;
     let generation = prepared.root.generation_fingerprint();
     let request_time = now();
     let issued = super::scoped::issue(client, &prepared, request_time, &mut now)?;
+    tracing::debug!(profile = request.profile_name, expires_at = %issued.expires_at, "received valid run token from GitHub");
     let candidate = CacheEntry::Run(RunCacheEntry {
         version: RUN_CACHE_SCHEMA_VERSION,
         run_id: run_id.clone(),
@@ -97,6 +105,12 @@ fn mint_with_clock<
             let CacheEntry::Run(entry) = candidate else {
                 unreachable!("run candidate changed kind")
             };
+            tracing::debug!(
+                profile = request.profile_name,
+                cache_key,
+                run_id,
+                "persisted pending run recovery entry"
+            );
             Ok(PendingRun {
                 cache_key,
                 run_id,
@@ -105,12 +119,15 @@ fn mint_with_clock<
             })
         }
         Ok(SaveCacheEntry::Retained(_)) => unreachable!("run entries are never reusable"),
-        Err(source_error) => Err(revoke_with_context(
-            client,
-            prepared.source,
-            candidate.access_token(),
-            TokenError::Cache(source_error),
-        )),
+        Err(source_error) => {
+            tracing::debug!(profile = request.profile_name, error = %source_error, "failed to persist pending run recovery entry; revoking candidate");
+            Err(revoke_with_context(
+                client,
+                prepared.source,
+                candidate.access_token(),
+                TokenError::Cache(source_error),
+            ))
+        }
     }
 }
 

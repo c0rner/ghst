@@ -31,9 +31,28 @@ pub(super) fn acquire_with_clock<
     resolve_auto: R,
     mut now: N,
 ) -> Result<AcquiredToken, TokenError> {
+    tracing::debug!(
+        profile = request.profile_name,
+        requested_repositories = ?request.repositories,
+        "starting token acquisition"
+    );
     match request.config.profiles.get(request.profile_name) {
-        Some(ProfileConfig::Root(profile)) => acquire_root(request, profile, now()),
-        Some(ProfileConfig::Derived(_)) => acquire_derived(client, request, resolve_auto, &mut now),
+        Some(ProfileConfig::Root(profile)) => {
+            tracing::debug!(
+                profile = request.profile_name,
+                profile_kind = "root",
+                "resolved token profile"
+            );
+            acquire_root(request, profile, now())
+        }
+        Some(ProfileConfig::Derived(_)) => {
+            tracing::debug!(
+                profile = request.profile_name,
+                profile_kind = "derived",
+                "resolved token profile"
+            );
+            acquire_derived(client, request, resolve_auto, &mut now)
+        }
         None => Err(TokenError::ProfileNotFound(request.profile_name.to_owned())),
     }
 }
@@ -50,6 +69,7 @@ fn acquire_root(
     }
     let entry = load_valid_root_entry(request.cache_dir, request.profile_name, profile, now)?
         .ok_or_else(|| TokenError::NoRootTokenCached(request.profile_name.to_owned()))?;
+    tracing::debug!(profile = request.profile_name, expires_at = %entry.expires_at, "returning cached root token");
     Ok(AcquiredToken {
         access_token: entry.access_token,
         expires_at: entry.expires_at,
@@ -82,6 +102,15 @@ fn acquire_derived<
     );
     let generation = prepared.root.generation_fingerprint();
     let cache_key = compute_cache_key(request.profile_name, &prepared.scope);
+    tracing::debug!(
+        profile = request.profile_name,
+        source_profile = prepared.profile.source,
+        account = prepared.source.github_app.account,
+        repo_scope = prepared.scope,
+        permissions = ?prepared.permissions,
+        cache_key,
+        "prepared derived token acquisition"
+    );
     let provenance = DerivedProvenance {
         profile_name: request.profile_name,
         source_name: &prepared.profile.source,
@@ -91,9 +120,21 @@ fn acquire_derived<
         source_app: &prepared.source.github_app,
     };
     let renewal = match classify_derived_entry(request.cache_dir, &cache_key, &provenance, now())? {
-        CachedDerived::Fresh(entry) => return Ok(acquired_derived(entry)),
-        CachedDerived::Renewable(entry) => Some(entry),
-        CachedDerived::MissingOrUnsafe => None,
+        CachedDerived::Fresh(entry) => {
+            tracing::debug!(profile = request.profile_name, expires_at = %entry.expires_at, "returning fresh cached derived token");
+            return Ok(acquired_derived(entry));
+        }
+        CachedDerived::Renewable(entry) => {
+            tracing::debug!(profile = request.profile_name, expires_at = %entry.expires_at, "cached derived token is in the renewal window");
+            Some(entry)
+        }
+        CachedDerived::MissingOrUnsafe => {
+            tracing::debug!(
+                profile = request.profile_name,
+                "no reusable derived token is cached; a new token is required"
+            );
+            None
+        }
     };
     mint_and_persist(
         client,
@@ -130,6 +171,11 @@ fn classify_derived_entry(
     now: OffsetDateTime,
 ) -> Result<CachedDerived, TokenError> {
     let Some(entry) = load_cache_entry(cache_dir, cache_key)? else {
+        tracing::debug!(
+            profile = provenance.profile_name,
+            cache_key,
+            "derived token cache miss"
+        );
         return Ok(CachedDerived::MissingOrUnsafe);
     };
     if entry.profile() != provenance.profile_name {
@@ -140,16 +186,34 @@ fn classify_derived_entry(
     }
     match entry {
         CacheEntry::Derived(entry) => {
-            let matches_provenance = entry.version == CACHE_SCHEMA_VERSION
-                && entry.source_profile == provenance.source_name
-                && super::provenance::matches(
-                    provenance.source_app,
-                    &entry.source_authority_fingerprint,
-                )
-                && entry.repo_scope == provenance.canonical_scope
-                && entry.policy_fingerprint == provenance.policy
-                && entry.parent_generation == provenance.parent_generation;
-            if !matches_provenance || !entry.expires_at.is_safe_to_handoff_at(now) {
+            let rejection = if entry.version != CACHE_SCHEMA_VERSION {
+                Some("schema version is not current")
+            } else if entry.source_profile != provenance.source_name {
+                Some("source profile changed")
+            } else if !super::provenance::matches(
+                provenance.source_app,
+                &entry.source_authority_fingerprint,
+            ) {
+                Some("source GitHub App authority changed")
+            } else if entry.repo_scope != provenance.canonical_scope {
+                Some("repository scope changed")
+            } else if entry.policy_fingerprint != provenance.policy {
+                Some("permissions or target account changed")
+            } else if entry.parent_generation != provenance.parent_generation {
+                Some("parent root token generation changed")
+            } else if !entry.expires_at.is_safe_to_handoff_at(now) {
+                Some("token is expired or inside the handoff safety margin")
+            } else {
+                None
+            };
+            if let Some(reason) = rejection {
+                tracing::debug!(
+                    profile = provenance.profile_name,
+                    cache_key,
+                    expires_at = %entry.expires_at,
+                    reason,
+                    "cached derived token was rejected"
+                );
                 Ok(CachedDerived::MissingOrUnsafe)
             } else if entry.expires_at.is_due_for_renewal_at(now) {
                 Ok(CachedDerived::Renewable(entry))
@@ -189,6 +253,13 @@ fn mint_and_persist<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
         .client_secret
         .as_deref()
         .ok_or_else(|| TokenError::ClientSecretRequired(mint.prepared.profile.source.clone()))?;
+    tracing::debug!(
+        profile = request.profile_name,
+        source_profile = mint.prepared.profile.source,
+        repo_scope = mint.prepared.scope,
+        renewal = mint.renewal.is_some(),
+        "minting derived token"
+    );
     let request_time = now();
     if !mint
         .prepared
@@ -197,9 +268,16 @@ fn mint_and_persist<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
         .is_safe_to_handoff_at(request_time)
         && let Some(entry) = mint.renewal
     {
+        tracing::debug!(
+            profile = request.profile_name,
+            root_expires_at = %mint.prepared.root.expires_at,
+            derived_expires_at = %entry.expires_at,
+            "root token cannot safely mint a replacement; returning provenance-valid cached derived token"
+        );
         return Ok(acquired_derived(entry));
     }
     let issued = super::scoped::issue(client, &mint.prepared, request_time, now)?;
+    tracing::debug!(profile = request.profile_name, expires_at = %issued.expires_at, "received valid derived token from GitHub");
     let candidate = CacheEntry::Derived(DerivedCacheEntry {
         version: CACHE_SCHEMA_VERSION,
         profile: request.profile_name.to_owned(),
@@ -228,6 +306,10 @@ fn mint_and_persist<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     let saved = match persistence {
         Ok(result) => result,
         Err(crate::cache::CacheError::RootGenerationChanged) => {
+            tracing::debug!(
+                profile = request.profile_name,
+                "root token generation changed while persisting derived token; revoking candidate"
+            );
             return Err(revoke_with_context(
                 client,
                 mint.prepared.source,
@@ -236,6 +318,7 @@ fn mint_and_persist<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
             ));
         }
         Err(error) => {
+            tracing::debug!(profile = request.profile_name, error = %error, "failed to persist derived token; revoking candidate");
             return Err(revoke_with_context(
                 client,
                 mint.prepared.source,
@@ -244,22 +327,54 @@ fn mint_and_persist<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
             ));
         }
     };
+    finish_persisted_candidate(
+        client,
+        request,
+        mint.prepared.source,
+        secret,
+        candidate,
+        saved,
+    )
+}
+
+fn finish_persisted_candidate<C: ScopedTokenClient>(
+    client: &C,
+    request: &AcquireRequest<'_>,
+    source: &crate::config::RootProfile,
+    secret: &str,
+    candidate: CacheEntry,
+    saved: PersistedCandidate,
+) -> Result<AcquiredToken, TokenError> {
     match saved {
-        PersistedCandidate::Saved(SaveCacheEntry::Saved) => Ok(acquired_candidate(candidate)),
+        PersistedCandidate::Saved(SaveCacheEntry::Saved) => {
+            tracing::debug!(
+                profile = request.profile_name,
+                "persisted new derived token"
+            );
+            Ok(acquired_candidate(candidate))
+        }
         PersistedCandidate::Saved(SaveCacheEntry::Retained(retained))
         | PersistedCandidate::Renewed(ReplaceCacheEntry::Retained(retained)) => {
+            tracing::debug!(
+                profile = request.profile_name,
+                "compatible concurrent derived token won the cache race; revoking unused candidate"
+            );
             revoke_candidate(
                 client,
                 request,
-                &mint.prepared.source.github_app.client_id,
+                &source.github_app.client_id,
                 secret,
                 &candidate,
             )?;
             acquired_retained(*retained)
         }
         PersistedCandidate::Renewed(ReplaceCacheEntry::Replaced(displaced)) => {
+            tracing::debug!(
+                profile = request.profile_name,
+                "persisted renewed derived token; revoking displaced token"
+            );
             if let Err(source) = client.delete_token(
-                &mint.prepared.source.github_app.client_id,
+                &source.github_app.client_id,
                 secret,
                 displaced.access_token().as_ref(),
             ) {

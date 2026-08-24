@@ -6,6 +6,11 @@ use std::fmt;
 pub enum TokenError {
     Cache(crate::cache::CacheError),
     GitHub(GitHubError),
+    ScopedTokenForbidden {
+        profile: String,
+        source_profile: String,
+        source: GitHubError,
+    },
     Repository(RepositoryError),
     ProfileNotFound(String),
     SourceProfileNotRoot {
@@ -48,6 +53,14 @@ impl fmt::Display for TokenError {
         match self {
             Self::Cache(error) => write!(f, "cache error: {error}"),
             Self::GitHub(error) => write!(f, "github error: {error}"),
+            Self::ScopedTokenForbidden {
+                profile,
+                source_profile,
+                source,
+            } => write!(
+                f,
+                "github rejected the scoped token request for derived profile '{profile}': {source}. The requested permissions or repository access likely exceed the GitHub App installation for source profile '{source_profile}'; check the App installation in GitHub settings and the derived profile's `permissions` and `repo` in profiles.toml"
+            ),
             Self::Repository(error) => write!(f, "{error}"),
             Self::ProfileNotFound(profile) => {
                 write!(f, "profile '{profile}' is not defined in configuration")
@@ -121,7 +134,9 @@ impl std::error::Error for TokenError {
             Self::GitHub(error) => Some(error),
             Self::Repository(error) => Some(error),
             Self::Random(error) => Some(error),
-            Self::RevocationFailed { source, .. } => Some(source),
+            Self::ScopedTokenForbidden { source, .. } | Self::RevocationFailed { source, .. } => {
+                Some(source)
+            }
             _ => None,
         }
     }

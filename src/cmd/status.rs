@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::Path;
 use time::OffsetDateTime;
-use tracing::info;
+use tracing::{debug, info};
 
 pub fn run_status(args: &GhstCli, _cmd: &StatusCmd) -> Result<(), CmdError> {
     let config = crate::config::load(args.config.as_deref())?;
@@ -25,6 +25,7 @@ pub fn print_status<W: Write>(
     now: OffsetDateTime,
 ) -> Result<(), CmdError> {
     let inspections = inspect_cache(cache_dir)?;
+    debug!(cache_dir = %cache_dir.display(), entries = inspections.len(), "inspected token cache for status");
     let mut grouped: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
     let mut unmatched = Vec::new();
     for (index, inspection) in inspections.iter().enumerate() {
@@ -56,6 +57,11 @@ pub fn print_status<W: Write>(
         }
         writeln!(writer)?;
     }
+    debug!(
+        configured_profiles = config.profiles.len(),
+        unmatched_entries = unmatched.len(),
+        "grouped cached tokens by configured profile"
+    );
     for index in unmatched {
         writeln!(writer, "  Unmatched Entry [{}]", inspections[index].label)?;
         write_entry(writer, &inspections[index], now)?;

@@ -62,6 +62,36 @@ GitHub issues a refresh token alongside expiring user access tokens during Devic
 
 This ensures that credentials issued to local tools cannot be silently renewed or extended beyond their initial lease.
 
+### Can a trusted operator bypass `ghst` using the App's client ID?
+**Yes.** A GitHub App client ID is public by design. Anyone who knows it can start Device Flow,
+authorize the flow as themselves, receive the user access token and refresh token in their own
+client, and retain the refresh token instead of destroying it as `ghst` does. Refreshing a token
+issued through Device Flow does not require the App's client secret.
+
+This is why `ghst` is a delegation boundary between a trusted operator and a less-trusted local
+tool, not an insider-resistant control over the operator. The resulting token is still limited by
+the intersection of that user's access and the App installation's permissions and repositories,
+but `ghst` cannot enforce its local token-lifetime policy on an authorization completed outside
+`ghst`.
+
+A scheduled `ghst revoke --all` job does not impose a 24-hour maximum on this path: it can revoke
+only tokens present in that workstation's cache and cannot discover an independently retained
+refresh token. GitHub provides endpoints to revoke a known token or one user's App authorization,
+but revoking the authorization requires a valid access token for that user; GitHub does not
+document an App-wide endpoint that enumerates and revokes every user's authorization. Individual
+users can revoke the App under **Settings → Applications → Authorized GitHub Apps**. An
+organization owner can suspend or uninstall the App installation to block its access to that
+organization, but cannot revoke members' personal App authorizations, and suspension is an access
+block rather than destruction of their refresh tokens.
+
+Organizations that do not trust operators to retain only short-lived credentials need a centrally
+administered boundary outside this local CLI. Install the dedicated App only on the required
+repositories, grant it the smallest permission ceiling, limit who can access those repositories,
+and use organization or enterprise credential controls where available. See GitHub's documentation
+on [refreshing user access tokens](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/refreshing-user-access-tokens),
+[OAuth authorization revocation](https://docs.github.com/en/rest/apps/oauth-applications?apiVersion=2022-11-28#delete-an-app-authorization),
+and [revoking GitHub App authorization](https://docs.github.com/en/apps/using-github-apps/reviewing-and-revoking-authorization-of-github-apps).
+
 ### How does `ghst` prevent OAuth Device Flow phishing?
 Anyone who knows a public GitHub App `client_id` can initiate a Device Flow. An attacker could attempt to trick a user into approving an unauthorized device code.
 

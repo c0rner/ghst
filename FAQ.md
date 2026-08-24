@@ -60,7 +60,10 @@ See [No Private Keys](SECURITY.md#no-private-keys) for the required App configur
 ### What happens to OAuth refresh tokens?
 GitHub issues a refresh token alongside expiring user access tokens during Device Flow. **`ghst` destroys refresh tokens in memory after parsing and never persists them to disk.**
 
-This ensures that credentials issued to local tools cannot be silently renewed or extended beyond their initial lease.
+This ensures that credentials issued through `ghst` cannot be silently renewed by local tools.
+GitHub documents a six-month lifetime for each refresh token, but successful refresh rotates both
+the access token and refresh token, so an authorization can continue beyond six months. A refresh
+token obtained and retained outside `ghst` is outside this local guarantee.
 
 ### Can a trusted operator bypass `ghst` using the App's client ID?
 **Yes.** A GitHub App client ID is public by design. Anyone who knows it can start Device Flow,
@@ -79,6 +82,8 @@ administered boundary outside this local CLI. Install the dedicated App only on 
 repositories, grant it the smallest permission ceiling, limit who can access those repositories,
 and use organization or enterprise credential controls where available. See GitHub's documentation
 on [refreshing user access tokens](https://docs.github.com/en/apps/creating-github-apps/authenticating-with-a-github-app/refreshing-user-access-tokens).
+For offboarding and suspected unknown refresh tokens, follow the centralized controls in
+[Responding to Credential or Configuration Exposure](SECURITY.md#responding-to-credential-or-configuration-exposure).
 
 ### How does `ghst` prevent OAuth Device Flow phishing?
 Anyone who knows a public GitHub App `client_id` can initiate a Device Flow. An attacker could attempt to trick a user into approving an unauthorized device code.
@@ -179,7 +184,7 @@ Many AI coding agents and git helpers check for existing ambient credentials on 
    ghst run --repo auto -- claude
    ```
 4. Block access to host SSH keys and dotfiles by combining `ghst` with a sandbox (e.g., [`nono`](https://nono.sh/)).
-5. At the end of the day or when switching contexts, clean up all cached tokens:
+5. At the end of the day or when switching contexts, clean up all locally cached credentials:
    ```bash
    ghst revoke --all
    ```

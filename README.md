@@ -151,10 +151,12 @@ ghst token --profile reader --format env   # Emit a reusable token as environmen
 ghst profiles -v                           # Inspect configured profiles
 ghst status                                # Inspect cached token status and lifetimes
 ghst prune                                 # Retry abandoned-run cleanup and remove expired entries
-ghst revoke --all                          # Revoke cached credentials and remove local entries
+ghst revoke --all                          # Revoke all locally cached credentials
 ```
 
 Run `ghst --help` or `ghst <command> --help` for the complete command-line interface.
+If you suspect refresh tokens outside the local cache, follow the App-level controls in
+[Responding to Credential or Configuration Exposure](SECURITY.md#responding-to-credential-or-configuration-exposure).
 
 ## Security boundaries
 

@@ -74,7 +74,8 @@ fn mint_with_clock<
     let epoch = cache_epoch(request.cache_dir)?;
     let generation = prepared.root.generation_fingerprint();
     let request_time = now();
-    let issued = super::scoped::issue(client, &prepared, request_time, &mut now)?;
+    let issued =
+        super::scoped::issue(client, &prepared, request.cache_dir, request_time, &mut now)?;
     tracing::debug!(profile = request.profile_name, expires_at = %issued.expires_at, "received valid run token from GitHub");
     let candidate = CacheEntry::Run(RunCacheEntry {
         version: RUN_CACHE_SCHEMA_VERSION,

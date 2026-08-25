@@ -1,8 +1,11 @@
 use super::{
     IssuedScopedToken, ScopedTokenClient, ScopedTokenRequest, TokenError, load_current_root_entry,
-    revoke_with_context, validate_scoped_expiry,
+    revoke_with_context, root_cache_key, validate_scoped_expiry,
 };
-use crate::cache::{AccessToken, RootCacheEntry, TokenExpiry};
+use crate::cache::{
+    AccessToken, CacheError, DeleteRootOutcome, RootCacheEntry, TokenExpiry,
+    delete_root_if_generation,
+};
 use crate::config::{Config, DerivedProfile, ProfileConfig, RootProfile};
 use crate::repository::{RepositoryError, RepositorySelection};
 use std::collections::BTreeMap;
@@ -91,6 +94,7 @@ pub(super) fn prepare<'a>(
 pub(super) fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     client: &C,
     prepared: &PreparedScopedToken<'_>,
+    cache_dir: &Path,
     request_time: OffsetDateTime,
     now: &mut N,
 ) -> Result<ValidatedScopedToken, TokenError> {
@@ -127,6 +131,9 @@ pub(super) fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     });
     let response = match response {
         Ok(response) => response,
+        Err(crate::github::GitHubError::Http {
+            status: 401 | 404, ..
+        }) => return Err(permanent_rejection_error(prepared, cache_dir)?),
         Err(source @ crate::github::GitHubError::Http { status: 403, .. }) => {
             tracing::debug!(
                 source_profile = prepared.profile.source,
@@ -170,4 +177,32 @@ pub(super) fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
             ))
         }
     }
+}
+
+fn permanent_rejection_error(
+    prepared: &PreparedScopedToken<'_>,
+    cache_dir: &Path,
+) -> Result<TokenError, CacheError> {
+    let source_profile = &prepared.profile.source;
+    let generation = prepared.root.generation_fingerprint();
+    let outcome =
+        delete_root_if_generation(cache_dir, &root_cache_key(source_profile), &generation)?;
+    match outcome {
+        DeleteRootOutcome::Deleted => tracing::warn!(
+            source_profile,
+            "evicted cached root token after GitHub permanently rejected it"
+        ),
+        DeleteRootOutcome::Missing => tracing::debug!(
+            source_profile,
+            "rejected root token was already removed while minting"
+        ),
+        DeleteRootOutcome::Changed => {
+            tracing::debug!(
+                source_profile,
+                "rejected root token was replaced while minting"
+            );
+            return Ok(TokenError::RootGenerationChanged(source_profile.clone()));
+        }
+    }
+    Ok(TokenError::NoSourceTokenCached(source_profile.clone()))
 }

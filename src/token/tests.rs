@@ -132,6 +132,18 @@ fn no_response_client() -> MockClient {
     }
 }
 
+fn failing_scoped_client(status: u16) -> MockClient {
+    MockClient {
+        scoped: RefCell::new(Some(Err(GitHubError::Http {
+            status,
+            message: "request rejected".into(),
+        }))),
+        request: RefCell::new(None),
+        revoked: RefCell::new(Vec::new()),
+        revoke_fails: false,
+    }
+}
+
 #[test]
 fn root_lifetime_requires_a_representable_value_beyond_the_margin() {
     let now = OffsetDateTime::from_unix_timestamp(1_700_000_000)
@@ -359,6 +371,77 @@ fn derived_acquisition_sends_exact_narrowing_request() {
 }
 
 #[test]
+fn permanent_scoped_rejection_evicts_the_rejected_root() {
+    let config: Config = CONFIG.parse().unwrap();
+    for status in [401, 404] {
+        let now = OffsetDateTime::now_utc();
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        cache_root(&cache_dir, now, "rejected-root");
+        let result = acquire(
+            &failing_scoped_client(status),
+            &AcquireRequest {
+                config: &config,
+                cache_dir: &cache_dir,
+                profile_name: "reader",
+                repositories: &[],
+            },
+            || panic!("auto not expected"),
+        );
+
+        assert!(
+            matches!(result, Err(TokenError::NoSourceTokenCached(profile)) if profile == "developer")
+        );
+        assert!(
+            load_cache_entry(&cache_dir, &root_cache_key("developer"))
+                .unwrap()
+                .is_none()
+        );
+    }
+}
+
+#[test]
+fn scoped_policy_and_transient_rejections_retain_the_root() {
+    let config: Config = CONFIG.parse().unwrap();
+    for status in [403, 500] {
+        let now = OffsetDateTime::now_utc();
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        cache_root(&cache_dir, now, "retained-root");
+        let result = acquire(
+            &failing_scoped_client(status),
+            &AcquireRequest {
+                config: &config,
+                cache_dir: &cache_dir,
+                profile_name: "reader",
+                repositories: &[],
+            },
+            || panic!("auto not expected"),
+        );
+
+        match status {
+            403 => assert!(matches!(
+                result,
+                Err(TokenError::ScopedTokenForbidden { .. })
+            )),
+            500 => assert!(matches!(
+                result,
+                Err(TokenError::GitHub(GitHubError::Http { status: 500, .. }))
+            )),
+            _ => unreachable!("test status is fixed"),
+        }
+        assert_eq!(
+            load_cache_entry(&cache_dir, &root_cache_key("developer"))
+                .unwrap()
+                .unwrap()
+                .access_token()
+                .as_ref(),
+            "retained-root"
+        );
+    }
+}
+
+#[test]
 fn invalid_scoped_response_is_revoked_without_cache_entry() {
     let now = OffsetDateTime::now_utc();
     let temp = tempfile::tempdir().unwrap();
@@ -394,6 +477,73 @@ struct GenerationChangingClient<'a> {
     cache_dir: &'a Path,
     now: OffsetDateTime,
     revoked: RefCell<Vec<String>>,
+}
+
+struct RejectingGenerationChangingClient<'a> {
+    cache_dir: &'a Path,
+    now: OffsetDateTime,
+}
+
+impl RevokeTokenClient for RejectingGenerationChangingClient<'_> {
+    fn delete_token(
+        &self,
+        _client_id: &str,
+        _client_secret: &str,
+        _access_token: &str,
+    ) -> Result<(), GitHubError> {
+        Ok(())
+    }
+}
+
+impl ScopedTokenClient for RejectingGenerationChangingClient<'_> {
+    fn create_scoped_token(
+        &self,
+        _request: &ScopedTokenRequest<'_>,
+    ) -> Result<IssuedScopedToken, GitHubError> {
+        let key = root_cache_key("developer");
+        delete_cache_entry(self.cache_dir, &key).unwrap();
+        cache_root(self.cache_dir, self.now, "replacement-root");
+        Err(GitHubError::Http {
+            status: 401,
+            message: "rejected old root".into(),
+        })
+    }
+}
+
+#[test]
+fn permanent_rejection_preserves_a_concurrent_root_replacement() {
+    let now = OffsetDateTime::now_utc();
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    cache_root(&cache_dir, now, "rejected-root");
+    let client = RejectingGenerationChangingClient {
+        cache_dir: &cache_dir,
+        now,
+    };
+    let config: Config = CONFIG.parse().unwrap();
+
+    let result = acquire(
+        &client,
+        &AcquireRequest {
+            config: &config,
+            cache_dir: &cache_dir,
+            profile_name: "reader",
+            repositories: &[],
+        },
+        || panic!("auto not expected"),
+    );
+
+    assert!(
+        matches!(result, Err(TokenError::RootGenerationChanged(profile)) if profile == "developer")
+    );
+    assert_eq!(
+        load_cache_entry(&cache_dir, &root_cache_key("developer"))
+            .unwrap()
+            .unwrap()
+            .access_token()
+            .as_ref(),
+        "replacement-root"
+    );
 }
 
 impl RevokeTokenClient for GenerationChangingClient<'_> {

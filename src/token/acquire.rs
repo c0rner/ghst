@@ -276,7 +276,8 @@ fn mint_and_persist<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
         );
         return Ok(acquired_derived(entry));
     }
-    let issued = super::scoped::issue(client, &mint.prepared, request_time, now)?;
+    let issued =
+        super::scoped::issue(client, &mint.prepared, request.cache_dir, request_time, now)?;
     tracing::debug!(profile = request.profile_name, expires_at = %issued.expires_at, "received valid derived token from GitHub");
     let candidate = CacheEntry::Derived(DerivedCacheEntry {
         version: CACHE_SCHEMA_VERSION,

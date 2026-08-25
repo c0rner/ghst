@@ -125,8 +125,13 @@ impl RepositorySelection {
     ) -> Result<Self, RepositoryError> {
         let configured_value;
         let values = if cli_values.is_empty() {
-            configured_value = configured.to_string();
-            std::slice::from_ref(&configured_value)
+            match configured {
+                RepoScope::Multiple(repositories) => repositories,
+                RepoScope::All | RepoScope::Auto | RepoScope::Specific(_) => {
+                    configured_value = configured.to_string();
+                    std::slice::from_ref(&configured_value)
+                }
+            }
         } else {
             cli_values
         };
@@ -231,25 +236,48 @@ mod tests {
             ),
             Err(RepositoryError::InvalidScope { .. })
         ));
+        assert!(matches!(
+            RepositorySelection::resolve(
+                &[],
+                &RepoScope::Multiple(Vec::from(["all".to_owned(), "acme/api".to_owned(),])),
+                "acme",
+                no_auto
+            ),
+            Err(RepositoryError::InvalidScope { .. })
+        ));
     }
 
     #[test]
-    fn resolves_auto_and_sorts_and_deduplicates() {
-        let values = [
+    fn resolves_configured_auto_and_sorts_and_deduplicates() {
+        let configured = RepoScope::Multiple(Vec::from([
             "acme/zeta".into(),
             "auto".into(),
             "auto".into(),
             "acme/zeta".into(),
             "acme/alpha".into(),
-        ];
+        ]));
         let auto_calls = std::cell::Cell::new(0);
-        let selection = RepositorySelection::resolve(&values, &RepoScope::All, "acme", || {
+        let selection = RepositorySelection::resolve(&[], &configured, "acme", || {
             auto_calls.set(auto_calls.get() + 1);
             Ok("acme/middle".into())
         })
         .unwrap();
         assert_eq!(selection.canonical(), "acme/alpha,acme/middle,acme/zeta");
         assert_eq!(auto_calls.get(), 1);
+    }
+
+    #[test]
+    fn cli_values_replace_the_complete_configured_selection() {
+        let configured =
+            RepoScope::Multiple(Vec::from(["acme/configured".to_owned(), "auto".to_owned()]));
+        let selection = RepositorySelection::resolve(
+            &["acme/override".to_owned()],
+            &configured,
+            "acme",
+            no_auto,
+        )
+        .unwrap();
+        assert_eq!(selection.canonical(), "acme/override");
     }
 
     #[test]
@@ -267,6 +295,10 @@ mod tests {
                 Err(RepositoryError::InvalidScope { .. })
             ));
         }
+        assert!(matches!(
+            RepositorySelection::resolve(&[], &RepoScope::Multiple(Vec::new()), "owner", no_auto),
+            Err(RepositoryError::InvalidScope { .. })
+        ));
     }
 
     #[test]
@@ -285,6 +317,12 @@ mod tests {
 
         assert!(matches!(
             RepositorySelection::resolve(&["other/api".into()], &RepoScope::All, "acme", no_auto),
+            Err(RepositoryError::OwnerMismatch { .. })
+        ));
+        assert!(matches!(
+            RepositorySelection::resolve(&["auto".into()], &RepoScope::All, "acme", || {
+                Ok("other/api".into())
+            }),
             Err(RepositoryError::OwnerMismatch { .. })
         ));
     }

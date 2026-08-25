@@ -801,6 +801,34 @@ permissions = { contents = "read" }
     }
 
     #[test]
+    fn derived_profile_accepts_multiple_repository_selections() {
+        let config: Config = VALID_CONFIG
+            .replace(
+                "repo = \"auto\"",
+                "repo = [\"acme/application\", \"acme/shared-library\", \"auto\"]",
+            )
+            .parse()
+            .unwrap();
+        let ProfileConfig::Derived(reader) = config.profiles.get("reader").unwrap() else {
+            panic!("expected derived profile");
+        };
+        assert_eq!(
+            reader.repo,
+            RepoScope::Multiple(Vec::from([
+                "acme/application".to_owned(),
+                "acme/shared-library".to_owned(),
+                "auto".to_owned(),
+            ]))
+        );
+
+        let invalid = VALID_CONFIG.replace("repo = \"auto\"", "repo = [\"acme/api\", 1]");
+        assert!(matches!(
+            invalid.parse::<Config>(),
+            Err(ConfigError::Parse(_))
+        ));
+    }
+
+    #[test]
     fn test_root_profile_rejects_repository_scope() {
         let config = r#"
 version = 1

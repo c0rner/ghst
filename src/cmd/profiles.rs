@@ -1,5 +1,5 @@
 use crate::cmd::{CmdError, GhstCli, ProfilesCmd};
-use crate::config::{Config, ProfileConfig, RepoScope};
+use crate::config::{Config, ProfileConfig};
 use std::io::{self, Write};
 
 /// Handles execution of the `ghst profiles` subcommand.
@@ -46,12 +46,7 @@ fn print_profiles<W: Write>(writer: &mut W, config: &Config, verbose: bool) -> i
                 }
                 ProfileConfig::Derived(derived) => {
                     writeln!(writer, "    Source:      {}", derived.source)?;
-                    let repo_str = match &derived.repo {
-                        RepoScope::All => "all",
-                        RepoScope::Auto => "auto",
-                        RepoScope::Specific(r) => r.as_str(),
-                    };
-                    writeln!(writer, "    Repo Scope:  {repo_str}")?;
+                    writeln!(writer, "    Repo Scope:  {}", derived.repo)?;
                     if !derived.permissions.is_empty() {
                         let perms = derived
                             .permissions
@@ -93,7 +88,7 @@ github_app.client_secret = "secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 [profile.reader]
 source = "developer"
 description = "Read-only access to repository contents, pull requests, and issues"
-repo = "auto"
+repo = ["acme-corp/application", "acme-corp/shared-library", "auto"]
 permissions = { contents = "read", pull_requests = "read", issues = "read" }
 "#;
 
@@ -126,7 +121,11 @@ permissions = { contents = "read", pull_requests = "read", issues = "read" }
         assert!(output.contains("    Client ID:   Iv1.8888888888888888"));
         assert!(output.contains("* reader [derived] (default)"));
         assert!(output.contains("    Source:      developer"));
-        assert!(output.contains("    Repo Scope:  auto"));
+        assert!(
+            output.contains(
+                "    Repo Scope:  [acme-corp/application, acme-corp/shared-library, auto]"
+            )
+        );
         assert!(output.contains("    Permissions: contents=read, issues=read, pull_requests=read"));
         assert!(!output.contains("secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"));
     }

@@ -124,6 +124,8 @@ pub enum RepoScope {
     Auto,
     #[serde(untagged)]
     Specific(String),
+    #[serde(untagged)]
+    Multiple(Vec<String>),
 }
 
 impl fmt::Display for RepoScope {
@@ -132,6 +134,7 @@ impl fmt::Display for RepoScope {
             Self::All => write!(f, "all"),
             Self::Auto => write!(f, "auto"),
             Self::Specific(repo) => write!(f, "{repo}"),
+            Self::Multiple(repositories) => write!(f, "[{}]", repositories.join(", ")),
         }
     }
 }

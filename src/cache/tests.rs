@@ -3,8 +3,9 @@ use crate::cache::error::CacheError;
 use crate::cache::fs::{cache_file_path, create_private_tempfile, ensure_cache_dir};
 use crate::cache::key::{compute_cache_key, compute_run_cache_key};
 use crate::cache::storage::{
-    claim_abandoned_run, claim_released_run, delete_cache_entry, delete_run_after_cleanup,
-    load_cache_entry, replace_cache_candidate, save_cache_entry, transition_run_to_running,
+    DeleteRootOutcome, claim_abandoned_run, claim_released_run, delete_cache_entry,
+    delete_root_if_generation, delete_run_after_cleanup, load_cache_entry, replace_cache_candidate,
+    save_cache_entry, transition_run_to_running,
 };
 use crate::cache::types::{
     CACHE_SCHEMA_VERSION, CacheEntry, DerivedCacheEntry, RUN_CACHE_SCHEMA_VERSION,
@@ -88,6 +89,44 @@ fn expiry_policies_have_distinct_exact_boundaries() {
     assert!(
         !TokenExpiry::new(now + Duration::minutes(10) + Duration::seconds(1))
             .is_due_for_renewal_at(now)
+    );
+}
+
+#[test]
+fn root_generation_deletion_is_atomic_compare_and_delete() {
+    let temp = cache_dir();
+    let directory = temp.path().join("cache");
+    let now = OffsetDateTime::now_utc();
+    let rejected = root_entry("rejected", now + Duration::hours(1), "authority");
+    let CacheEntry::Root(rejected_data) = &rejected else {
+        panic!("expected root")
+    };
+    let rejected_generation = rejected_data.generation_fingerprint();
+    save_cache_entry(&directory, &root_key(), &rejected).unwrap();
+
+    assert_eq!(
+        delete_root_if_generation(&directory, &root_key(), &rejected_generation).unwrap(),
+        DeleteRootOutcome::Deleted
+    );
+    assert!(load_cache_entry(&directory, &root_key()).unwrap().is_none());
+    assert_eq!(
+        delete_root_if_generation(&directory, &root_key(), &rejected_generation).unwrap(),
+        DeleteRootOutcome::Missing
+    );
+
+    let replacement = root_entry("replacement", now + Duration::hours(1), "authority");
+    save_cache_entry(&directory, &root_key(), &replacement).unwrap();
+    assert_eq!(
+        delete_root_if_generation(&directory, &root_key(), &rejected_generation).unwrap(),
+        DeleteRootOutcome::Changed
+    );
+    assert_eq!(
+        load_cache_entry(&directory, &root_key())
+            .unwrap()
+            .unwrap()
+            .access_token()
+            .as_ref(),
+        "replacement"
     );
 }
 

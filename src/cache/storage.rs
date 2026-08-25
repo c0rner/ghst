@@ -28,6 +28,13 @@ pub struct RevokeTransaction {
     deleted: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeleteRootOutcome {
+    Deleted,
+    Missing,
+    Changed,
+}
+
 impl RevokeTransaction {
     pub fn entries(&self) -> &[CacheInspection] {
         &self.entries
@@ -431,6 +438,36 @@ pub fn delete_entry_if_unchanged(
         fs::remove_file(path).map_err(CacheError::Io)?;
         sync_cache_dir(cache_dir)?;
         Ok(true)
+    })
+}
+
+pub fn delete_root_if_generation(
+    cache_dir: &Path,
+    cache_key: &str,
+    expected_generation: &str,
+) -> Result<DeleteRootOutcome, CacheError> {
+    if !cache_dir_exists(cache_dir)? {
+        return Ok(DeleteRootOutcome::Missing);
+    }
+    validate_cache_key(cache_key)?;
+    with_cache_lock(cache_dir, LockMode::Exclusive, || {
+        let path = cache_file_path(cache_dir, cache_key);
+        let Some(entry) = read_cache_entry(&path)? else {
+            return Ok(DeleteRootOutcome::Missing);
+        };
+        validate_entry_key(cache_key, &entry)?;
+        match entry {
+            CacheEntry::Root(entry) if entry.generation_fingerprint() == expected_generation => {
+                fs::remove_file(path).map_err(CacheError::Io)?;
+                sync_cache_dir(cache_dir)?;
+                Ok(DeleteRootOutcome::Deleted)
+            }
+            CacheEntry::Root(_) => Ok(DeleteRootOutcome::Changed),
+            other => Err(CacheError::UnexpectedKind {
+                expected: "root",
+                actual: other.kind_name(),
+            }),
+        }
     })
 }
 

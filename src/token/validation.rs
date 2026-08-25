@@ -16,6 +16,7 @@ pub fn validate_root_expiry(
     })?;
     let expiry = now
         .checked_add(Duration::seconds(seconds))
+        .and_then(|value| value.replace_nanosecond(0).ok())
         .map(TokenExpiry::new)
         .ok_or_else(|| TokenError::InvalidLifetime {
             token_kind: "root",

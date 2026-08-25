@@ -133,6 +133,7 @@ mod tests {
         write_token(&mut json, &token, OutputFormat::Json).unwrap();
         let value: serde_json::Value = serde_json::from_slice(&json).unwrap();
         assert_eq!(value["token"], "secret-token");
+        assert_eq!(value["expires_at"], token.expires_at.to_string());
         assert_eq!(value["profile"], "reader");
         assert_eq!(value["repo"], "acme/api");
     }

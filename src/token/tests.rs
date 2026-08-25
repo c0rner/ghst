@@ -134,7 +134,10 @@ fn no_response_client() -> MockClient {
 
 #[test]
 fn root_lifetime_requires_a_representable_value_beyond_the_margin() {
-    let now = OffsetDateTime::now_utc();
+    let now = OffsetDateTime::from_unix_timestamp(1_700_000_000)
+        .unwrap()
+        .replace_nanosecond(500_000_000)
+        .unwrap();
     for value in [None, Some(0), Some(30), Some(u64::MAX)] {
         assert!(matches!(
             validate_root_expiry(value, now),
@@ -142,9 +145,11 @@ fn root_lifetime_requires_a_representable_value_beyond_the_margin() {
         ));
     }
     let lifetime = 24 * 60 * 60;
+    let expiry = validate_root_expiry(Some(lifetime), now).unwrap().value();
+    assert_eq!(expiry.nanosecond(), 0);
     assert_eq!(
-        validate_root_expiry(Some(lifetime), now).unwrap().value(),
-        now + Duration::hours(24)
+        expiry,
+        OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap() + Duration::hours(24)
     );
 }
 

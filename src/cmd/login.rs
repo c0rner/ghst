@@ -1,6 +1,6 @@
 use crate::browser::{display_auth_instructions, open_auth_url};
 use crate::cache::cache_epoch;
-use crate::cmd::{CmdError, GhstCli, LoginCmd, resolve_profile_name};
+use crate::cmd::{CmdError, GhstCli, LoginCmd, format_human_expiry, resolve_profile_name};
 use crate::config::ProfileConfig;
 use crate::github::{GitHubClient, GitHubError};
 use crate::token::{IssuedRootToken, RootPersistence};
@@ -143,13 +143,15 @@ fn poll_for_authorization(
 fn report_saved(profile_name: &str, status: &crate::token::RootTokenStatus) {
     println!(
         "Successfully authenticated as @{} for profile '{profile_name}'. Root token cached until {}.",
-        status.github_user, status.expires_at
+        status.github_user,
+        format_human_expiry(status.expires_at)
     );
 }
 
 fn report_existing(profile_name: &str, status: &crate::token::RootTokenStatus) {
     println!(
         "Profile '{profile_name}' already has a valid cached root token for @{} (valid until {}).",
-        status.github_user, status.expires_at
+        status.github_user,
+        format_human_expiry(status.expires_at)
     );
 }

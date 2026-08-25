@@ -1,5 +1,5 @@
-use crate::cache::{CacheEntry, CacheInspectionState, format_rfc3339, inspect_cache};
-use crate::cmd::{CmdError, GhstCli, StatusCmd};
+use crate::cache::{CacheEntry, CacheInspectionState, inspect_cache};
+use crate::cmd::{CmdError, GhstCli, StatusCmd, format_human_expiry};
 use crate::config::Config;
 use std::collections::BTreeMap;
 use std::io::{self, Write};
@@ -100,11 +100,7 @@ fn write_entry(
                 };
                 writeln!(writer, "    Run State:   {state}")?;
             }
-            writeln!(
-                writer,
-                "    Expires:     {}",
-                format_rfc3339(expiry.value())
-            )
+            writeln!(writer, "    Expires:     {}", format_human_expiry(expiry))
         }
     }
 }

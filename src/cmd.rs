@@ -15,6 +15,24 @@ use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::str::FromStr;
+use time::{UtcOffset, error::IndeterminateOffset};
+
+use crate::cache::{TokenExpiry, format_rfc3339};
+
+fn format_human_expiry(expiry: TokenExpiry) -> String {
+    format_human_expiry_with_offset(expiry, UtcOffset::local_offset_at(expiry.value()))
+}
+
+fn format_human_expiry_with_offset(
+    expiry: TokenExpiry,
+    offset: Result<UtcOffset, IndeterminateOffset>,
+) -> String {
+    let offset = offset.unwrap_or_else(|error| {
+        tracing::debug!(%error, "could not determine local UTC offset; displaying expiry in UTC");
+        UtcOffset::UTC
+    });
+    format_rfc3339(expiry.value().to_offset(offset))
+}
 
 /// `GhstCli` command line interface
 #[derive(FromArgs, PartialEq, Eq, Debug)]
@@ -201,6 +219,22 @@ fn resolve_profile_name(cli_profile: Option<&str>, config: &Config) -> Result<St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn human_expiry_uses_local_offset_with_utc_fallback() {
+        let expiry =
+            TokenExpiry::new(time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap());
+        let local = UtcOffset::from_hms(5, 30, 0).unwrap();
+
+        assert_eq!(
+            format_human_expiry_with_offset(expiry, Ok(local)),
+            "2023-11-15T03:43:20+05:30"
+        );
+        assert_eq!(
+            format_human_expiry_with_offset(expiry, Err(IndeterminateOffset)),
+            "2023-11-14T22:13:20Z"
+        );
+    }
 
     #[test]
     fn test_login_cmd_parsing() {

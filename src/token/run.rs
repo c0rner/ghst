@@ -16,6 +16,7 @@ pub struct MintRunRequest<'a> {
     pub profile_name: &'a str,
     pub repositories: &'a [String],
     pub wrapper_pid: u32,
+    pub command: &'a str,
 }
 
 pub struct PendingRun {
@@ -83,6 +84,7 @@ fn mint_with_clock<
         state: RunState::Pending,
         wrapper_pid: request.wrapper_pid,
         child_pid: None,
+        command: request.command.to_owned(),
         profile: request.profile_name.to_owned(),
         source_profile: prepared.profile.source.clone(),
         source_authority_fingerprint: crate::cache::authority_fingerprint(
@@ -271,6 +273,7 @@ permissions = { contents = "read" }
             profile_name: "reader",
             repositories: &[],
             wrapper_pid: std::process::id(),
+            command: "true",
         };
         let first = mint(&client, &request, || panic!("auto is not used")).unwrap();
         let second = mint(&client, &request, || panic!("auto is not used")).unwrap();
@@ -293,6 +296,7 @@ permissions = { contents = "read" }
                 profile_name: "developer",
                 repositories: &[],
                 wrapper_pid: std::process::id(),
+                command: "true",
             },
             || panic!("auto is not used"),
         );

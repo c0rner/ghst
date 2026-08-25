@@ -456,6 +456,7 @@ permissions = { contents = "read" }
             state,
             wrapper_pid,
             child_pid,
+            command: "true".into(),
             profile: "reader".into(),
             source_profile: "developer".into(),
             source_authority_fingerprint: authority_fingerprint("id", "acme"),

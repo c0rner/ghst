@@ -4,9 +4,17 @@ All notable changes to `ghst` are documented in this file.
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-08-26
+
 ### Added
 
-- Show cache slot IDs in `ghst status` and accept `ghst revoke <id>` to revoke one cached credential.
+- Show cache slot IDs in `ghst status` and accept `ghst revoke <id>` to revoke one cached credential ([#46]).
+- Display child process ID and executed command line in `ghst status` output for running sessions ([#44]).
+
+### Fixed
+
+- Evict cached root token on permanent GitHub authorization rejection (HTTP 401/404) during scoped-token minting ([#43]).
+- Display token expiry timestamps in the system local timezone (with UTC fallback) and normalize root token expiry to whole-second precision ([#42]).
 
 ## [0.5.1] - 2026-08-25
 
@@ -26,10 +34,15 @@ All notable changes to `ghst` are documented in this file.
 
 - First public release.
 
-[Unreleased]: https://github.com/c0rner/ghst/compare/v0.5.1...HEAD
+[Unreleased]: https://github.com/c0rner/ghst/compare/v0.5.2...HEAD
+[0.5.2]: https://github.com/c0rner/ghst/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/c0rner/ghst/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/c0rner/ghst/releases/tag/v0.5.0
 [#29]: https://github.com/c0rner/ghst/pull/29
 [#34]: https://github.com/c0rner/ghst/pull/34
 [#38]: https://github.com/c0rner/ghst/pull/38
 [#39]: https://github.com/c0rner/ghst/pull/39
+[#42]: https://github.com/c0rner/ghst/pull/42
+[#43]: https://github.com/c0rner/ghst/pull/43
+[#44]: https://github.com/c0rner/ghst/pull/44
+[#46]: https://github.com/c0rner/ghst/pull/46

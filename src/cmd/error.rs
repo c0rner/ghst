@@ -36,7 +36,11 @@ pub enum CmdError {
     PruneIncomplete {
         failures: usize,
     },
-    RevokeAllRequired,
+    RevokeSelectionRequired,
+    RevokeSelectionConflict,
+    InvalidRevokeId,
+    RevokeTargetNotFound(String),
+    RevokeTargetAmbiguous(String),
     RevokeIncomplete {
         failures: usize,
     },
@@ -104,12 +108,26 @@ impl fmt::Display for CmdError {
             Self::PruneIncomplete { failures } => {
                 write!(f, "cache pruning was incomplete ({failures} failure(s))")
             }
-            Self::RevokeAllRequired => {
+            Self::RevokeSelectionRequired => write!(
+                f,
+                "revoke requires a cache slot ID from `ghst status` or `--all`"
+            ),
+            Self::RevokeSelectionConflict => {
                 write!(
                     f,
-                    "revoke requires `--all` because it affects every cached credential"
+                    "revoke accepts either a cache slot ID or `--all`, not both"
                 )
             }
+            Self::InvalidRevokeId => {
+                write!(f, "invalid cache slot ID; copy an ID from `ghst status`")
+            }
+            Self::RevokeTargetNotFound(id) => {
+                write!(f, "no cached credential found for ID '{id}'")
+            }
+            Self::RevokeTargetAmbiguous(id) => write!(
+                f,
+                "cache slot ID '{id}' is ambiguous; run `ghst status` and use the longer ID shown"
+            ),
             Self::RevokeIncomplete { failures } => {
                 write!(
                     f,
@@ -142,7 +160,11 @@ impl std::error::Error for CmdError {
             | Self::OAuthExpired
             | Self::OAuthAccessDenied
             | Self::PruneIncomplete { .. }
-            | Self::RevokeAllRequired
+            | Self::RevokeSelectionRequired
+            | Self::RevokeSelectionConflict
+            | Self::InvalidRevokeId
+            | Self::RevokeTargetNotFound(_)
+            | Self::RevokeTargetAmbiguous(_)
             | Self::RevokeIncomplete { .. }
             | Self::MissingRunCommand => None,
         }

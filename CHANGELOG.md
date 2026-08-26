@@ -4,6 +4,10 @@ All notable changes to `ghst` are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Show cache slot IDs in `ghst status` and accept `ghst revoke <id>` to revoke one cached credential.
+
 ## [0.5.1] - 2026-08-25
 
 ### Added

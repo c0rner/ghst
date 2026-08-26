@@ -8,7 +8,7 @@ use time::{Duration, OffsetDateTime};
 use zeroize::Zeroizing;
 
 pub const CACHE_SCHEMA_VERSION: u32 = 4;
-pub const RUN_CACHE_SCHEMA_VERSION: u32 = 2;
+pub const RUN_CACHE_SCHEMA_VERSION: u32 = 3;
 pub const TOKEN_SAFETY_MARGIN: Duration = Duration::seconds(30);
 pub const DERIVED_TOKEN_RENEWAL_WINDOW: Duration = Duration::minutes(10);
 
@@ -251,6 +251,7 @@ pub struct RunCacheEntry {
     pub state: RunState,
     pub wrapper_pid: u32,
     pub child_pid: Option<u32>,
+    pub command: String,
     pub profile: String,
     pub source_profile: String,
     pub source_authority_fingerprint: String,
@@ -268,6 +269,7 @@ impl fmt::Debug for RunCacheEntry {
             .field("state", &self.state)
             .field("wrapper_pid", &self.wrapper_pid)
             .field("child_pid", &self.child_pid)
+            .field("command", &"[REDACTED]")
             .field("profile", &self.profile)
             .field("source_profile", &self.source_profile)
             .field(

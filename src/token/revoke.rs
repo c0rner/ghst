@@ -356,6 +356,7 @@ mod tests {
                     state: RunState::Running,
                     wrapper_pid: 100,
                     child_pid: Some(101),
+                    command: "true".into(),
                     profile: "reader".into(),
                     source_profile: "developer".into(),
                     source_authority_fingerprint: authority,

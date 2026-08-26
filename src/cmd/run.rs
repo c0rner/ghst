@@ -33,6 +33,7 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
     let cache_dir = crate::config::cache_dir()?;
     let client = GitHubClient::new();
     let wrapper_pid = std::process::id();
+    let command_line = render_command_line(&cmd.command);
     tracing::debug!(
         profile = profile_name,
         requested_repositories = ?cmd.repo,
@@ -47,6 +48,7 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
             profile_name: &profile_name,
             repositories: &cmd.repo,
             wrapper_pid,
+            command: &command_line,
         },
         crate::git::resolve_origin_repo,
     )?;
@@ -124,6 +126,25 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
     );
     report_cleanup(child_pid, report);
     Ok(code)
+}
+
+fn render_command_line(command: &[std::ffi::OsString]) -> String {
+    command
+        .iter()
+        .map(|part| {
+            let part = part.to_string_lossy();
+            let escaped = part
+                .chars()
+                .flat_map(char::escape_default)
+                .collect::<String>();
+            if part.is_empty() || part.chars().any(char::is_whitespace) {
+                format!(r#""{escaped}""#)
+            } else {
+                escaped
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn report_cleanup(
@@ -302,6 +323,15 @@ mod tests {
         ]);
         let status = spawn_command(&cmd, "fresh").unwrap().wait().unwrap();
         assert_eq!(child_exit_code(status), 0);
+    }
+
+    #[test]
+    fn rendered_command_line_cannot_inject_status_lines() {
+        let command = command(&["printf", "first\n    Lifetime: Fake"]);
+        assert_eq!(
+            render_command_line(&command.command),
+            r#"printf "first\n    Lifetime: Fake""#
+        );
     }
 
     #[test]

@@ -44,6 +44,7 @@ fn run_entry(run_id: &str, state: RunState) -> CacheEntry {
         state,
         wrapper_pid: 100,
         child_pid: None,
+        command: "true".into(),
         profile: "reader".into(),
         source_profile: "developer".into(),
         source_authority_fingerprint: authority_fingerprint("id", "acme"),
@@ -324,6 +325,7 @@ fn current_cache_schema_is_stable_and_round_trips() {
                 state: RunState::Running,
                 wrapper_pid: 100,
                 child_pid: Some(101),
+                command: "cargo test".into(),
                 profile: "reader".into(),
                 source_profile: "developer".into(),
                 source_authority_fingerprint: "authority".into(),
@@ -332,12 +334,15 @@ fn current_cache_schema_is_stable_and_round_trips() {
                 expires_at: TokenExpiry::parse("2026-08-09T11:00:00Z").unwrap(),
                 access_token: "run-token".into(),
             }),
-            r#"{"kind":"run","version":2,"run_id":"run-1","state":"running","wrapper_pid":100,"child_pid":101,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","github_user":"octocat","repo_scope":"acme/api","expires_at":"2026-08-09T11:00:00Z","access_token":"run-token"}"#,
+            r#"{"kind":"run","version":3,"run_id":"run-1","state":"running","wrapper_pid":100,"child_pid":101,"command":"cargo test","profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","github_user":"octocat","repo_scope":"acme/api","expires_at":"2026-08-09T11:00:00Z","access_token":"run-token"}"#,
         ),
     ];
 
     // Intentional structural changes require a schema-version bump and matching golden update.
     for (entry, golden_json) in cases {
+        if matches!(&entry, CacheEntry::Run(_)) {
+            assert!(!format!("{entry:?}").contains("cargo test"));
+        }
         let serialized = serde_json::to_value(&entry).unwrap();
         let golden: serde_json::Value = serde_json::from_str(golden_json).unwrap();
         assert_eq!(serialized, golden);
@@ -361,7 +366,7 @@ fn unsupported_schemas_are_discarded() {
         ),
         (
             compute_run_cache_key("run-1"),
-            r#"{"kind":"run","version":1,"run_id":"run-1","state":"running","wrapper_pid":100,"child_pid":101,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","github_user":"octocat","repo_scope":"acme/api","issued_at":"2026-08-09T10:00:00Z","expires_at":"2026-08-09T11:00:00Z","access_token":"run-token"}"#,
+            r#"{"kind":"run","version":2,"run_id":"run-1","state":"running","wrapper_pid":100,"child_pid":101,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","github_user":"octocat","repo_scope":"acme/api","expires_at":"2026-08-09T11:00:00Z","access_token":"run-token"}"#,
         ),
         (
             root_key(),

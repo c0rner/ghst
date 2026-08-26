@@ -49,7 +49,10 @@ pub fn print_status<W: Write>(
         writeln!(writer, "{marker} {name} [{}]", profile.kind_name())?;
         match grouped.remove(name.as_str()) {
             Some(indices) => {
-                for index in indices {
+                for (position, index) in indices.into_iter().enumerate() {
+                    if position > 0 {
+                        writeln!(writer)?;
+                    }
                     write_entry(writer, &inspections[index], now)?;
                 }
             }
@@ -94,11 +97,17 @@ fn write_entry(
             writeln!(writer, "    Repo Scope:  {}", entry.repo_scope())?;
             if let CacheEntry::Run(entry) = entry.as_ref() {
                 let state = match entry.state {
-                    crate::cache::RunState::Pending => "Pending",
-                    crate::cache::RunState::Running => "Running",
-                    crate::cache::RunState::CleanupPending => "Cleanup pending",
+                    crate::cache::RunState::Pending => "Pending".to_owned(),
+                    crate::cache::RunState::Running => entry.child_pid.map_or_else(
+                        || "Running".to_owned(),
+                        |child_pid| format!("Running (PID {child_pid})"),
+                    ),
+                    crate::cache::RunState::CleanupPending => "Cleanup pending".to_owned(),
                 };
                 writeln!(writer, "    Run State:   {state}")?;
+                if matches!(entry.state, crate::cache::RunState::Running) {
+                    writeln!(writer, "    Command:     {}", entry.command)?;
+                }
             }
             writeln!(writer, "    Expires:     {}", format_human_expiry(expiry))
         }
@@ -115,7 +124,7 @@ mod tests {
     use time::Duration;
 
     #[test]
-    fn run_status_exposes_lifecycle_but_not_pids_or_secrets() {
+    fn run_status_separates_entries_and_describes_running_sessions() {
         let config: Config = r#"
 version = 1
 default_profile = "reader"
@@ -143,6 +152,7 @@ permissions = { contents = "read" }
                 state: RunState::Running,
                 wrapper_pid: 123_456,
                 child_pid: Some(123_457),
+                command: "cargo test --workspace".into(),
                 profile: "reader".into(),
                 source_profile: "developer".into(),
                 source_authority_fingerprint: authority_fingerprint("id", "acme"),
@@ -153,12 +163,34 @@ permissions = { contents = "read" }
             }),
         )
         .unwrap();
+        save_cache_entry(
+            &cache_dir,
+            &compute_run_cache_key("second-status-run"),
+            &CacheEntry::Run(RunCacheEntry {
+                version: RUN_CACHE_SCHEMA_VERSION,
+                run_id: "second-status-run".into(),
+                state: RunState::CleanupPending,
+                wrapper_pid: 223_456,
+                child_pid: Some(223_457),
+                command: "cargo check".into(),
+                profile: "reader".into(),
+                source_profile: "developer".into(),
+                source_authority_fingerprint: authority_fingerprint("id", "acme"),
+                github_user: "octocat".into(),
+                repo_scope: "acme/api".into(),
+                expires_at: TokenExpiry::new(now + Duration::hours(1)),
+                access_token: AccessToken::from("second-status-secret"),
+            }),
+        )
+        .unwrap();
         let mut output = Vec::new();
         print_status(&mut output, &config, &cache_dir, now).unwrap();
         let output = String::from_utf8(output).unwrap();
-        assert!(output.contains("Run State:   Running"));
-        assert!(!output.contains("123456"));
-        assert!(!output.contains("123457"));
+        assert!(output.contains("Run State:   Running (PID 123457)"));
+        assert!(!output.contains("Process ID:"));
+        assert!(output.contains("Command:     cargo test --workspace"));
+        assert!(output.contains("Expires:") && output.contains("\n\n    Lifetime:"));
         assert!(!output.contains("status-secret"));
+        assert!(!output.contains("second-status-secret"));
     }
 }

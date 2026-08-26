@@ -160,8 +160,9 @@ task genuinely needs a different repository set. The complete authority model is
 ghst edit                                  # Edit, secure, and validate the configuration
 ghst token --profile reader --format env   # Emit a reusable token as environment assignments
 ghst profiles -v                           # Inspect configured profiles
-ghst status                                # Inspect cached token status and lifetimes
+ghst status                                # Inspect cached token IDs, status, and lifetimes
 ghst prune                                 # Retry abandoned-run cleanup and remove expired entries
+ghst revoke <id>                           # Revoke one cached credential by status ID
 ghst revoke --all                          # Revoke all locally cached credentials
 ```
 

@@ -10,7 +10,9 @@ mod tests;
 
 pub use error::CacheError;
 pub use fs::cache_epoch;
-pub use key::{compute_cache_key, compute_run_cache_key};
+pub use key::{
+    MIN_CACHE_ID_LENGTH, abbreviate_cache_key, compute_cache_key, compute_run_cache_key,
+};
 pub use storage::{
     CacheInspection, CacheInspectionState, DeleteRootOutcome, claim_abandoned_run,
     claim_released_run, delete_entry_if_unchanged, delete_root_if_generation,

@@ -141,10 +141,14 @@ pub struct ProfilesCmd {
     pub verbose: bool,
 }
 
-/// Revoke all cached credentials and remove their local entries.
+/// Revoke one cached credential by ID, or every cached credential with --all.
 #[derive(FromArgs, PartialEq, Eq, Debug)]
 #[argh(subcommand, name = "revoke")]
 pub struct RevokeCmd {
+    /// cache slot ID reported by `ghst status`
+    #[argh(positional)]
+    pub id: Option<String>,
+
     /// required acknowledgement that every cached credential will be revoked
     #[argh(switch)]
     pub all: bool,
@@ -332,6 +336,7 @@ mod tests {
 
     #[test]
     fn test_maintenance_commands() {
+        let id = "0123456";
         assert!(matches!(
             GhstCli::from_args(&["ghst"], &["prune"]).unwrap().command,
             SubCommand::Prune(PruneCmd {})
@@ -340,7 +345,19 @@ mod tests {
             GhstCli::from_args(&["ghst"], &["revoke", "--all"])
                 .unwrap()
                 .command,
-            SubCommand::Revoke(RevokeCmd { all: true })
+            SubCommand::Revoke(RevokeCmd {
+                id: None,
+                all: true,
+            })
+        );
+        assert_eq!(
+            GhstCli::from_args(&["ghst"], &["revoke", id])
+                .unwrap()
+                .command,
+            SubCommand::Revoke(RevokeCmd {
+                id: Some(id.into()),
+                all: false,
+            })
         );
     }
 

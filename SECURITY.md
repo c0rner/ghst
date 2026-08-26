@@ -296,7 +296,7 @@ lease does not follow arbitrary descendants.
 | **GitHub App administrator compromise** | Outside the local boundary. An administrator can change permissions, authorization settings, installations, secrets, and private keys. |
 | **Derived-token exfiltration** | Bounded by the profile, App/user intersection, and token expiry, but usable until revoked or expired. |
 | **Root-token exfiltration** | Bounded by the App/user intersection and expiry. Pairing it with the client secret enables scoped-token creation. |
-| **Cleanup interruption** | Issuer expiry is the final bound. `ghst prune` retries abandoned run-token cleanup; `ghst revoke --all` attempts remote revocation and local purge for credentials represented in this workstation's cache. |
+| **Cleanup interruption** | Issuer expiry is the final bound. `ghst prune` retries abandoned run-token cleanup; `ghst revoke <id>` targets one status-reported cache slot, while `ghst revoke --all` attempts remote revocation and local purge for every credential represented in this workstation's cache. |
 | **Trusted operator bypass** | Out of scope. A workstation owner can use another GitHub credential or deliberately expose local state. |
 
 ---

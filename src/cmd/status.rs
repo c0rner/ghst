@@ -1,4 +1,4 @@
-use crate::cache::{CacheEntry, CacheInspectionState, inspect_cache};
+use crate::cache::{CacheEntry, CacheInspectionState, abbreviate_cache_key, inspect_cache};
 use crate::cmd::{CmdError, GhstCli, StatusCmd, format_human_expiry};
 use crate::config::Config;
 use std::collections::BTreeMap;
@@ -25,6 +25,10 @@ pub fn print_status<W: Write>(
     now: OffsetDateTime,
 ) -> Result<(), CmdError> {
     let inspections = inspect_cache(cache_dir)?;
+    let cache_keys: Vec<_> = inspections
+        .iter()
+        .filter_map(|inspection| inspection.cache_key.as_deref())
+        .collect();
     debug!(cache_dir = %cache_dir.display(), entries = inspections.len(), "inspected token cache for status");
     let mut grouped: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
     let mut unmatched = Vec::new();
@@ -53,7 +57,7 @@ pub fn print_status<W: Write>(
                     if position > 0 {
                         writeln!(writer)?;
                     }
-                    write_entry(writer, &inspections[index], now)?;
+                    write_entry(writer, &inspections[index], &cache_keys, now)?;
                 }
             }
             None => writeln!(writer, "    Lifetime:    Not cached")?,
@@ -67,7 +71,7 @@ pub fn print_status<W: Write>(
     );
     for index in unmatched {
         writeln!(writer, "  Unmatched Entry [{}]", inspections[index].label)?;
-        write_entry(writer, &inspections[index], now)?;
+        write_entry(writer, &inspections[index], &cache_keys, now)?;
         writeln!(writer)?;
     }
     Ok(())
@@ -76,8 +80,16 @@ pub fn print_status<W: Write>(
 fn write_entry(
     writer: &mut impl Write,
     inspection: &crate::cache::CacheInspection,
+    cache_keys: &[&str],
     now: OffsetDateTime,
 ) -> io::Result<()> {
+    if let Some(id) = &inspection.cache_key {
+        writeln!(
+            writer,
+            "    ID:          {}",
+            abbreviate_cache_key(id, cache_keys)
+        )?;
+    }
     match &inspection.state {
         CacheInspectionState::Invalid => writeln!(writer, "    Lifetime:    Invalid"),
         CacheInspectionState::Current(entry) => {
@@ -186,10 +198,18 @@ permissions = { contents = "read" }
         let mut output = Vec::new();
         print_status(&mut output, &config, &cache_dir, now).unwrap();
         let output = String::from_utf8(output).unwrap();
+        assert!(output.contains(&format!(
+            "ID:          {}",
+            &compute_run_cache_key(run_id)[..crate::cache::MIN_CACHE_ID_LENGTH]
+        )));
+        assert!(output.contains(&format!(
+            "ID:          {}",
+            &compute_run_cache_key("second-status-run")[..crate::cache::MIN_CACHE_ID_LENGTH]
+        )));
         assert!(output.contains("Run State:   Running (PID 123457)"));
         assert!(!output.contains("Process ID:"));
         assert!(output.contains("Command:     cargo test --workspace"));
-        assert!(output.contains("Expires:") && output.contains("\n\n    Lifetime:"));
+        assert!(output.contains("Expires:") && output.contains("\n\n    ID:"));
         assert!(!output.contains("status-secret"));
         assert!(!output.contains("second-status-secret"));
     }

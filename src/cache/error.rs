@@ -71,7 +71,7 @@ impl fmt::Display for CacheError {
             Self::BaseGenerationChanged => {
                 write!(
                     f,
-                    "source base-token generation changed while issuing a token"
+                    "source base token generation changed while issuing a token"
                 )
             }
             Self::RenewalEntryChanged => {

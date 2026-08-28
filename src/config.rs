@@ -5,7 +5,7 @@ mod validation;
 pub use error::ConfigError;
 #[cfg(test)]
 use types::PermissionLevel;
-pub use types::{BaseProfile, Config, GitHubAppConfig, ProfileConfig, RepoScope, ScopedProfile};
+pub use types::{AppProfile, Config, GitHubAppConfig, ProfileConfig, RepoScope, ScopedProfile};
 
 #[cfg(unix)]
 use std::fs::OpenOptions;
@@ -607,7 +607,7 @@ permissions = { contents = "read", security_events = "read", vulnerability_alert
         assert_eq!(config.default_profile.as_deref(), Some("contributor"));
         assert!(matches!(
             config.profiles.get("developer"),
-            Some(ProfileConfig::Base(_))
+            Some(ProfileConfig::App(_))
         ));
         assert!(matches!(
             config.profiles.get("reader"),
@@ -623,15 +623,15 @@ permissions = { contents = "read", security_events = "read", vulnerability_alert
 
         let dev_profile = config.profiles.get("developer").unwrap();
         match dev_profile {
-            ProfileConfig::Base(base) => {
-                assert_eq!(base.github_app.account, "acme-corp");
-                assert_eq!(base.github_app.client_id, "Iv1.8888888888888888");
+            ProfileConfig::App(app) => {
+                assert_eq!(app.github_app.account, "acme-corp");
+                assert_eq!(app.github_app.client_id, "Iv1.8888888888888888");
                 assert_eq!(
-                    base.github_app.client_secret.as_deref(),
+                    app.github_app.client_secret.as_deref(),
                     Some("secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
                 );
             }
-            ProfileConfig::Scoped(_) => panic!("expected base profile"),
+            ProfileConfig::Scoped(_) => panic!("expected app profile"),
         }
 
         let reader_profile = config.profiles.get("reader").unwrap();
@@ -644,7 +644,7 @@ permissions = { contents = "read", security_events = "read", vulnerability_alert
                     Some(&PermissionLevel::Read)
                 );
             }
-            ProfileConfig::Base(_) => panic!("expected scoped profile"),
+            ProfileConfig::App(_) => panic!("expected scoped profile"),
         }
 
         let sec_reviewer = config.profiles.get("security-reviewer").unwrap();
@@ -657,7 +657,7 @@ permissions = { contents = "read", security_events = "read", vulnerability_alert
                     Some(&PermissionLevel::Read)
                 );
             }
-            ProfileConfig::Base(_) => panic!("expected scoped profile"),
+            ProfileConfig::App(_) => panic!("expected scoped profile"),
         }
     }
 
@@ -715,7 +715,7 @@ permissions = { contents = "read" }
 "#;
         let err: ConfigError = chaining_config.parse::<Config>().unwrap_err();
         match err {
-            ConfigError::ScopedFromNonBase { profile, source } => {
+            ConfigError::ScopedFromNonApp { profile, source } => {
                 assert_eq!(profile, "sub_reader");
                 assert_eq!(source, "reader");
             }
@@ -749,7 +749,7 @@ permissions = { contents = "read" }
     }
 
     #[test]
-    fn standalone_secretless_base_can_be_default() {
+    fn standalone_secretless_app_can_be_default() {
         let config: Config = r#"
 version = 1
 default_profile = "developer"
@@ -760,10 +760,10 @@ github_app.client_id = "id"
 "#
         .parse()
         .unwrap();
-        let ProfileConfig::Base(base) = config.profiles.get("developer").unwrap() else {
-            panic!("expected base profile");
+        let ProfileConfig::App(app) = config.profiles.get("developer").unwrap() else {
+            panic!("expected app profile");
         };
-        assert_eq!(base.github_app.client_secret, None);
+        assert_eq!(app.github_app.client_secret, None);
         assert!(format!("{config:?}").contains("client_secret: None"));
     }
 
@@ -772,19 +772,19 @@ github_app.client_id = "id"
         let invalid = VALID_CONFIG.replace("secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "   ");
         assert!(matches!(
             invalid.parse::<Config>(),
-            Err(ConfigError::InvalidBaseProfile { .. })
+            Err(ConfigError::InvalidAppProfile { .. })
         ));
     }
 
     #[test]
-    fn scoped_profile_cannot_reference_secretless_base() {
+    fn scoped_profile_cannot_reference_secretless_app() {
         let invalid = VALID_CONFIG.replace(
             "github_app.client_secret = \"secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
             "",
         );
         assert!(matches!(
             invalid.parse::<Config>(),
-            Err(ConfigError::ScopedFromSecretlessBase { profile, source })
+            Err(ConfigError::ScopedFromSecretlessApp { profile, source })
                 if (profile == "contributor" || profile == "reader") && source == "developer"
         ));
     }
@@ -809,7 +809,7 @@ permissions = { contents = "read" }
             ProfileConfig::Scoped(scoped) => {
                 assert_eq!(scoped.repo, RepoScope::Auto);
             }
-            ProfileConfig::Base(_) => panic!("expected scoped profile"),
+            ProfileConfig::App(_) => panic!("expected scoped profile"),
         }
     }
 
@@ -842,7 +842,7 @@ permissions = { contents = "read" }
     }
 
     #[test]
-    fn test_base_profile_rejects_repository_scope() {
+    fn test_app_profile_rejects_repository_scope() {
         let config = r#"
 version = 1
 
@@ -864,7 +864,7 @@ github_app.client_secret = "secret"
             r#"
 version = 1
 [profile.developer]
-kind = "base"
+kind = "app"
 github_app.account = "acme"
 github_app.client_id = "id"
 "#,
@@ -879,7 +879,7 @@ github_app.client_id = "id"
             r#"
 version = 1
 [profile.incomplete]
-description = "neither base nor scoped"
+description = "neither app nor scoped"
 "#,
             r"
 version = 1

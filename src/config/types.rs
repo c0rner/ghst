@@ -27,21 +27,21 @@ impl fmt::Debug for Config {
 #[derive(PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
 pub enum ProfileConfig {
-    Base(BaseProfile),
+    App(AppProfile),
     Scoped(ScopedProfile),
 }
 
 impl ProfileConfig {
     pub const fn kind_name(&self) -> &'static str {
         match self {
-            Self::Base(_) => "base",
+            Self::App(_) => "app",
             Self::Scoped(_) => "scoped",
         }
     }
 
     pub fn description(&self) -> Option<&str> {
         match self {
-            Self::Base(base) => base.description.as_deref(),
+            Self::App(app) => app.description.as_deref(),
             Self::Scoped(scoped) => scoped.description.as_deref(),
         }
     }
@@ -50,7 +50,7 @@ impl ProfileConfig {
 impl fmt::Debug for ProfileConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Base(base) => f.debug_tuple("Base").field(base).finish(),
+            Self::App(app) => f.debug_tuple("App").field(app).finish(),
             Self::Scoped(scoped) => f.debug_tuple("Scoped").field(scoped).finish(),
         }
     }
@@ -58,14 +58,14 @@ impl fmt::Debug for ProfileConfig {
 
 #[derive(PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct BaseProfile {
+pub struct AppProfile {
     pub description: Option<String>,
     pub github_app: GitHubAppConfig,
 }
 
-impl fmt::Debug for BaseProfile {
+impl fmt::Debug for AppProfile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("BaseProfile")
+        f.debug_struct("AppProfile")
             .field("description", &self.description)
             .field("github_app", &self.github_app)
             .finish()

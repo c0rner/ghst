@@ -151,10 +151,10 @@ Each developer still performs their own `ghst login` using their individual GitH
 ### What if our security policy prohibits distributing `client_secret` to developers?
 You can use a **Secretless Multi-App Architecture**:
 1. Org admins register separate GitHub Apps for different roles (e.g., `acme-ghst-reader` with read-only permissions, and `acme-ghst-writer` with pull request permissions).
-2. Developers configure these as secretless base profiles in `profiles.toml` using only `client_id` (no `client_secret` required).
+2. Developers configure these as secretless app profiles in `profiles.toml` using only `client_id` (no `client_secret` required).
 3. Developers log in to the desired profile (`ghst login --profile reader`).
 
-While secretless profiles cannot dynamically derive finer-grained sub-tokens or invoke App-authenticated remote revocation endpoints, they still provide expiring (~8 hour) user access tokens bound to the specific App's permission boundary without requiring any secret on developer disks.
+While secretless app profiles cannot dynamically derive finer-grained sub-tokens or invoke App-authenticated remote revocation endpoints, they still provide expiring (~8 hour) user access tokens bound to the specific App's permission boundary without requiring any secret on developer disks.
 
 ### Does `ghst` send telemetry or talk to third-party servers?
 **No.** `ghst` does not collect telemetry or use a project-operated service. Its network operations communicate directly with GitHub's REST and OAuth endpoints (`api.github.com` and `github.com`); it has no metrics collector or proxy relay.

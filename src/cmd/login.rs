@@ -12,8 +12,8 @@ use tracing::{debug, info, warn};
 pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
     let config = crate::config::load(args.config.as_deref())?;
     let profile_name = resolve_profile_name(cmd.profile.as_deref(), &config)?;
-    let base_profile = match config.profiles.get(&profile_name) {
-        Some(ProfileConfig::Base(base)) => base,
+    let app_profile = match config.profiles.get(&profile_name) {
+        Some(ProfileConfig::App(app)) => app,
         Some(ProfileConfig::Scoped(scoped)) => {
             return Err(CmdError::ScopedLoginNotAllowed {
                 profile: profile_name,
@@ -31,7 +31,7 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
     if let Some(status) = crate::token::load_valid_base_status(
         &cache_dir,
         &profile_name,
-        base_profile,
+        app_profile,
         OffsetDateTime::now_utc(),
     )? {
         debug!(
@@ -47,9 +47,9 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
     let client = GitHubClient::new();
     let epoch = cache_epoch(&cache_dir)?;
     info!(profile = profile_name, "initiating OAuth Device Flow");
-    let device = client.request_device_code(&base_profile.github_app.client_id)?;
+    let device = client.request_device_code(&app_profile.github_app.client_id)?;
     display_auth_instructions(
-        &base_profile.github_app.account,
+        &app_profile.github_app.account,
         &device.user_code,
         &device.verification_uri,
     );
@@ -68,7 +68,7 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
     );
     let response = poll_for_authorization(
         &client,
-        &base_profile.github_app.client_id,
+        &app_profile.github_app.client_id,
         &device.device_code,
         interval,
         &profile_name,
@@ -80,7 +80,7 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
 
     match crate::token::persist_base_response(
         &client,
-        base_profile,
+        app_profile,
         &profile_name,
         &cache_dir,
         response,

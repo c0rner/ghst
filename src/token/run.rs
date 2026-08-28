@@ -283,7 +283,7 @@ permissions = { contents = "read" }
     }
 
     #[test]
-    fn run_rejects_base_profiles_before_minting() {
+    fn run_rejects_app_profiles_before_minting() {
         let temp = tempfile::tempdir().unwrap();
         let config = config();
         let client = MockClient(Cell::new(0));

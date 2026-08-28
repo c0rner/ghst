@@ -6,7 +6,7 @@ All notable changes to `ghst` are documented in this file.
 
 ### Breaking
 
-- Replace base/scoped terminology throughout the CLI, cache, diagnostics, configuration model, and documentation. This is a breaking cache change: reusable entries now use schema version 5 and the `base` and `scoped` kind tags. Unsupported or malformed cache artifacts fail closed.
+- Adopt app/scoped terminology for profiles and base/scoped terminology for tokens throughout the CLI, cache, diagnostics, configuration model, and documentation. This is a breaking cache change: reusable entries now use schema version 5 and the `base` and `scoped` kind tags. Unsupported or malformed cache artifacts fail closed.
 
 ## [0.5.2] - 2026-08-26
 

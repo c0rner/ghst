@@ -69,7 +69,10 @@ impl fmt::Display for CacheError {
                 "cache epoch changed from {expected} to {actual} while issuing a token"
             ),
             Self::BaseGenerationChanged => {
-                write!(f, "source base generation changed while issuing a token")
+                write!(
+                    f,
+                    "source base-token generation changed while issuing a token"
+                )
             }
             Self::RenewalEntryChanged => {
                 write!(f, "scoped cache entry changed while renewing a token")

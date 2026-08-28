@@ -33,11 +33,11 @@ fn print_profiles<W: Write>(writer: &mut W, config: &Config, verbose: bool) -> i
         if verbose {
             writeln!(writer, "{marker} {name} [{kind}]{default_suffix}")?;
             match profile {
-                ProfileConfig::Base(base) => {
-                    writeln!(writer, "    Account:     {}", base.github_app.account)?;
-                    writeln!(writer, "    Client ID:   {}", base.github_app.client_id)?;
-                    writeln!(writer, "    Repo Scope:  all (base authority)")?;
-                    let capabilities = if base.github_app.client_secret.is_some() {
+                ProfileConfig::App(app) => {
+                    writeln!(writer, "    Account:     {}", app.github_app.account)?;
+                    writeln!(writer, "    Client ID:   {}", app.github_app.client_id)?;
+                    writeln!(writer, "    Repo Scope:  all (app authority)")?;
+                    let capabilities = if app.github_app.client_secret.is_some() {
                         "base tokens, scoped tokens, remote revocation"
                     } else {
                         "base tokens only"
@@ -100,7 +100,7 @@ permissions = { contents = "read", pull_requests = "read", issues = "read" }
         let output = String::from_utf8(buf).unwrap();
 
         assert!(output.contains(
-            "  developer [base] - Full developer privilege ceiling backed by the Dev GitHub App"
+            "  developer [app] - Full developer privilege ceiling backed by the Dev GitHub App"
         ));
         assert!(output.contains(
             "* reader [scoped] (default) - Read-only access to repository contents, pull requests, and issues"
@@ -116,10 +116,10 @@ permissions = { contents = "read", pull_requests = "read", issues = "read" }
         let output = String::from_utf8(buf).unwrap();
 
         assert!(output.contains("Configured Profiles:"));
-        assert!(output.contains("  developer [base]"));
+        assert!(output.contains("  developer [app]"));
         assert!(output.contains("    Account:     acme-corp"));
         assert!(output.contains("    Client ID:   Iv1.8888888888888888"));
-        assert!(output.contains("    Repo Scope:  all (base authority)"));
+        assert!(output.contains("    Repo Scope:  all (app authority)"));
         assert!(output.contains("    Capabilities: base tokens, scoped tokens, remote revocation"));
         assert!(output.contains("* reader [scoped] (default)"));
         assert!(output.contains("    Source:      developer"));

@@ -118,7 +118,7 @@ pub struct TokenCmd {
     #[argh(option, short = 'p')]
     pub profile: Option<String>,
 
-    /// scoped-profile repository selection (all, auto, or owner/repo; repeat to select repositories; rejected for base profiles)
+    /// scoped-profile repository selection (all, auto, or owner/repo; repeat to select repositories; rejected for app profiles)
     #[argh(option, short = 'r')]
     pub repo: Vec<String>,
 
@@ -302,6 +302,27 @@ mod tests {
                 })
             }
         );
+    }
+
+    #[test]
+    fn generated_help_uses_app_and_scoped_profile_terminology() {
+        let token_help = GhstCli::from_args(&["ghst"], &["token", "--help"]).unwrap_err();
+        let token_help = token_help
+            .output
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(token_help.contains("Mint or retrieve a scoped GitHub token"));
+        assert!(token_help.contains("rejected for app profiles"));
+
+        let run_help = GhstCli::from_args(&["ghst"], &["run", "--help"]).unwrap_err();
+        let run_help = run_help
+            .output
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert!(run_help.contains("target scoped profile name"));
+        assert!(run_help.contains("scoped-profile repository selection"));
     }
 
     #[test]

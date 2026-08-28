@@ -5,7 +5,7 @@ use crate::cache::{
     BaseCacheEntry, CACHE_SCHEMA_VERSION, CacheEntry, SaveCacheEntry, authority_fingerprint,
     compute_cache_key, load_cache_entry, save_cache_candidate,
 };
-use crate::config::{BaseProfile, GitHubAppConfig};
+use crate::config::{AppProfile, GitHubAppConfig};
 use crate::token::{BaseTokenClient, IssuedBaseToken};
 use std::path::Path;
 use time::OffsetDateTime;
@@ -17,7 +17,7 @@ pub fn base_cache_key(profile_name: &str) -> String {
 pub fn load_valid_base_entry(
     cache_dir: &Path,
     profile_name: &str,
-    profile: &BaseProfile,
+    profile: &AppProfile,
     now: OffsetDateTime,
 ) -> Result<Option<BaseCacheEntry>, TokenError> {
     let entry = load_current_base_entry(cache_dir, profile_name, &profile.github_app)?;
@@ -45,7 +45,7 @@ pub fn load_valid_base_entry(
 pub fn load_valid_base_status(
     cache_dir: &Path,
     profile_name: &str,
-    profile: &BaseProfile,
+    profile: &AppProfile,
     now: OffsetDateTime,
 ) -> Result<Option<BaseTokenStatus>, TokenError> {
     load_valid_base_entry(cache_dir, profile_name, profile, now).map(|entry| entry.map(base_status))
@@ -102,7 +102,7 @@ pub fn load_current_base_entry(
 
 pub fn persist_base_response<C: BaseTokenClient>(
     client: &C,
-    profile: &BaseProfile,
+    profile: &AppProfile,
     profile_name: &str,
     cache_dir: &Path,
     response: IssuedBaseToken,

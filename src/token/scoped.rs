@@ -6,7 +6,7 @@ use crate::cache::{
     AccessToken, BaseCacheEntry, CacheError, DeleteBaseOutcome, TokenExpiry,
     delete_base_if_generation,
 };
-use crate::config::{BaseProfile, Config, ProfileConfig, ScopedProfile};
+use crate::config::{AppProfile, Config, ProfileConfig, ScopedProfile};
 use crate::repository::{RepositoryError, RepositorySelection};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -15,7 +15,7 @@ use time::OffsetDateTime;
 pub(super) struct PreparedScopedToken<'a> {
     pub profile_name: &'a str,
     pub profile: &'a ScopedProfile,
-    pub source: &'a BaseProfile,
+    pub source: &'a AppProfile,
     pub base: BaseCacheEntry,
     pub scope: String,
     pub repositories: Option<Vec<String>>,
@@ -37,15 +37,15 @@ pub(super) fn prepare<'a>(
 ) -> Result<PreparedScopedToken<'a>, TokenError> {
     let profile = match config.profiles.get(profile_name) {
         Some(ProfileConfig::Scoped(profile)) => profile,
-        Some(ProfileConfig::Base(_)) => {
+        Some(ProfileConfig::App(_)) => {
             return Err(TokenError::RunRequiresScoped(profile_name.to_owned()));
         }
         None => return Err(TokenError::ProfileNotFound(profile_name.to_owned())),
     };
     let source = match config.profiles.get(&profile.source) {
-        Some(ProfileConfig::Base(source)) => source,
+        Some(ProfileConfig::App(source)) => source,
         Some(ProfileConfig::Scoped(_)) => {
-            return Err(TokenError::SourceProfileNotBase {
+            return Err(TokenError::SourceProfileNotApp {
                 profile: profile_name.to_owned(),
                 source: profile.source.clone(),
             });
@@ -75,7 +75,7 @@ pub(super) fn prepare<'a>(
         "resolved scoped token policy"
     );
     let base = load_current_base_entry(cache_dir, &profile.source, &source.github_app)?
-        .ok_or_else(|| TokenError::NoSourceTokenCached(profile.source.clone()))?;
+        .ok_or_else(|| TokenError::NoSourceBaseTokenCached(profile.source.clone()))?;
     Ok(PreparedScopedToken {
         profile_name,
         profile,
@@ -104,7 +104,7 @@ pub(super) fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
             expires_at = %prepared.base.expires_at,
             "base token is inside the handoff safety margin and cannot mint a scoped token"
         );
-        return Err(TokenError::NoSourceTokenCached(
+        return Err(TokenError::NoSourceBaseTokenCached(
             prepared.profile.source.clone(),
         ));
     }
@@ -204,5 +204,5 @@ fn permanent_rejection_error(
             return Ok(TokenError::BaseGenerationChanged(source_profile.clone()));
         }
     }
-    Ok(TokenError::NoSourceTokenCached(source_profile.clone()))
+    Ok(TokenError::NoSourceBaseTokenCached(source_profile.clone()))
 }

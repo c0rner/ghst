@@ -1,8 +1,8 @@
 use crate::cache::{CacheEntry, authority_fingerprint};
-use crate::config::{BaseProfile, Config, GitHubAppConfig, ProfileConfig};
+use crate::config::{AppProfile, Config, GitHubAppConfig, ProfileConfig};
 
 pub(super) enum ConfiguredAuthority<'a> {
-    Match(&'a BaseProfile),
+    Match(&'a AppProfile),
     Mismatch,
     Missing,
 }
@@ -33,10 +33,10 @@ pub(super) fn for_source<'a>(
     cached_fingerprint: &str,
 ) -> ConfiguredAuthority<'a> {
     match config.profiles.get(source_profile) {
-        Some(ProfileConfig::Base(base)) if matches(&base.github_app, cached_fingerprint) => {
-            ConfiguredAuthority::Match(base)
+        Some(ProfileConfig::App(app)) if matches(&app.github_app, cached_fingerprint) => {
+            ConfiguredAuthority::Match(app)
         }
-        Some(ProfileConfig::Base(_)) => ConfiguredAuthority::Mismatch,
+        Some(ProfileConfig::App(_)) => ConfiguredAuthority::Mismatch,
         Some(ProfileConfig::Scoped(_)) | None => ConfiguredAuthority::Missing,
     }
 }

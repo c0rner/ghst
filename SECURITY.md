@@ -37,10 +37,10 @@ App uses Device Flow. See GitHub's guides to [registering a GitHub App](https://
 and [choosing minimum permissions](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app).
 
 After saving the registration, verify that the **Private keys** list is empty, install the App only
-on the intended account and repositories, and copy its client ID into the base profile. Generate a
+on the intended account and repositories, and copy its client ID into the app profile. Generate a
 client secret only when scoped profiles or remote revocation are required, store it in the `0600`
 configuration file, and set `github_app.account` to the target account that owns the permitted
-repositories. A secretless base can perform Device Flow login but cannot mint scoped tokens or
+repositories. A secretless app profile can perform Device Flow login but cannot mint scoped tokens or
 remotely revoke tokens through the App-authenticated endpoints.
 
 ### No Private Keys
@@ -168,7 +168,7 @@ own process; it cannot destroy a token returned to an attacker-controlled flow.
 > attacker can initiate a flow for the same App using its public client ID.
 
 If any context is unexpected, deny the request and restart `ghst login` yourself. `ghst` opens only
-the base verification URL and requires manual code entry; it never presents a pre-filled
+the device verification URL and requires manual code entry; it never presents a pre-filled
 `?user_code=...` link. This creates a deliberate verification step, but it cannot protect a user who
 approves an out-of-bound request.
 
@@ -186,7 +186,7 @@ credentials:
 
 | `ghst` term | GitHub meaning |
 | --- | --- |
-| **Base profile** | Local configuration identifying a GitHub App and target account. |
+| **App profile** | Local configuration identifying a GitHub App and target account. |
 | **Base token** | GitHub's non-scoped user access token obtained through Device Flow. |
 | **Scoped profile** | A local request for repository and permission restrictions. |
 | **Scoped token** | GitHub's separate scoped user access token returned by the scoped-token endpoint. |
@@ -243,7 +243,7 @@ depend on App permissions.
 3. `ghst` base tokens and reusable scoped tokens are stored under `~/.cache/ghst/`. One-off run
    tokens are stored temporarily in private recovery entries so interrupted cleanup can be retried.
 4. Base and scoped tokens have independent GitHub-issued expiries. Revoking or expiring a base
-   token is not assumed to revoke already-created scoped (scoped) tokens.
+   token is not assumed to revoke already-created scoped tokens.
 
 Configuration and cache state have different enforcement:
 
@@ -289,7 +289,7 @@ lease does not follow arbitrary descendants.
 | --- | --- |
 | **Out-of-bound Device Flow authorization** | Human-gated but high impact. The operator must reject every flow they did not initiate locally. App-name matching alone cannot distinguish an attacker using the same public client ID. |
 | **Client secret exposure alone** | Does not directly grant repository access under the required configuration. Rotate it anyway, inspect App settings, and investigate whether it was paired with a user token or authorization artifact. |
-| **Client secret plus base-token exposure** | Allows additional scoped user tokens with independent lifetimes, but cannot exceed the base's App/user intersection. Protect configuration and cache together. |
+| **Client secret plus base-token exposure** | Allows additional scoped user tokens with independent lifetimes, but cannot exceed the base token's App/user intersection. Protect configuration and cache together. |
 | **Refresh-token exposure** | Enables renewable user access. `ghst` destroys only refresh tokens it receives; it cannot protect an attacker-controlled flow. |
 | **Departing or malicious developer retains a refresh token** | Outside the trusted-operator boundary. A workstation owner can complete Device Flow outside `ghst` and retain the rotating refresh token, bypassing local lifetime policy. Offboarding must remove the user's GitHub access and authorization; suspected unknown credentials require the centralized App controls below. |
 | **Private key present or exposed** | Outside the threat model and critical. It enables App JWTs and installation access tokens without a user intersection. Delete the key and treat every App installation as potentially affected. |

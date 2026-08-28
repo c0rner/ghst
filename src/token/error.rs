@@ -13,14 +13,14 @@ pub enum TokenError {
     },
     Repository(RepositoryError),
     ProfileNotFound(String),
-    SourceProfileNotBase {
+    SourceProfileNotApp {
         profile: String,
         source: String,
     },
     ClientSecretRequired(String),
     NoBaseTokenCached(String),
-    NoSourceTokenCached(String),
-    BaseScopeRejected(String),
+    NoSourceBaseTokenCached(String),
+    AppScopeRejected(String),
     RunRequiresScoped(String),
     Random(getrandom::Error),
     UnexpectedCacheKind {
@@ -59,36 +59,36 @@ impl fmt::Display for TokenError {
                 source,
             } => write!(
                 f,
-                "github rejected the scoped token request for scoped profile '{profile}': {source}. The requested permissions or repository access likely exceed the GitHub App installation for source profile '{source_profile}'; check the App installation in GitHub settings and the scoped profile's `permissions` and `repo` in profiles.toml"
+                "github rejected the scoped token request for scoped profile '{profile}': {source}. The requested permissions or repository access likely exceed the GitHub App installation for source app profile '{source_profile}'; check the App installation in GitHub settings and the scoped profile's `permissions` and `repo` in profiles.toml"
             ),
             Self::Repository(error) => write!(f, "{error}"),
             Self::ProfileNotFound(profile) => {
                 write!(f, "profile '{profile}' is not defined in configuration")
             }
-            Self::SourceProfileNotBase { profile, source } => write!(
+            Self::SourceProfileNotApp { profile, source } => write!(
                 f,
-                "scoped profile '{profile}' references non-base source profile '{source}'"
+                "scoped profile '{profile}' references non-app source profile '{source}'"
             ),
             Self::ClientSecretRequired(profile) => write!(
                 f,
-                "base profile '{profile}' has no client secret; scoped token minting is unavailable"
+                "app profile '{profile}' has no client secret; scoped token minting is unavailable"
             ),
             Self::NoBaseTokenCached(profile) => {
-                write!(f, "no valid token cached for base profile '{profile}'")
+                write!(f, "no valid base token cached for app profile '{profile}'")
             }
-            Self::NoSourceTokenCached(profile) => {
+            Self::NoSourceBaseTokenCached(profile) => {
                 write!(
                     f,
-                    "no valid token cached for base source profile '{profile}'"
+                    "no valid base token cached for source app profile '{profile}'"
                 )
             }
-            Self::BaseScopeRejected(profile) => {
-                write!(f, "base profile '{profile}' cannot be repository-scoped")
+            Self::AppScopeRejected(profile) => {
+                write!(f, "app profile '{profile}' cannot be repository-scoped")
             }
             Self::RunRequiresScoped(profile) => {
                 write!(
                     f,
-                    "profile '{profile}' is a base profile; run requires a scoped profile"
+                    "profile '{profile}' is an app profile; run requires a scoped profile"
                 )
             }
             Self::Random(error) => write!(f, "operating-system randomness unavailable: {error}"),
@@ -174,8 +174,8 @@ mod error_tests {
     fn domain_errors_do_not_name_cli_commands_or_options() {
         for error in [
             TokenError::NoBaseTokenCached("developer".into()),
-            TokenError::NoSourceTokenCached("developer".into()),
-            TokenError::BaseScopeRejected("developer".into()),
+            TokenError::NoSourceBaseTokenCached("developer".into()),
+            TokenError::AppScopeRejected("developer".into()),
         ] {
             let message = error.to_string();
             assert!(!message.contains("ghst"));

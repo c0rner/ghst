@@ -198,7 +198,7 @@ permissions = { contents = "read" }
         let mut output = Vec::new();
         print_status(&mut output, &config, &cache_dir, now).unwrap();
         let output = String::from_utf8(output).unwrap();
-        assert!(output.contains("  developer [base]"));
+        assert!(output.contains("  developer [app]"));
         assert!(output.contains("* reader [scoped]"));
         assert!(output.contains(&format!(
             "ID:          {}",

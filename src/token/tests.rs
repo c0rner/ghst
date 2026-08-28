@@ -220,11 +220,11 @@ fn base_authority_and_kind_are_validated() {
     let cache_dir = temp.path().join("cache");
     cache_base(&cache_dir, now, "base");
     let config: Config = CONFIG.parse().unwrap();
-    let ProfileConfig::Base(base) = config.profiles.get("developer").unwrap() else {
-        panic!("expected base");
+    let ProfileConfig::App(app) = config.profiles.get("developer").unwrap() else {
+        panic!("expected app profile");
     };
     assert!(
-        load_current_base_entry(&cache_dir, "developer", &base.github_app)
+        load_current_base_entry(&cache_dir, "developer", &app.github_app)
             .unwrap()
             .is_some()
     );
@@ -276,15 +276,15 @@ fn base_acquisition_returns_cached_token_and_rejects_repository_scope() {
             },
             || panic!("auto not expected"),
         ),
-        Err(TokenError::BaseScopeRejected(profile)) if profile == "developer"
+        Err(TokenError::AppScopeRejected(profile)) if profile == "developer"
     ));
 }
 
 #[test]
 fn invalid_base_response_is_revoked_and_not_persisted() {
     let config: Config = CONFIG.parse().unwrap();
-    let ProfileConfig::Base(base) = config.profiles.get("developer").unwrap() else {
-        panic!("expected base");
+    let ProfileConfig::App(app) = config.profiles.get("developer").unwrap() else {
+        panic!("expected app profile");
     };
     let client = client(IssuedScopedToken {
         access_token: "unused".into(),
@@ -299,7 +299,7 @@ fn invalid_base_response_is_revoked_and_not_persisted() {
     assert!(matches!(
         persist_base_response(
             &client,
-            base,
+            app,
             "developer",
             &cache_dir,
             response,
@@ -390,7 +390,7 @@ fn permanent_scoped_rejection_evicts_the_rejected_base() {
         );
 
         assert!(
-            matches!(result, Err(TokenError::NoSourceTokenCached(profile)) if profile == "developer")
+            matches!(result, Err(TokenError::NoSourceBaseTokenCached(profile)) if profile == "developer")
         );
         assert!(
             load_cache_entry(&cache_dir, &base_cache_key("developer"))
@@ -749,7 +749,10 @@ fn token_inside_handoff_margin_is_never_returned() {
         || times.next().unwrap(),
     );
 
-    assert!(matches!(result, Err(TokenError::NoSourceTokenCached(_))));
+    assert!(matches!(
+        result,
+        Err(TokenError::NoSourceBaseTokenCached(_))
+    ));
     assert!(client.request.borrow().is_none());
 }
 
@@ -776,7 +779,10 @@ fn cached_child_is_not_returned_when_base_provenance_is_missing() {
         || panic!("clock is not sampled before base provenance is established"),
     );
 
-    assert!(matches!(result, Err(TokenError::NoSourceTokenCached(_))));
+    assert!(matches!(
+        result,
+        Err(TokenError::NoSourceBaseTokenCached(_))
+    ));
     assert!(client.request.borrow().is_none());
 }
 

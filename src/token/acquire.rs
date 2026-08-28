@@ -7,7 +7,7 @@ use crate::cache::{
     cache_epoch, compute_cache_key, load_cache_entry, policy_fingerprint, replace_cache_candidate,
     save_cache_candidate,
 };
-use crate::config::{BaseProfile, ProfileConfig};
+use crate::config::{AppProfile, ProfileConfig};
 use crate::repository::RepositoryError;
 use crate::token::ScopedTokenClient;
 use std::path::Path;
@@ -37,10 +37,10 @@ pub(super) fn acquire_with_clock<
         "starting token acquisition"
     );
     match request.config.profiles.get(request.profile_name) {
-        Some(ProfileConfig::Base(profile)) => {
+        Some(ProfileConfig::App(profile)) => {
             tracing::debug!(
                 profile = request.profile_name,
-                profile_kind = "base",
+                profile_kind = "app",
                 "resolved token profile"
             );
             acquire_base(request, profile, now())
@@ -59,11 +59,11 @@ pub(super) fn acquire_with_clock<
 
 fn acquire_base(
     request: &AcquireRequest<'_>,
-    profile: &BaseProfile,
+    profile: &AppProfile,
     now: OffsetDateTime,
 ) -> Result<AcquiredToken, TokenError> {
     if !request.repositories.is_empty() {
-        return Err(TokenError::BaseScopeRejected(
+        return Err(TokenError::AppScopeRejected(
             request.profile_name.to_owned(),
         ));
     }
@@ -339,7 +339,7 @@ fn mint_and_persist<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
 fn finish_persisted_candidate<C: ScopedTokenClient>(
     client: &C,
     request: &AcquireRequest<'_>,
-    source: &crate::config::BaseProfile,
+    source: &crate::config::AppProfile,
     secret: &str,
     candidate: CacheEntry,
     saved: PersistedCandidate,

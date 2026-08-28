@@ -79,7 +79,7 @@ fn write_report(writer: &mut impl Write, report: &RevokeReport) -> io::Result<()
         match failure {
             RevokeFailure::MissingAppCredentials { entry } => writeln!(
                 writer,
-                "  - {entry}: configured base unavailable; deleted locally and token may remain active remotely"
+                "  - {entry}: configured app profile unavailable; deleted locally and token may remain active remotely"
             )?,
             RevokeFailure::ClientSecretUnavailable { entry } => writeln!(
                 writer,

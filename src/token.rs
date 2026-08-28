@@ -23,10 +23,10 @@ pub use ports::{
 pub use types::{AcquireRequest, AcquiredToken, BasePersistence, BaseTokenStatus};
 pub use validation::{validate_base_expiry, validate_scoped_expiry};
 
-use crate::config::BaseProfile;
+use crate::config::AppProfile;
 fn revoke_with_context<C: RevokeTokenClient + ?Sized>(
     client: &C,
-    profile: &BaseProfile,
+    profile: &AppProfile,
     token: &crate::cache::AccessToken,
     context: TokenError,
 ) -> TokenError {

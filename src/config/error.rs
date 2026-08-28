@@ -21,15 +21,15 @@ pub enum ConfigError {
         profile: String,
         source: String,
     },
-    ScopedFromNonBase {
+    ScopedFromNonApp {
         profile: String,
         source: String,
     },
-    ScopedFromSecretlessBase {
+    ScopedFromSecretlessApp {
         profile: String,
         source: String,
     },
-    InvalidBaseProfile {
+    InvalidAppProfile {
         profile: String,
         reason: String,
     },
@@ -71,16 +71,16 @@ impl fmt::Display for ConfigError {
                 f,
                 "scoped profile '{profile}' references unknown source profile '{source}'"
             ),
-            Self::ScopedFromNonBase { profile, source } => write!(
+            Self::ScopedFromNonApp { profile, source } => write!(
                 f,
-                "scoped profile '{profile}' references source profile '{source}' which is not a base profile"
+                "scoped profile '{profile}' references source profile '{source}' which is not an app profile"
             ),
-            Self::ScopedFromSecretlessBase { profile, source } => write!(
+            Self::ScopedFromSecretlessApp { profile, source } => write!(
                 f,
-                "scoped profile '{profile}' references secretless base profile '{source}'; scoped tokens require a client secret"
+                "scoped profile '{profile}' references secretless app profile '{source}'; scoped tokens require a client secret"
             ),
-            Self::InvalidBaseProfile { profile, reason } => {
-                write!(f, "invalid base profile '{profile}': {reason}")
+            Self::InvalidAppProfile { profile, reason } => {
+                write!(f, "invalid app profile '{profile}': {reason}")
             }
             Self::InvalidScopedProfile { profile, reason } => {
                 write!(f, "invalid scoped profile '{profile}': {reason}")
@@ -101,9 +101,9 @@ impl std::error::Error for ConfigError {
             | Self::UnsupportedVersion(_)
             | Self::MissingDefaultProfile(_)
             | Self::ScopedSourceNotFound { .. }
-            | Self::ScopedFromNonBase { .. }
-            | Self::ScopedFromSecretlessBase { .. }
-            | Self::InvalidBaseProfile { .. }
+            | Self::ScopedFromNonApp { .. }
+            | Self::ScopedFromSecretlessApp { .. }
+            | Self::InvalidAppProfile { .. }
             | Self::InvalidScopedProfile { .. } => None,
         }
     }

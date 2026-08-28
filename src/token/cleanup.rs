@@ -2,7 +2,7 @@ use crate::cache::{
     CacheEntry, CacheInspectionState, RunCacheEntry, RunState, claim_abandoned_run,
     claim_released_run, delete_entry_if_unchanged, delete_run_after_cleanup, inspect_cache,
 };
-use crate::config::{BaseProfile, Config};
+use crate::config::{AppProfile, Config};
 use crate::github::GitHubError;
 use crate::token::RevokeTokenClient;
 use std::path::Path;
@@ -312,7 +312,7 @@ fn cleanup_run_entry<C: RevokeTokenClient>(
     entry: &RunCacheEntry,
 ) -> CleanupAttempt {
     let label = cache_key.to_owned();
-    let Some(base) = validated_base(config, entry) else {
+    let Some(app) = validated_app(config, entry) else {
         tracing::debug!(
             cache_key,
             source_profile = entry.source_profile,
@@ -320,7 +320,7 @@ fn cleanup_run_entry<C: RevokeTokenClient>(
         );
         return Err(CleanupFailure::Configuration { entry: label });
     };
-    let Some(secret) = base.github_app.client_secret.as_deref() else {
+    let Some(secret) = app.github_app.client_secret.as_deref() else {
         tracing::debug!(
             cache_key,
             source_profile = entry.source_profile,
@@ -329,7 +329,7 @@ fn cleanup_run_entry<C: RevokeTokenClient>(
         return Err(CleanupFailure::ClientSecretUnavailable { entry: label });
     };
     match client.delete_token(
-        &base.github_app.client_id,
+        &app.github_app.client_id,
         secret,
         entry.access_token.as_ref(),
     ) {
@@ -360,13 +360,13 @@ fn cleanup_run_entry<C: RevokeTokenClient>(
     }
 }
 
-fn validated_base<'a>(config: &'a Config, entry: &RunCacheEntry) -> Option<&'a BaseProfile> {
+fn validated_app<'a>(config: &'a Config, entry: &RunCacheEntry) -> Option<&'a AppProfile> {
     match super::provenance::for_source(
         config,
         &entry.source_profile,
         &entry.source_authority_fingerprint,
     ) {
-        super::provenance::ConfiguredAuthority::Match(base) => Some(base),
+        super::provenance::ConfiguredAuthority::Match(app) => Some(app),
         super::provenance::ConfiguredAuthority::Mismatch
         | super::provenance::ConfiguredAuthority::Missing => None,
     }

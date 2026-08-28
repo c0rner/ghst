@@ -96,7 +96,7 @@ opens the file using `VISUAL`, `EDITOR`, or an available `nano`, `vim`, or `vi`.
 `ghst` securely reopens a regular configuration file without following links, restores private
 permissions, and rejects a target that cannot be safely opened and identified instead of repairing
 it through its path. After a successful editor exit, `ghst` validates the complete configuration.
-Edit the starter base profile for the dedicated App and the scoped profiles for the authority to
+Edit the starter app profile for the dedicated App and the scoped profiles for the authority to
 delegate:
 
 ```toml
@@ -116,7 +116,7 @@ repo = ["acme-corp/application", "acme-corp/shared-library", "auto"]
 permissions = { contents = "read", pull_requests = "read", issues = "read" }
 ```
 
-Then authenticate the base profile and start the tool:
+Then authenticate the app profile and start the tool:
 
 ```bash
 ghst login --profile developer
@@ -132,9 +132,9 @@ See the repository's [example configuration](profiles.toml) for additional profi
 
 ### Profiles and repository scope
 
-A base profile identifies the dedicated GitHub App whose installation/user intersection becomes
+An app profile identifies the dedicated GitHub App whose installation/user intersection becomes
 the authority ceiling. A scoped profile is a local scoping recipe: its
-`source` names one base, while `repo` and `permissions` describe the narrower token to request.
+`source` names one app profile, while `repo` and `permissions` describe the narrower token to request.
 
 `repo` accepts one selection as a string or several selections as a TOML array. `auto` resolves the
 current Git remote, an explicit `owner/repository` selects that repository, and `all` applies no
@@ -146,7 +146,7 @@ repo = ["acme-corp/application", "acme-corp/shared-library", "auto"]
 ```
 
 After resolving `auto`, `ghst` sorts and deduplicates explicit repositories and requires every
-owner to match the source base profile's configured account. `all` cannot be combined with another
+owner to match the source app profile's configured account. `all` cannot be combined with another
 selection. When one or more `--repo` options are supplied, they replace the complete configured
 selection rather than adding to it; repeated CLI values may still mix explicit repositories and
 `auto`. None of these choices can widen the repositories or permissions granted by GitHub to the

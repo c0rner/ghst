@@ -35,7 +35,6 @@ fn print_profiles<W: Write>(writer: &mut W, config: &Config, verbose: bool) -> i
             match profile {
                 ProfileConfig::App(app) => {
                     writeln!(writer, "    Account:     {}", app.github_app.account)?;
-                    writeln!(writer, "    Client ID:   {}", app.github_app.client_id)?;
                     writeln!(writer, "    Repo Scope:  all (app authority)")?;
                     let capabilities = if app.github_app.client_secret.is_some() {
                         "base tokens, scoped tokens, remote revocation"
@@ -118,7 +117,7 @@ permissions = { contents = "read", pull_requests = "read", issues = "read" }
         assert!(output.contains("Configured Profiles:"));
         assert!(output.contains("  developer [app]"));
         assert!(output.contains("    Account:     acme-corp"));
-        assert!(output.contains("    Client ID:   Iv1.8888888888888888"));
+        assert!(!output.contains("Iv1.8888888888888888"));
         assert!(output.contains("    Repo Scope:  all (app authority)"));
         assert!(output.contains("    Capabilities: base tokens, scoped tokens, remote revocation"));
         assert!(output.contains("* reader [scoped] (default)"));

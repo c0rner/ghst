@@ -3,14 +3,13 @@ use crate::cache::error::CacheError;
 use crate::cache::fs::{cache_file_path, create_private_tempfile, ensure_cache_dir};
 use crate::cache::key::{compute_cache_key, compute_run_cache_key};
 use crate::cache::storage::{
-    DeleteRootOutcome, claim_abandoned_run, claim_released_run, delete_cache_entry,
-    delete_root_if_generation, delete_run_after_cleanup, load_cache_entry, replace_cache_candidate,
+    DeleteBaseOutcome, claim_abandoned_run, claim_released_run, delete_base_if_generation,
+    delete_cache_entry, delete_run_after_cleanup, load_cache_entry, replace_cache_candidate,
     save_cache_entry, transition_run_to_running,
 };
 use crate::cache::types::{
-    CACHE_SCHEMA_VERSION, CacheEntry, DerivedCacheEntry, RUN_CACHE_SCHEMA_VERSION,
-    ReplaceCacheEntry, RootCacheEntry, RunCacheEntry, RunState, SaveCacheEntry, TokenExpiry,
-    authority_fingerprint,
+    BaseCacheEntry, CACHE_SCHEMA_VERSION, CacheEntry, RUN_CACHE_SCHEMA_VERSION, ReplaceCacheEntry,
+    RunCacheEntry, RunState, SaveCacheEntry, ScopedCacheEntry, TokenExpiry, authority_fingerprint,
 };
 use std::fs;
 use std::io::Write;
@@ -18,12 +17,12 @@ use std::sync::{Arc, Barrier};
 use std::thread;
 use time::{Duration, OffsetDateTime};
 
-fn root_key() -> String {
+fn base_key() -> String {
     compute_cache_key("developer", "all")
 }
 
-fn root_entry(token: &str, expiry: OffsetDateTime, authority: &str) -> CacheEntry {
-    CacheEntry::Root(RootCacheEntry {
+fn base_entry(token: &str, expiry: OffsetDateTime, authority: &str) -> CacheEntry {
+    CacheEntry::Base(BaseCacheEntry {
         version: CACHE_SCHEMA_VERSION,
         profile: "developer".into(),
         authority_fingerprint: authority.into(),
@@ -55,8 +54,8 @@ fn run_entry(run_id: &str, state: RunState) -> CacheEntry {
     })
 }
 
-fn derived_entry(token: &str, expiry: OffsetDateTime, parent_generation: &str) -> CacheEntry {
-    CacheEntry::Derived(DerivedCacheEntry {
+fn scoped_entry(token: &str, expiry: OffsetDateTime, parent_generation: &str) -> CacheEntry {
+    CacheEntry::Scoped(ScopedCacheEntry {
         version: CACHE_SCHEMA_VERSION,
         profile: "reader".into(),
         source_profile: "developer".into(),
@@ -94,35 +93,35 @@ fn expiry_policies_have_distinct_exact_boundaries() {
 }
 
 #[test]
-fn root_generation_deletion_is_atomic_compare_and_delete() {
+fn base_generation_deletion_is_atomic_compare_and_delete() {
     let temp = cache_dir();
     let directory = temp.path().join("cache");
     let now = OffsetDateTime::now_utc();
-    let rejected = root_entry("rejected", now + Duration::hours(1), "authority");
-    let CacheEntry::Root(rejected_data) = &rejected else {
-        panic!("expected root")
+    let rejected = base_entry("rejected", now + Duration::hours(1), "authority");
+    let CacheEntry::Base(rejected_data) = &rejected else {
+        panic!("expected base")
     };
     let rejected_generation = rejected_data.generation_fingerprint();
-    save_cache_entry(&directory, &root_key(), &rejected).unwrap();
+    save_cache_entry(&directory, &base_key(), &rejected).unwrap();
 
     assert_eq!(
-        delete_root_if_generation(&directory, &root_key(), &rejected_generation).unwrap(),
-        DeleteRootOutcome::Deleted
+        delete_base_if_generation(&directory, &base_key(), &rejected_generation).unwrap(),
+        DeleteBaseOutcome::Deleted
     );
-    assert!(load_cache_entry(&directory, &root_key()).unwrap().is_none());
+    assert!(load_cache_entry(&directory, &base_key()).unwrap().is_none());
     assert_eq!(
-        delete_root_if_generation(&directory, &root_key(), &rejected_generation).unwrap(),
-        DeleteRootOutcome::Missing
+        delete_base_if_generation(&directory, &base_key(), &rejected_generation).unwrap(),
+        DeleteBaseOutcome::Missing
     );
 
-    let replacement = root_entry("replacement", now + Duration::hours(1), "authority");
-    save_cache_entry(&directory, &root_key(), &replacement).unwrap();
+    let replacement = base_entry("replacement", now + Duration::hours(1), "authority");
+    save_cache_entry(&directory, &base_key(), &replacement).unwrap();
     assert_eq!(
-        delete_root_if_generation(&directory, &root_key(), &rejected_generation).unwrap(),
-        DeleteRootOutcome::Changed
+        delete_base_if_generation(&directory, &base_key(), &rejected_generation).unwrap(),
+        DeleteBaseOutcome::Changed
     );
     assert_eq!(
-        load_cache_entry(&directory, &root_key())
+        load_cache_entry(&directory, &base_key())
             .unwrap()
             .unwrap()
             .access_token()
@@ -136,15 +135,15 @@ fn renewal_compare_and_replace_returns_the_exact_displaced_entry() {
     let temp = cache_dir();
     let directory = temp.path().join("cache");
     let now = OffsetDateTime::now_utc();
-    let root = root_entry("root", now + Duration::hours(1), "authority");
-    let CacheEntry::Root(root_data) = &root else {
-        panic!("expected root")
+    let base = base_entry("base", now + Duration::hours(1), "authority");
+    let CacheEntry::Base(base_data) = &base else {
+        panic!("expected base")
     };
-    let generation = root_data.generation_fingerprint();
-    save_cache_entry(&directory, &root_key(), &root).unwrap();
+    let generation = base_data.generation_fingerprint();
+    save_cache_entry(&directory, &base_key(), &base).unwrap();
     let key = compute_cache_key("reader", "acme/api");
-    let selected = derived_entry("selected", now + Duration::minutes(5), &generation);
-    let candidate = derived_entry("candidate", now + Duration::hours(1), &generation);
+    let selected = scoped_entry("selected", now + Duration::minutes(5), &generation);
+    let candidate = scoped_entry("candidate", now + Duration::hours(1), &generation);
     save_cache_entry(&directory, &key, &selected).unwrap();
     let epoch = cache_epoch(&directory).unwrap();
 
@@ -154,7 +153,7 @@ fn renewal_compare_and_replace_returns_the_exact_displaced_entry() {
         &selected,
         &candidate,
         epoch,
-        (&root_key(), &generation),
+        (&base_key(), &generation),
         now,
     )
     .unwrap();
@@ -178,20 +177,20 @@ fn renewal_compare_and_replace_retains_a_compatible_concurrent_winner() {
     let temp = cache_dir();
     let directory = temp.path().join("cache");
     let now = OffsetDateTime::now_utc();
-    let root = root_entry("root", now + Duration::hours(1), "authority");
-    let CacheEntry::Root(root_data) = &root else {
-        panic!("expected root")
+    let base = base_entry("base", now + Duration::hours(1), "authority");
+    let CacheEntry::Base(base_data) = &base else {
+        panic!("expected base")
     };
-    let generation = root_data.generation_fingerprint();
-    save_cache_entry(&directory, &root_key(), &root).unwrap();
+    let generation = base_data.generation_fingerprint();
+    save_cache_entry(&directory, &base_key(), &base).unwrap();
     let key = compute_cache_key("reader", "acme/api");
-    let selected = derived_entry("selected", now + Duration::minutes(5), &generation);
+    let selected = scoped_entry("selected", now + Duration::minutes(5), &generation);
     save_cache_entry(&directory, &key, &selected).unwrap();
     let epoch = cache_epoch(&directory).unwrap();
     delete_cache_entry(&directory, &key).unwrap();
-    let winner = derived_entry("winner", now + Duration::hours(1), &generation);
+    let winner = scoped_entry("winner", now + Duration::hours(1), &generation);
     save_cache_entry(&directory, &key, &winner).unwrap();
-    let candidate = derived_entry("candidate", now + Duration::hours(1), &generation);
+    let candidate = scoped_entry("candidate", now + Duration::hours(1), &generation);
 
     let result = replace_cache_candidate(
         &directory,
@@ -199,7 +198,7 @@ fn renewal_compare_and_replace_retains_a_compatible_concurrent_winner() {
         &selected,
         &candidate,
         epoch,
-        (&root_key(), &generation),
+        (&base_key(), &generation),
         now,
     )
     .unwrap();
@@ -275,7 +274,7 @@ fn abandoned_transition_rejects_a_stale_snapshot() {
 
 #[test]
 fn secrets_are_redacted_and_zeroizing_type_serializes() {
-    let entry = root_entry(
+    let entry = base_entry(
         "ghu_secret_123456",
         OffsetDateTime::now_utc() + Duration::hours(1),
         "authority",
@@ -293,18 +292,18 @@ fn secrets_are_redacted_and_zeroizing_type_serializes() {
 fn current_cache_schema_is_stable_and_round_trips() {
     let cases = [
         (
-            CacheEntry::Root(RootCacheEntry {
+            CacheEntry::Base(BaseCacheEntry {
                 version: CACHE_SCHEMA_VERSION,
                 profile: "developer".into(),
                 authority_fingerprint: "authority".into(),
                 github_user: "octocat".into(),
                 expires_at: TokenExpiry::parse("2026-08-09T11:00:00Z").unwrap(),
-                access_token: "root-token".into(),
+                access_token: "base-token".into(),
             }),
-            r#"{"kind":"root","version":4,"profile":"developer","authority_fingerprint":"authority","github_user":"octocat","expires_at":"2026-08-09T11:00:00Z","access_token":"root-token"}"#,
+            r#"{"kind":"base","version":5,"profile":"developer","authority_fingerprint":"authority","github_user":"octocat","expires_at":"2026-08-09T11:00:00Z","access_token":"base-token"}"#,
         ),
         (
-            CacheEntry::Derived(DerivedCacheEntry {
+            CacheEntry::Scoped(ScopedCacheEntry {
                 version: CACHE_SCHEMA_VERSION,
                 profile: "reader".into(),
                 source_profile: "developer".into(),
@@ -314,9 +313,9 @@ fn current_cache_schema_is_stable_and_round_trips() {
                 github_user: "octocat".into(),
                 repo_scope: "acme/api".into(),
                 expires_at: TokenExpiry::parse("2026-08-09T11:00:00Z").unwrap(),
-                access_token: "derived-token".into(),
+                access_token: "scoped-token".into(),
             }),
-            r#"{"kind":"derived","version":4,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","parent_generation":"generation","policy_fingerprint":"policy","github_user":"octocat","repo_scope":"acme/api","expires_at":"2026-08-09T11:00:00Z","access_token":"derived-token"}"#,
+            r#"{"kind":"scoped","version":5,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","parent_generation":"generation","policy_fingerprint":"policy","github_user":"octocat","repo_scope":"acme/api","expires_at":"2026-08-09T11:00:00Z","access_token":"scoped-token"}"#,
         ),
         (
             CacheEntry::Run(RunCacheEntry {
@@ -354,23 +353,23 @@ fn current_cache_schema_is_stable_and_round_trips() {
 }
 
 #[test]
-fn unsupported_schemas_are_discarded() {
+fn unsupported_schemas_fail_closed_and_are_not_overwritten() {
     let cases = [
         (
-            root_key(),
-            r#"{"kind":"root","version":3,"profile":"developer","authority_fingerprint":"authority","github_user":"octocat","issued_at":"2026-08-09T10:00:00Z","expires_at":"2026-08-09T11:00:00Z","access_token":"root-token"}"#,
+            base_key(),
+            r#"{"kind":"base","version":3,"profile":"developer","authority_fingerprint":"authority","github_user":"octocat","issued_at":"2026-08-09T10:00:00Z","expires_at":"2026-08-09T11:00:00Z","access_token":"base-token"}"#,
         ),
         (
             compute_cache_key("reader", "acme/api"),
-            r#"{"kind":"derived","version":3,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","parent_generation":"generation","policy_fingerprint":"policy","github_user":"octocat","repo_scope":"acme/api","issued_at":"2026-08-09T10:00:00Z","expires_at":"2026-08-09T11:00:00Z","access_token":"derived-token"}"#,
+            r#"{"kind":"scoped","version":3,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","parent_generation":"generation","policy_fingerprint":"policy","github_user":"octocat","repo_scope":"acme/api","issued_at":"2026-08-09T10:00:00Z","expires_at":"2026-08-09T11:00:00Z","access_token":"scoped-token"}"#,
         ),
         (
             compute_run_cache_key("run-1"),
             r#"{"kind":"run","version":2,"run_id":"run-1","state":"running","wrapper_pid":100,"child_pid":101,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","github_user":"octocat","repo_scope":"acme/api","expires_at":"2026-08-09T11:00:00Z","access_token":"run-token"}"#,
         ),
         (
-            root_key(),
-            r#"{"kind":"root","profile":"developer","authority_fingerprint":"authority","github_user":"octocat","expires_at":"2026-08-09T11:00:00Z","access_token":"root-token"}"#,
+            base_key(),
+            r#"{"kind":"base","profile":"developer","authority_fingerprint":"authority","github_user":"octocat","expires_at":"2026-08-09T11:00:00Z","access_token":"base-token"}"#,
         ),
     ];
 
@@ -383,22 +382,61 @@ fn unsupported_schemas_are_discarded() {
         file.write_all(json.as_bytes()).unwrap();
         file.persist(&path).unwrap();
 
-        assert!(load_cache_entry(&directory, &key).unwrap().is_none());
-        assert!(!path.exists());
+        assert!(matches!(
+            load_cache_entry(&directory, &key),
+            Err(CacheError::UnsupportedSchema { .. })
+        ));
+        let before = fs::read(&path).unwrap();
+        let replacement = if key == base_key() {
+            base_entry(
+                "replacement",
+                OffsetDateTime::now_utc() + Duration::hours(1),
+                "authority",
+            )
+        } else if key == compute_run_cache_key("run-1") {
+            run_entry("run-1", RunState::Running)
+        } else {
+            scoped_entry(
+                "replacement",
+                OffsetDateTime::now_utc() + Duration::hours(1),
+                "generation",
+            )
+        };
+        assert!(save_cache_entry(&directory, &key, &replacement).is_err());
+        assert_eq!(fs::read(path).unwrap(), before);
     }
+}
+
+#[test]
+fn unknown_cache_kind_uses_the_normal_decoding_error_and_is_retained() {
+    let temp = cache_dir();
+    let directory = temp.path().join("cache");
+    ensure_cache_dir(&directory).unwrap();
+    let key = base_key();
+    let path = cache_file_path(&directory, &key);
+    let invalid = br#"{"kind":"obsolete","version":5}"#;
+    let mut file = create_private_tempfile(&directory).unwrap();
+    file.write_all(invalid).unwrap();
+    file.persist(&path).unwrap();
+
+    assert!(matches!(
+        load_cache_entry(&directory, &key),
+        Err(CacheError::Json(_))
+    ));
+    assert_eq!(fs::read(path).unwrap(), invalid);
 }
 
 #[test]
 fn save_creates_private_directory_and_entry() {
     let temp = cache_dir();
     let directory = temp.path().join("cache");
-    let entry = root_entry(
+    let entry = base_entry(
         "first",
         OffsetDateTime::now_utc() + Duration::hours(1),
         "authority",
     );
     assert!(matches!(
-        save_cache_entry(&directory, &root_key(), &entry).unwrap(),
+        save_cache_entry(&directory, &base_key(), &entry).unwrap(),
         SaveCacheEntry::Saved
     ));
 
@@ -410,7 +448,7 @@ fn save_creates_private_directory_and_entry() {
             0o700
         );
         assert_eq!(
-            fs::metadata(cache_file_path(&directory, &root_key()))
+            fs::metadata(cache_file_path(&directory, &base_key()))
                 .unwrap()
                 .permissions()
                 .mode()
@@ -437,13 +475,13 @@ fn insecure_or_symlinked_cache_state_fails_closed() {
     let insecure = temp.path().join("insecure");
     fs::create_dir(&insecure).unwrap();
     fs::set_permissions(&insecure, fs::Permissions::from_mode(0o755)).unwrap();
-    let entry = root_entry(
+    let entry = base_entry(
         "token",
         OffsetDateTime::now_utc() + Duration::hours(1),
         "authority",
     );
     assert!(matches!(
-        save_cache_entry(&insecure, &root_key(), &entry),
+        save_cache_entry(&insecure, &base_key(), &entry),
         Err(CacheError::InsecurePath { .. })
     ));
 
@@ -463,7 +501,7 @@ fn insecure_or_symlinked_cache_state_fails_closed() {
 fn insecure_global_lock_file_fails_closed() {
     use std::os::unix::fs::{PermissionsExt, symlink};
 
-    let entry = root_entry(
+    let entry = base_entry(
         "token",
         OffsetDateTime::now_utc() + Duration::hours(1),
         "authority",
@@ -476,7 +514,7 @@ fn insecure_global_lock_file_fails_closed() {
     fs::write(&symlink_target, b"").unwrap();
     symlink(&symlink_target, symlink_cache.join(".cache.lock")).unwrap();
     assert!(matches!(
-        save_cache_entry(&symlink_cache, &root_key(), &entry),
+        save_cache_entry(&symlink_cache, &base_key(), &entry),
         Err(CacheError::InsecurePath { .. })
     ));
 
@@ -487,7 +525,7 @@ fn insecure_global_lock_file_fails_closed() {
     fs::write(&mode_lock, b"").unwrap();
     fs::set_permissions(&mode_lock, fs::Permissions::from_mode(0o644)).unwrap();
     assert!(matches!(
-        save_cache_entry(&mode_cache, &root_key(), &entry),
+        save_cache_entry(&mode_cache, &base_key(), &entry),
         Err(CacheError::InsecurePath { .. })
     ));
 
@@ -499,7 +537,7 @@ fn insecure_global_lock_file_fails_closed() {
     fs::set_permissions(&hard_link_target, fs::Permissions::from_mode(0o600)).unwrap();
     fs::hard_link(&hard_link_target, hard_link_cache.join(".cache.lock")).unwrap();
     assert!(matches!(
-        save_cache_entry(&hard_link_cache, &root_key(), &entry),
+        save_cache_entry(&hard_link_cache, &base_key(), &entry),
         Err(CacheError::InsecurePath { .. })
     ));
 }
@@ -509,17 +547,17 @@ fn malformed_entry_is_never_overwritten() {
     let temp = cache_dir();
     let directory = temp.path().join("cache");
     ensure_cache_dir(&directory).unwrap();
-    let path = cache_file_path(&directory, &root_key());
+    let path = cache_file_path(&directory, &base_key());
     let mut file = create_private_tempfile(&directory).unwrap();
     file.write_all(b"{ malformed").unwrap();
     file.persist(&path).unwrap();
-    let replacement = root_entry(
+    let replacement = base_entry(
         "replacement",
         OffsetDateTime::now_utc() + Duration::hours(1),
         "authority",
     );
     assert!(matches!(
-        save_cache_entry(&directory, &root_key(), &replacement),
+        save_cache_entry(&directory, &base_key(), &replacement),
         Err(CacheError::Json(_))
     ));
     assert_eq!(fs::read_to_string(path).unwrap(), "{ malformed");
@@ -530,10 +568,10 @@ fn malformed_current_expiry_is_not_discarded_or_overwritten() {
     let temp = cache_dir();
     let directory = temp.path().join("cache");
     ensure_cache_dir(&directory).unwrap();
-    let path = cache_file_path(&directory, &root_key());
+    let path = cache_file_path(&directory, &base_key());
     let invalid = r#"{
-        "kind":"root",
-        "version":4,
+        "kind":"base",
+        "version":5,
         "profile":"developer",
         "authority_fingerprint":"authority",
         "github_user":"octocat",
@@ -544,16 +582,16 @@ fn malformed_current_expiry_is_not_discarded_or_overwritten() {
     file.write_all(invalid.as_bytes()).unwrap();
     file.persist(&path).unwrap();
     assert!(matches!(
-        load_cache_entry(&directory, &root_key()),
+        load_cache_entry(&directory, &base_key()),
         Err(CacheError::Json(_))
     ));
-    let replacement = root_entry(
+    let replacement = base_entry(
         "replacement",
         OffsetDateTime::now_utc() + Duration::hours(1),
         "authority",
     );
     assert!(matches!(
-        save_cache_entry(&directory, &root_key(), &replacement),
+        save_cache_entry(&directory, &base_key(), &replacement),
         Err(CacheError::Json(_))
     ));
     assert_eq!(fs::read_to_string(path).unwrap(), invalid);
@@ -563,32 +601,32 @@ fn malformed_current_expiry_is_not_discarded_or_overwritten() {
 fn compatible_entry_is_retained_and_wrong_kind_fails_closed() {
     let temp = cache_dir();
     let directory = temp.path().join("cache");
-    let existing = root_entry(
+    let existing = base_entry(
         "existing",
         OffsetDateTime::now_utc() + Duration::hours(1),
         "same",
     );
-    let candidate = root_entry(
+    let candidate = base_entry(
         "candidate",
         OffsetDateTime::now_utc() + Duration::hours(2),
         "same",
     );
-    save_cache_entry(&directory, &root_key(), &existing).unwrap();
-    let retained = save_cache_entry(&directory, &root_key(), &candidate).unwrap();
+    save_cache_entry(&directory, &base_key(), &existing).unwrap();
+    let retained = save_cache_entry(&directory, &base_key(), &candidate).unwrap();
     match retained {
         SaveCacheEntry::Retained(entry) => match *entry {
-            CacheEntry::Root(RootCacheEntry { access_token, .. }) => {
+            CacheEntry::Base(BaseCacheEntry { access_token, .. }) => {
                 assert_eq!(access_token.as_ref(), "existing");
             }
-            CacheEntry::Derived(_) | CacheEntry::Run(_) => {
-                panic!("expected retained root entry")
+            CacheEntry::Scoped(_) | CacheEntry::Run(_) => {
+                panic!("expected retained base entry")
             }
         },
         SaveCacheEntry::Saved => panic!("expected compatible entry to be retained"),
     }
 
     let other = temp.path().join("other");
-    let derived = CacheEntry::Derived(DerivedCacheEntry {
+    let scoped = CacheEntry::Scoped(ScopedCacheEntry {
         version: CACHE_SCHEMA_VERSION,
         profile: "developer".into(),
         source_profile: "developer".into(),
@@ -598,11 +636,11 @@ fn compatible_entry_is_retained_and_wrong_kind_fails_closed() {
         github_user: "octocat".into(),
         repo_scope: "all".into(),
         expires_at: TokenExpiry::new(OffsetDateTime::now_utc() + Duration::hours(1)),
-        access_token: "derived".into(),
+        access_token: "scoped".into(),
     });
-    save_cache_entry(&other, &root_key(), &derived).unwrap();
+    save_cache_entry(&other, &base_key(), &scoped).unwrap();
     assert!(matches!(
-        save_cache_entry(&other, &root_key(), &candidate),
+        save_cache_entry(&other, &base_key(), &candidate),
         Err(CacheError::UnexpectedKind { .. })
     ));
 }
@@ -612,7 +650,7 @@ fn inconsistent_embedded_key_metadata_fails_closed() {
     let temp = cache_dir();
     let directory = temp.path().join("cache");
     let wrong_key = compute_cache_key("different", "all");
-    let entry = root_entry(
+    let entry = base_entry(
         "token",
         OffsetDateTime::now_utc() + Duration::hours(1),
         "authority",
@@ -628,12 +666,12 @@ fn concurrent_saves_retain_one_compatible_winner() {
     let temp = cache_dir();
     let directory = Arc::new(temp.path().join("cache"));
     let barrier = Arc::new(Barrier::new(2));
-    let first = root_entry(
+    let first = base_entry(
         "first",
         OffsetDateTime::now_utc() + Duration::hours(1),
         "authority",
     );
-    let second = root_entry(
+    let second = base_entry(
         "second",
         OffsetDateTime::now_utc() + Duration::hours(1),
         "authority",
@@ -643,7 +681,7 @@ fn concurrent_saves_retain_one_compatible_winner() {
         let barrier = Arc::clone(&barrier);
         thread::spawn(move || {
             barrier.wait();
-            save_cache_entry(&directory, &root_key(), &entry).unwrap()
+            save_cache_entry(&directory, &base_key(), &entry).unwrap()
         })
     });
     let results = handles.map(|handle| handle.join().unwrap());

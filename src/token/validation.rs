@@ -2,16 +2,16 @@ use super::TokenError;
 use crate::cache::TokenExpiry;
 use time::{Duration, OffsetDateTime};
 
-pub fn validate_root_expiry(
+pub fn validate_base_expiry(
     expires_in: Option<u64>,
     now: OffsetDateTime,
 ) -> Result<TokenExpiry, TokenError> {
     let seconds = expires_in.ok_or_else(|| TokenError::InvalidLifetime {
-        token_kind: "root",
+        token_kind: "base",
         reason: "response did not contain expires_in".into(),
     })?;
     let seconds = i64::try_from(seconds).map_err(|_| TokenError::InvalidLifetime {
-        token_kind: "root",
+        token_kind: "base",
         reason: "expires_in cannot be represented safely".into(),
     })?;
     let expiry = now
@@ -19,12 +19,12 @@ pub fn validate_root_expiry(
         .and_then(|value| value.replace_nanosecond(0).ok())
         .map(TokenExpiry::new)
         .ok_or_else(|| TokenError::InvalidLifetime {
-            token_kind: "root",
+            token_kind: "base",
             reason: "expires_in cannot be represented safely".into(),
         })?;
     if !expiry.is_safe_to_handoff_at(now) {
         return Err(TokenError::InvalidLifetime {
-            token_kind: "root",
+            token_kind: "base",
             reason: "expires_in is not beyond the 30-second safety margin".into(),
         });
     }

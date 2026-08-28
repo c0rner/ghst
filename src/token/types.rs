@@ -21,12 +21,12 @@ impl fmt::Debug for AcquiredToken {
     }
 }
 
-pub enum RootPersistence {
-    Saved(RootTokenStatus),
-    Retained(RootTokenStatus),
+pub enum BasePersistence {
+    Saved(BaseTokenStatus),
+    Retained(BaseTokenStatus),
 }
 
-pub struct RootTokenStatus {
+pub struct BaseTokenStatus {
     pub github_user: String,
     pub expires_at: TokenExpiry,
 }

@@ -25,7 +25,7 @@ time = { version = "0.3", features = ["formatting", "local-offset", "parsing", "
 toml = "1.1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-ureq = { version = "3.3", features = ["json"] }
+ureq = { version = "3.4", features = ["json"] }
 zeroize = { version = "1.9", features = ["serde"] }
 
 [lints.rust]
@@ -51,5 +51,5 @@ inherits = "release"
 lto = "thin"
 
 [target."cfg(unix)".dependencies]
-rustix = { version = "1.1.4", features = ["fs", "process"] }
+rustix = { version = "1.1", features = ["fs", "process"] }
 signal-hook = "0.4"

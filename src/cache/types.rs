@@ -7,10 +7,10 @@ use time::format_description::well_known::Rfc3339;
 use time::{Duration, OffsetDateTime};
 use zeroize::Zeroizing;
 
-pub const CACHE_SCHEMA_VERSION: u32 = 4;
+pub const CACHE_SCHEMA_VERSION: u32 = 5;
 pub const RUN_CACHE_SCHEMA_VERSION: u32 = 3;
 pub const TOKEN_SAFETY_MARGIN: Duration = Duration::seconds(30);
-pub const DERIVED_TOKEN_RENEWAL_WINDOW: Duration = Duration::minutes(10);
+pub const SCOPED_TOKEN_RENEWAL_WINDOW: Duration = Duration::minutes(10);
 
 /// A secret access token that is zeroized on drop and never exposed by `Debug`.
 #[derive(PartialEq, Eq, Serialize, Deserialize)]
@@ -69,7 +69,7 @@ impl TokenExpiry {
     }
 
     pub fn is_due_for_renewal_at(self, now: OffsetDateTime) -> bool {
-        self.0 <= now + DERIVED_TOKEN_RENEWAL_WINDOW
+        self.0 <= now + SCOPED_TOKEN_RENEWAL_WINDOW
     }
 }
 
@@ -102,56 +102,56 @@ impl<'de> Deserialize<'de> for TokenExpiry {
 #[derive(PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CacheEntry {
-    Root(RootCacheEntry),
-    Derived(DerivedCacheEntry),
+    Base(BaseCacheEntry),
+    Scoped(ScopedCacheEntry),
     Run(RunCacheEntry),
 }
 
 impl CacheEntry {
     pub const fn kind_name(&self) -> &'static str {
         match self {
-            Self::Root(_) => "root",
-            Self::Derived(_) => "derived",
+            Self::Base(_) => "base",
+            Self::Scoped(_) => "scoped",
             Self::Run(_) => "run",
         }
     }
 
     pub fn profile(&self) -> &str {
         match self {
-            Self::Root(entry) => &entry.profile,
-            Self::Derived(entry) => &entry.profile,
+            Self::Base(entry) => &entry.profile,
+            Self::Scoped(entry) => &entry.profile,
             Self::Run(entry) => &entry.profile,
         }
     }
 
     pub fn repo_scope(&self) -> &str {
         match self {
-            Self::Root(_) => "all",
-            Self::Derived(entry) => &entry.repo_scope,
+            Self::Base(_) => "all",
+            Self::Scoped(entry) => &entry.repo_scope,
             Self::Run(entry) => &entry.repo_scope,
         }
     }
 
     pub const fn access_token(&self) -> &AccessToken {
         match self {
-            Self::Root(entry) => &entry.access_token,
-            Self::Derived(entry) => &entry.access_token,
+            Self::Base(entry) => &entry.access_token,
+            Self::Scoped(entry) => &entry.access_token,
             Self::Run(entry) => &entry.access_token,
         }
     }
 
     pub const fn is_current(&self) -> bool {
         match self {
-            Self::Root(entry) => entry.version == CACHE_SCHEMA_VERSION,
-            Self::Derived(entry) => entry.version == CACHE_SCHEMA_VERSION,
+            Self::Base(entry) => entry.version == CACHE_SCHEMA_VERSION,
+            Self::Scoped(entry) => entry.version == CACHE_SCHEMA_VERSION,
             Self::Run(entry) => entry.version == RUN_CACHE_SCHEMA_VERSION,
         }
     }
 
     pub fn is_safe_to_handoff_at(&self, now: OffsetDateTime) -> bool {
         match self {
-            Self::Root(entry) => entry.expires_at.is_safe_to_handoff_at(now),
-            Self::Derived(entry) => entry.expires_at.is_safe_to_handoff_at(now),
+            Self::Base(entry) => entry.expires_at.is_safe_to_handoff_at(now),
+            Self::Scoped(entry) => entry.expires_at.is_safe_to_handoff_at(now),
             Self::Run(entry) => entry.expires_at.is_safe_to_handoff_at(now),
         }
     }
@@ -162,11 +162,11 @@ impl CacheEntry {
         }
 
         match (self, candidate) {
-            (Self::Root(existing), Self::Root(candidate)) => {
+            (Self::Base(existing), Self::Base(candidate)) => {
                 existing.profile == candidate.profile
                     && existing.authority_fingerprint == candidate.authority_fingerprint
             }
-            (Self::Derived(existing), Self::Derived(candidate)) => {
+            (Self::Scoped(existing), Self::Scoped(candidate)) => {
                 existing.profile == candidate.profile
                     && existing.source_profile == candidate.source_profile
                     && existing.source_authority_fingerprint
@@ -183,8 +183,8 @@ impl CacheEntry {
 impl fmt::Debug for CacheEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Root(entry) => f.debug_tuple("Root").field(entry).finish(),
-            Self::Derived(entry) => f.debug_tuple("Derived").field(entry).finish(),
+            Self::Base(entry) => f.debug_tuple("Base").field(entry).finish(),
+            Self::Scoped(entry) => f.debug_tuple("Scoped").field(entry).finish(),
             Self::Run(entry) => f.debug_tuple("Run").field(entry).finish(),
         }
     }
@@ -192,7 +192,7 @@ impl fmt::Debug for CacheEntry {
 
 #[derive(PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RootCacheEntry {
+pub struct BaseCacheEntry {
     pub version: u32,
     pub profile: String,
     pub authority_fingerprint: String,
@@ -201,15 +201,15 @@ pub struct RootCacheEntry {
     pub access_token: AccessToken,
 }
 
-impl RootCacheEntry {
+impl BaseCacheEntry {
     pub fn generation_fingerprint(&self) -> String {
         fingerprint(&[self.access_token.as_ref()])
     }
 }
 
-impl fmt::Debug for RootCacheEntry {
+impl fmt::Debug for BaseCacheEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RootCacheEntry")
+        f.debug_struct("BaseCacheEntry")
             .field("version", &self.version)
             .field("profile", &self.profile)
             .field("authority_fingerprint", &self.authority_fingerprint)
@@ -222,7 +222,7 @@ impl fmt::Debug for RootCacheEntry {
 
 #[derive(PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct DerivedCacheEntry {
+pub struct ScopedCacheEntry {
     pub version: u32,
     pub profile: String,
     pub source_profile: String,
@@ -284,9 +284,9 @@ impl fmt::Debug for RunCacheEntry {
     }
 }
 
-impl fmt::Debug for DerivedCacheEntry {
+impl fmt::Debug for ScopedCacheEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DerivedCacheEntry")
+        f.debug_struct("ScopedCacheEntry")
             .field("version", &self.version)
             .field("profile", &self.profile)
             .field("source_profile", &self.source_profile)
@@ -311,7 +311,7 @@ pub enum SaveCacheEntry {
     Retained(Box<CacheEntry>),
 }
 
-/// Result of atomically replacing the exact derived entry selected for renewal.
+/// Result of atomically replacing the exact scoped entry selected for renewal.
 #[derive(Debug)]
 pub enum ReplaceCacheEntry {
     Replaced(Box<CacheEntry>),

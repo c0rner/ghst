@@ -26,8 +26,13 @@ pub enum CacheError {
         expected: u64,
         actual: u64,
     },
-    RootGenerationChanged,
+    BaseGenerationChanged,
     RenewalEntryChanged,
+    UnsupportedSchema {
+        kind: String,
+        version: Option<u32>,
+        expected: u32,
+    },
     Platform(&'static str),
 }
 
@@ -63,12 +68,31 @@ impl fmt::Display for CacheError {
                 f,
                 "cache epoch changed from {expected} to {actual} while issuing a token"
             ),
-            Self::RootGenerationChanged => {
-                write!(f, "source root generation changed while issuing a token")
+            Self::BaseGenerationChanged => {
+                write!(
+                    f,
+                    "source base token generation changed while issuing a token"
+                )
             }
             Self::RenewalEntryChanged => {
-                write!(f, "derived cache entry changed while renewing a token")
+                write!(f, "scoped cache entry changed while renewing a token")
             }
+            Self::UnsupportedSchema {
+                kind,
+                version: Some(version),
+                expected,
+            } => write!(
+                f,
+                "unsupported {kind} cache schema version {version}, expected {expected}"
+            ),
+            Self::UnsupportedSchema {
+                kind,
+                version: None,
+                expected,
+            } => write!(
+                f,
+                "missing {kind} cache schema version, expected {expected}"
+            ),
             Self::Platform(reason) => write!(f, "cache platform error: {reason}"),
         }
     }
@@ -88,8 +112,9 @@ impl std::error::Error for CacheError {
             | Self::MalformedEpoch
             | Self::EpochExhausted
             | Self::EpochChanged { .. }
-            | Self::RootGenerationChanged
+            | Self::BaseGenerationChanged
             | Self::RenewalEntryChanged
+            | Self::UnsupportedSchema { .. }
             | Self::Platform(_) => None,
         }
     }

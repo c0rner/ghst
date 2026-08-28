@@ -4,6 +4,10 @@ All notable changes to `ghst` are documented in this file.
 
 ## [Unreleased]
 
+### Breaking
+
+- Adopt app/scoped terminology for profiles and base/scoped terminology for tokens throughout the CLI, cache, diagnostics, configuration model, and documentation. This is a breaking cache change: reusable entries now use schema version 5 and the `base` and `scoped` kind tags. Unsupported or malformed cache artifacts fail closed.
+
 ## [0.5.2] - 2026-08-26
 
 ### Added
@@ -13,14 +17,14 @@ All notable changes to `ghst` are documented in this file.
 
 ### Fixed
 
-- Evict cached root token on permanent GitHub authorization rejection (HTTP 401/404) during scoped-token minting ([#43]).
-- Display token expiry timestamps in the system local timezone (with UTC fallback) and normalize root token expiry to whole-second precision ([#42]).
+- Evict cached base token on permanent GitHub authorization rejection (HTTP 401/404) during scoped-token minting ([#43]).
+- Display token expiry timestamps in the system local timezone (with UTC fallback) and normalize base token expiry to whole-second precision ([#42]).
 
 ## [0.5.1] - 2026-08-25
 
 ### Added
 
-- Support multiple repositories in derived profiles via TOML arrays and CLI overrides ([#39]).
+- Support multiple repositories in scoped profiles via TOML arrays and CLI overrides ([#39]).
 - Add actionable debug and trace logging across token acquisition, cache lookups, refresh flows, and child process execution ([#38]).
 - Add `ghst config edit` command to securely edit configuration files with editor discovery, descriptor permission validation, and nonblocking validation before saving ([#34]).
 

@@ -17,23 +17,23 @@ pub enum ConfigError {
     Parse(toml::de::Error),
     UnsupportedVersion(u32),
     MissingDefaultProfile(String),
-    ProfileNotFound {
+    ScopedSourceNotFound {
         profile: String,
         source: String,
     },
-    DerivedFromNonRoot {
+    ScopedFromNonApp {
         profile: String,
         source: String,
     },
-    DerivedFromSecretlessRoot {
+    ScopedFromSecretlessApp {
         profile: String,
         source: String,
     },
-    InvalidRootProfile {
+    InvalidAppProfile {
         profile: String,
         reason: String,
     },
-    InvalidDerivedProfile {
+    InvalidScopedProfile {
         profile: String,
         reason: String,
     },
@@ -67,23 +67,23 @@ impl fmt::Display for ConfigError {
             Self::MissingDefaultProfile(p) => {
                 write!(f, "default profile '{p}' is not defined in profiles")
             }
-            Self::ProfileNotFound { profile, source } => write!(
+            Self::ScopedSourceNotFound { profile, source } => write!(
                 f,
-                "derived profile '{profile}' references unknown source profile '{source}'"
+                "scoped profile '{profile}' references unknown source profile '{source}'"
             ),
-            Self::DerivedFromNonRoot { profile, source } => write!(
+            Self::ScopedFromNonApp { profile, source } => write!(
                 f,
-                "derived profile '{profile}' references source profile '{source}' which is not a root profile"
+                "scoped profile '{profile}' references source profile '{source}' which is not an app profile"
             ),
-            Self::DerivedFromSecretlessRoot { profile, source } => write!(
+            Self::ScopedFromSecretlessApp { profile, source } => write!(
                 f,
-                "derived profile '{profile}' references secretless root profile '{source}'; derived tokens require a client secret"
+                "scoped profile '{profile}' references secretless app profile '{source}'; scoped tokens require a client secret"
             ),
-            Self::InvalidRootProfile { profile, reason } => {
-                write!(f, "invalid root profile '{profile}': {reason}")
+            Self::InvalidAppProfile { profile, reason } => {
+                write!(f, "invalid app profile '{profile}': {reason}")
             }
-            Self::InvalidDerivedProfile { profile, reason } => {
-                write!(f, "invalid derived profile '{profile}': {reason}")
+            Self::InvalidScopedProfile { profile, reason } => {
+                write!(f, "invalid scoped profile '{profile}': {reason}")
             }
         }
     }
@@ -100,11 +100,11 @@ impl std::error::Error for ConfigError {
             | Self::InsecurePath { .. }
             | Self::UnsupportedVersion(_)
             | Self::MissingDefaultProfile(_)
-            | Self::ProfileNotFound { .. }
-            | Self::DerivedFromNonRoot { .. }
-            | Self::DerivedFromSecretlessRoot { .. }
-            | Self::InvalidRootProfile { .. }
-            | Self::InvalidDerivedProfile { .. } => None,
+            | Self::ScopedSourceNotFound { .. }
+            | Self::ScopedFromNonApp { .. }
+            | Self::ScopedFromSecretlessApp { .. }
+            | Self::InvalidAppProfile { .. }
+            | Self::InvalidScopedProfile { .. } => None,
         }
     }
 }

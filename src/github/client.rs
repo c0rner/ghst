@@ -4,7 +4,7 @@ use crate::github::types::{
     ScopedTokenResponse, UserResponse,
 };
 use crate::token::{
-    GitHubUser, IssuedRootToken, IssuedScopedToken, RevokeTokenClient, RootTokenClient,
+    BaseTokenClient, GitHubUser, IssuedBaseToken, IssuedScopedToken, RevokeTokenClient,
     ScopedTokenClient, ScopedTokenRequest,
 };
 use base64::Engine;
@@ -103,12 +103,12 @@ impl GitHubClient {
     ///
     /// # Errors
     ///
-    /// Returns `Ok(IssuedRootToken)` on success, or `GitHubError` for OAuth pending/error states.
+    /// Returns `Ok(IssuedBaseToken)` on success, or `GitHubError` for OAuth pending/error states.
     pub fn poll_access_token(
         &self,
         client_id: &str,
         device_code: &str,
-    ) -> Result<IssuedRootToken, GitHubError> {
+    ) -> Result<IssuedBaseToken, GitHubError> {
         let url = format!("{}/login/oauth/access_token", self.base_url);
         let body = serde_json::json!({
             "client_id": client_id,
@@ -149,7 +149,7 @@ impl GitHubClient {
         let response: AccessTokenResponse =
             serde_json::from_value(value).map_err(GitHubError::Json)?;
         debug!("GitHub device authorization succeeded");
-        Ok(narrow_root_token(response))
+        Ok(narrow_base_token(response))
     }
 }
 
@@ -230,7 +230,7 @@ impl ScopedTokenClient for GitHubClient {
             self.api_url, request.client_id
         );
         let body = ScopedTokenBody {
-            access_token: request.root_token,
+            access_token: request.base_token,
             target: request.target,
             repositories: request.repositories,
             permissions: request.permissions,
@@ -274,13 +274,13 @@ impl ScopedTokenClient for GitHubClient {
     }
 }
 
-impl RootTokenClient for GitHubClient {
+impl BaseTokenClient for GitHubClient {
     fn get_user(&self, access_token: &str) -> Result<GitHubUser, GitHubError> {
         let url = format!("{}/user", self.api_url);
         debug!(
             method = "GET",
             endpoint = "/user",
-            "identifying GitHub user for issued root token"
+            "identifying GitHub user for issued base token"
         );
         let response = self
             .agent
@@ -302,7 +302,7 @@ impl RootTokenClient for GitHubClient {
     }
 }
 
-fn narrow_root_token(response: AccessTokenResponse) -> IssuedRootToken {
+fn narrow_base_token(response: AccessTokenResponse) -> IssuedBaseToken {
     let AccessTokenResponse {
         access_token,
         expires_in,
@@ -310,7 +310,7 @@ fn narrow_root_token(response: AccessTokenResponse) -> IssuedRootToken {
         ..
     } = response;
     drop(refresh_token);
-    IssuedRootToken {
+    IssuedBaseToken {
         access_token,
         expires_in,
     }
@@ -406,7 +406,7 @@ mod tests {
         assert!(!debug_str.contains("ghr_1B4a2e4F292c6912E7710c838347Ae178B4b"));
         assert!(debug_str.contains("[REDACTED]"));
 
-        let issued = narrow_root_token(res);
+        let issued = narrow_base_token(res);
         assert_eq!(
             issued.access_token.as_ref(),
             "ghu_16C7e42F292c6912E7710c838347Ae178B4a"
@@ -472,7 +472,7 @@ mod tests {
             ("pull_requests".into(), "write".into()),
         ]);
         let request = ScopedTokenBody {
-            access_token: "root-token",
+            access_token: "base-token",
             target: "acme",
             repositories: Some(&repositories),
             permissions: &permissions,
@@ -480,7 +480,7 @@ mod tests {
         assert_eq!(
             serde_json::to_value(request).unwrap(),
             serde_json::json!({
-                "access_token": "root-token",
+                "access_token": "base-token",
                 "target": "acme",
                 "repositories": ["api", "web"],
                 "permissions": {"contents": "read", "pull_requests": "write"},
@@ -488,7 +488,7 @@ mod tests {
         );
 
         let all_request = ScopedTokenBody {
-            access_token: "root-token",
+            access_token: "base-token",
             target: "acme",
             repositories: None,
             permissions: &permissions,

@@ -1,6 +1,6 @@
 use super::*;
 use crate::cache::{
-    CACHE_SCHEMA_VERSION, CacheEntry, RootCacheEntry, TokenExpiry, authority_fingerprint,
+    BaseCacheEntry, CACHE_SCHEMA_VERSION, CacheEntry, TokenExpiry, authority_fingerprint,
     cache_epoch, compute_cache_key, delete_cache_entry, load_cache_entry, save_cache_entry,
 };
 use crate::config::{Config, GitHubAppConfig, ProfileConfig};
@@ -51,7 +51,7 @@ impl RevokeTokenClient for MockClient {
     }
 }
 
-impl RootTokenClient for MockClient {
+impl BaseTokenClient for MockClient {
     fn get_user(&self, _access_token: &str) -> Result<GitHubUser, GitHubError> {
         Ok(GitHubUser {
             login: "octocat".into(),
@@ -67,7 +67,7 @@ impl ScopedTokenClient for MockClient {
         self.request.replace(Some(serde_json::json!({
             "client_id": request.client_id,
             "client_secret": request.client_secret,
-            "root_token": request.root_token,
+            "base_token": request.base_token,
             "target": request.target,
             "repositories": request.repositories,
             "permissions": request.permissions,
@@ -85,8 +85,8 @@ fn client(response: IssuedScopedToken) -> MockClient {
     }
 }
 
-fn cache_root(cache_dir: &Path, now: OffsetDateTime, token: &str) {
-    let entry = CacheEntry::Root(RootCacheEntry {
+fn cache_base(cache_dir: &Path, now: OffsetDateTime, token: &str) {
+    let entry = CacheEntry::Base(BaseCacheEntry {
         version: CACHE_SCHEMA_VERSION,
         profile: "developer".into(),
         authority_fingerprint: authority_fingerprint("id", "acme"),
@@ -94,25 +94,25 @@ fn cache_root(cache_dir: &Path, now: OffsetDateTime, token: &str) {
         expires_at: TokenExpiry::new(now + Duration::hours(2)),
         access_token: token.into(),
     });
-    save_cache_entry(cache_dir, &root_cache_key("developer"), &entry).unwrap();
+    save_cache_entry(cache_dir, &base_cache_key("developer"), &entry).unwrap();
 }
 
-fn cache_derived(cache_dir: &Path, expiry: OffsetDateTime, token: &str) -> String {
-    let root_key = root_cache_key("developer");
-    let CacheEntry::Root(root) = load_cache_entry(cache_dir, &root_key).unwrap().unwrap() else {
-        panic!("expected root")
+fn cache_scoped(cache_dir: &Path, expiry: OffsetDateTime, token: &str) -> String {
+    let base_key = base_cache_key("developer");
+    let CacheEntry::Base(base) = load_cache_entry(cache_dir, &base_key).unwrap().unwrap() else {
+        panic!("expected base")
     };
     let permissions = BTreeMap::from([
         ("contents".to_owned(), "read".to_owned()),
         ("pull_requests".to_owned(), "write".to_owned()),
     ]);
     let cache_key = compute_cache_key("reader", "acme/api");
-    let entry = CacheEntry::Derived(crate::cache::DerivedCacheEntry {
+    let entry = CacheEntry::Scoped(crate::cache::ScopedCacheEntry {
         version: CACHE_SCHEMA_VERSION,
         profile: "reader".into(),
         source_profile: "developer".into(),
         source_authority_fingerprint: authority_fingerprint("id", "acme"),
-        parent_generation: root.generation_fingerprint(),
+        parent_generation: base.generation_fingerprint(),
         policy_fingerprint: crate::cache::policy_fingerprint("acme", "acme/api", &permissions),
         github_user: "octocat".into(),
         repo_scope: "acme/api".into(),
@@ -145,19 +145,19 @@ fn failing_scoped_client(status: u16) -> MockClient {
 }
 
 #[test]
-fn root_lifetime_requires_a_representable_value_beyond_the_margin() {
+fn base_lifetime_requires_a_representable_value_beyond_the_margin() {
     let now = OffsetDateTime::from_unix_timestamp(1_700_000_000)
         .unwrap()
         .replace_nanosecond(500_000_000)
         .unwrap();
     for value in [None, Some(0), Some(30), Some(u64::MAX)] {
         assert!(matches!(
-            validate_root_expiry(value, now),
+            validate_base_expiry(value, now),
             Err(TokenError::InvalidLifetime { .. })
         ));
     }
     let lifetime = 24 * 60 * 60;
-    let expiry = validate_root_expiry(Some(lifetime), now).unwrap().value();
+    let expiry = validate_base_expiry(Some(lifetime), now).unwrap().value();
     assert_eq!(expiry.nanosecond(), 0);
     assert_eq!(
         expiry,
@@ -189,7 +189,7 @@ fn response_receipt_time_rejects_latency_crossing_the_handoff_margin() {
     let now = OffsetDateTime::now_utc();
     let temp = tempfile::tempdir().unwrap();
     let cache_dir = temp.path().join("cache");
-    cache_root(&cache_dir, now, "root-token");
+    cache_base(&cache_dir, now, "base-token");
     let client = client(IssuedScopedToken {
         access_token: "too-late".into(),
         expires_at: Some(TokenExpiry::new(now + Duration::seconds(40)).to_string()),
@@ -214,17 +214,17 @@ fn response_receipt_time_rejects_latency_crossing_the_handoff_margin() {
 }
 
 #[test]
-fn root_authority_and_kind_are_validated() {
+fn base_authority_and_kind_are_validated() {
     let now = OffsetDateTime::now_utc();
     let temp = tempfile::tempdir().unwrap();
     let cache_dir = temp.path().join("cache");
-    cache_root(&cache_dir, now, "root");
+    cache_base(&cache_dir, now, "base");
     let config: Config = CONFIG.parse().unwrap();
-    let ProfileConfig::Root(root) = config.profiles.get("developer").unwrap() else {
-        panic!("expected root");
+    let ProfileConfig::App(app) = config.profiles.get("developer").unwrap() else {
+        panic!("expected app profile");
     };
     assert!(
-        load_current_root_entry(&cache_dir, "developer", &root.github_app)
+        load_current_base_entry(&cache_dir, "developer", &app.github_app)
             .unwrap()
             .is_some()
     );
@@ -234,18 +234,18 @@ fn root_authority_and_kind_are_validated() {
         client_secret: None,
     };
     assert!(
-        load_current_root_entry(&cache_dir, "developer", &mismatched)
+        load_current_base_entry(&cache_dir, "developer", &mismatched)
             .unwrap()
             .is_none()
     );
 }
 
 #[test]
-fn root_acquisition_returns_cached_token_and_rejects_repository_scope() {
+fn base_acquisition_returns_cached_token_and_rejects_repository_scope() {
     let now = OffsetDateTime::now_utc();
     let temp = tempfile::tempdir().unwrap();
     let cache_dir = temp.path().join("cache");
-    cache_root(&cache_dir, now, "root-token");
+    cache_base(&cache_dir, now, "base-token");
     let config: Config = CONFIG.parse().unwrap();
     let client = client(IssuedScopedToken {
         access_token: "unused".into(),
@@ -262,7 +262,7 @@ fn root_acquisition_returns_cached_token_and_rejects_repository_scope() {
         || panic!("auto not expected"),
     )
     .unwrap();
-    assert_eq!(acquired.access_token.as_ref(), "root-token");
+    assert_eq!(acquired.access_token.as_ref(), "base-token");
     assert_eq!(acquired.repo_scope, "all");
 
     assert!(matches!(
@@ -276,15 +276,15 @@ fn root_acquisition_returns_cached_token_and_rejects_repository_scope() {
             },
             || panic!("auto not expected"),
         ),
-        Err(TokenError::RootScopeRejected(profile)) if profile == "developer"
+        Err(TokenError::AppScopeRejected(profile)) if profile == "developer"
     ));
 }
 
 #[test]
-fn invalid_root_response_is_revoked_and_not_persisted() {
+fn invalid_base_response_is_revoked_and_not_persisted() {
     let config: Config = CONFIG.parse().unwrap();
-    let ProfileConfig::Root(root) = config.profiles.get("developer").unwrap() else {
-        panic!("expected root");
+    let ProfileConfig::App(app) = config.profiles.get("developer").unwrap() else {
+        panic!("expected app profile");
     };
     let client = client(IssuedScopedToken {
         access_token: "unused".into(),
@@ -292,14 +292,14 @@ fn invalid_root_response_is_revoked_and_not_persisted() {
     });
     let temp = tempfile::tempdir().unwrap();
     let cache_dir = temp.path().join("cache");
-    let response = IssuedRootToken {
-        access_token: "bad-root".into(),
+    let response = IssuedBaseToken {
+        access_token: "bad-base".into(),
         expires_in: None,
     };
     assert!(matches!(
-        persist_root_response(
+        persist_base_response(
             &client,
-            root,
+            app,
             "developer",
             &cache_dir,
             response,
@@ -308,20 +308,20 @@ fn invalid_root_response_is_revoked_and_not_persisted() {
         ),
         Err(TokenError::InvalidLifetime { .. })
     ));
-    assert_eq!(&*client.revoked.borrow(), &["bad-root"]);
+    assert_eq!(&*client.revoked.borrow(), &["bad-base"]);
     assert!(
-        load_cache_entry(&cache_dir, &root_cache_key("developer"))
+        load_cache_entry(&cache_dir, &base_cache_key("developer"))
             .unwrap()
             .is_none()
     );
 }
 
 #[test]
-fn derived_acquisition_sends_exact_narrowing_request() {
+fn scoped_acquisition_sends_exact_narrowing_request() {
     let now = OffsetDateTime::now_utc();
     let temp = tempfile::tempdir().unwrap();
     let cache_dir = temp.path().join("cache");
-    cache_root(&cache_dir, now, "root-token");
+    cache_base(&cache_dir, now, "base-token");
     let exact_expiry = TokenExpiry::new(now + Duration::hours(6));
     let client = client(IssuedScopedToken {
         access_token: "child-token".into(),
@@ -353,31 +353,31 @@ fn derived_acquisition_sends_exact_narrowing_request() {
         &serde_json::json!({
             "client_id": "id",
             "client_secret": "secret",
-            "root_token": "root-token",
+            "base_token": "base-token",
             "target": "acme",
             "repositories": ["api", "web"],
             "permissions": {"contents": "read", "pull_requests": "write"},
         })
     );
-    let CacheEntry::Derived(cached) = load_cache_entry(
+    let CacheEntry::Scoped(cached) = load_cache_entry(
         &cache_dir,
         &compute_cache_key("reader", "acme/api,acme/web"),
     )
     .unwrap()
     .unwrap() else {
-        panic!("expected derived entry")
+        panic!("expected scoped entry")
     };
     assert_eq!(cached.expires_at, exact_expiry);
 }
 
 #[test]
-fn permanent_scoped_rejection_evicts_the_rejected_root() {
+fn permanent_scoped_rejection_evicts_the_rejected_base() {
     let config: Config = CONFIG.parse().unwrap();
     for status in [401, 404] {
         let now = OffsetDateTime::now_utc();
         let temp = tempfile::tempdir().unwrap();
         let cache_dir = temp.path().join("cache");
-        cache_root(&cache_dir, now, "rejected-root");
+        cache_base(&cache_dir, now, "rejected-base");
         let result = acquire(
             &failing_scoped_client(status),
             &AcquireRequest {
@@ -390,10 +390,10 @@ fn permanent_scoped_rejection_evicts_the_rejected_root() {
         );
 
         assert!(
-            matches!(result, Err(TokenError::NoSourceTokenCached(profile)) if profile == "developer")
+            matches!(result, Err(TokenError::NoSourceBaseTokenCached(profile)) if profile == "developer")
         );
         assert!(
-            load_cache_entry(&cache_dir, &root_cache_key("developer"))
+            load_cache_entry(&cache_dir, &base_cache_key("developer"))
                 .unwrap()
                 .is_none()
         );
@@ -401,13 +401,13 @@ fn permanent_scoped_rejection_evicts_the_rejected_root() {
 }
 
 #[test]
-fn scoped_policy_and_transient_rejections_retain_the_root() {
+fn scoped_policy_and_transient_rejections_retain_the_base() {
     let config: Config = CONFIG.parse().unwrap();
     for status in [403, 500] {
         let now = OffsetDateTime::now_utc();
         let temp = tempfile::tempdir().unwrap();
         let cache_dir = temp.path().join("cache");
-        cache_root(&cache_dir, now, "retained-root");
+        cache_base(&cache_dir, now, "retained-base");
         let result = acquire(
             &failing_scoped_client(status),
             &AcquireRequest {
@@ -431,12 +431,12 @@ fn scoped_policy_and_transient_rejections_retain_the_root() {
             _ => unreachable!("test status is fixed"),
         }
         assert_eq!(
-            load_cache_entry(&cache_dir, &root_cache_key("developer"))
+            load_cache_entry(&cache_dir, &base_cache_key("developer"))
                 .unwrap()
                 .unwrap()
                 .access_token()
                 .as_ref(),
-            "retained-root"
+            "retained-base"
         );
     }
 }
@@ -446,7 +446,7 @@ fn invalid_scoped_response_is_revoked_without_cache_entry() {
     let now = OffsetDateTime::now_utc();
     let temp = tempfile::tempdir().unwrap();
     let cache_dir = temp.path().join("cache");
-    cache_root(&cache_dir, now, "root-token");
+    cache_base(&cache_dir, now, "base-token");
     let client = client(IssuedScopedToken {
         access_token: "bad-child".into(),
         expires_at: None,
@@ -500,22 +500,22 @@ impl ScopedTokenClient for RejectingGenerationChangingClient<'_> {
         &self,
         _request: &ScopedTokenRequest<'_>,
     ) -> Result<IssuedScopedToken, GitHubError> {
-        let key = root_cache_key("developer");
+        let key = base_cache_key("developer");
         delete_cache_entry(self.cache_dir, &key).unwrap();
-        cache_root(self.cache_dir, self.now, "replacement-root");
+        cache_base(self.cache_dir, self.now, "replacement-base");
         Err(GitHubError::Http {
             status: 401,
-            message: "rejected old root".into(),
+            message: "rejected old base".into(),
         })
     }
 }
 
 #[test]
-fn permanent_rejection_preserves_a_concurrent_root_replacement() {
+fn permanent_rejection_preserves_a_concurrent_base_replacement() {
     let now = OffsetDateTime::now_utc();
     let temp = tempfile::tempdir().unwrap();
     let cache_dir = temp.path().join("cache");
-    cache_root(&cache_dir, now, "rejected-root");
+    cache_base(&cache_dir, now, "rejected-base");
     let client = RejectingGenerationChangingClient {
         cache_dir: &cache_dir,
         now,
@@ -534,15 +534,15 @@ fn permanent_rejection_preserves_a_concurrent_root_replacement() {
     );
 
     assert!(
-        matches!(result, Err(TokenError::RootGenerationChanged(profile)) if profile == "developer")
+        matches!(result, Err(TokenError::BaseGenerationChanged(profile)) if profile == "developer")
     );
     assert_eq!(
-        load_cache_entry(&cache_dir, &root_cache_key("developer"))
+        load_cache_entry(&cache_dir, &base_cache_key("developer"))
             .unwrap()
             .unwrap()
             .access_token()
             .as_ref(),
-        "replacement-root"
+        "replacement-base"
     );
 }
 
@@ -563,9 +563,9 @@ impl ScopedTokenClient for GenerationChangingClient<'_> {
         &self,
         _request: &ScopedTokenRequest<'_>,
     ) -> Result<IssuedScopedToken, GitHubError> {
-        let key = root_cache_key("developer");
+        let key = base_cache_key("developer");
         delete_cache_entry(self.cache_dir, &key).unwrap();
-        cache_root(self.cache_dir, self.now, "replacement-root");
+        cache_base(self.cache_dir, self.now, "replacement-base");
         Ok(IssuedScopedToken {
             access_token: "orphaned-child".into(),
             expires_at: Some(
@@ -576,11 +576,11 @@ impl ScopedTokenClient for GenerationChangingClient<'_> {
 }
 
 #[test]
-fn root_generation_change_revokes_candidate_and_requests_retry() {
+fn base_generation_change_revokes_candidate_and_requests_retry() {
     let now = OffsetDateTime::now_utc();
     let temp = tempfile::tempdir().unwrap();
     let cache_dir = temp.path().join("cache");
-    cache_root(&cache_dir, now, "root-token");
+    cache_base(&cache_dir, now, "base-token");
     let client = GenerationChangingClient {
         cache_dir: &cache_dir,
         now,
@@ -598,17 +598,17 @@ fn root_generation_change_revokes_candidate_and_requests_retry() {
             },
             || panic!("auto not expected"),
         ),
-        Err(TokenError::RootGenerationChanged(profile)) if profile == "developer"
+        Err(TokenError::BaseGenerationChanged(profile)) if profile == "developer"
     ));
     assert_eq!(&*client.revoked.borrow(), &["orphaned-child"]);
 }
 
 #[test]
-fn cached_derived_token_remains_usable_after_root_expiry() {
+fn cached_scoped_token_remains_usable_after_base_expiry() {
     let now = OffsetDateTime::now_utc();
     let temp = tempfile::tempdir().unwrap();
     let cache_dir = temp.path().join("cache");
-    cache_root(&cache_dir, now, "root-token");
+    cache_base(&cache_dir, now, "base-token");
     let config: Config = CONFIG.parse().unwrap();
     let first_client = client(IssuedScopedToken {
         access_token: "child-token".into(),
@@ -624,14 +624,14 @@ fn cached_derived_token_remains_usable_after_root_expiry() {
     };
     acquire(&first_client, &request, || panic!("auto not expected")).unwrap();
 
-    let root_key = root_cache_key("developer");
-    let CacheEntry::Root(mut root) = load_cache_entry(&cache_dir, &root_key).unwrap().unwrap()
+    let base_key = base_cache_key("developer");
+    let CacheEntry::Base(mut base) = load_cache_entry(&cache_dir, &base_key).unwrap().unwrap()
     else {
-        panic!("expected root");
+        panic!("expected base");
     };
-    delete_cache_entry(&cache_dir, &root_key).unwrap();
-    root.expires_at = TokenExpiry::new(now - Duration::minutes(1));
-    save_cache_entry(&cache_dir, &root_key, &CacheEntry::Root(root)).unwrap();
+    delete_cache_entry(&cache_dir, &base_key).unwrap();
+    base.expires_at = TokenExpiry::new(now - Duration::minutes(1));
+    save_cache_entry(&cache_dir, &base_key, &CacheEntry::Base(base)).unwrap();
 
     let unused_client = MockClient {
         scoped: RefCell::new(None),
@@ -645,12 +645,12 @@ fn cached_derived_token_remains_usable_after_root_expiry() {
 }
 
 #[test]
-fn renewable_derived_token_is_replaced_and_displaced_token_is_revoked() {
+fn renewable_scoped_token_is_replaced_and_displaced_token_is_revoked() {
     let now = OffsetDateTime::now_utc();
     let temp = tempfile::tempdir().unwrap();
     let cache_dir = temp.path().join("cache");
-    cache_root(&cache_dir, now, "root-token");
-    let cache_key = cache_derived(&cache_dir, now + Duration::minutes(5), "renewable-child");
+    cache_base(&cache_dir, now, "base-token");
+    let cache_key = cache_scoped(&cache_dir, now + Duration::minutes(5), "renewable-child");
     let exact_expiry = TokenExpiry::new(now + Duration::hours(1));
     let client = client(IssuedScopedToken {
         access_token: "renewed-child".into(),
@@ -674,29 +674,29 @@ fn renewable_derived_token_is_replaced_and_displaced_token_is_revoked() {
 
     assert_eq!(acquired.access_token.as_ref(), "renewed-child");
     assert_eq!(&*client.revoked.borrow(), &["renewable-child"]);
-    let CacheEntry::Derived(cached) = load_cache_entry(&cache_dir, &cache_key).unwrap().unwrap()
+    let CacheEntry::Scoped(cached) = load_cache_entry(&cache_dir, &cache_key).unwrap().unwrap()
     else {
-        panic!("expected derived entry")
+        panic!("expected scoped entry")
     };
     assert_eq!(cached.access_token.as_ref(), "renewed-child");
     assert_eq!(cached.expires_at, exact_expiry);
 }
 
 #[test]
-fn renewable_derived_token_falls_back_when_root_is_not_usable() {
+fn renewable_scoped_token_falls_back_when_base_is_not_usable() {
     let now = OffsetDateTime::now_utc();
     let temp = tempfile::tempdir().unwrap();
     let cache_dir = temp.path().join("cache");
-    cache_root(&cache_dir, now, "root-token");
-    cache_derived(&cache_dir, now + Duration::minutes(5), "renewable-child");
-    let root_key = root_cache_key("developer");
-    let CacheEntry::Root(mut root) = load_cache_entry(&cache_dir, &root_key).unwrap().unwrap()
+    cache_base(&cache_dir, now, "base-token");
+    cache_scoped(&cache_dir, now + Duration::minutes(5), "renewable-child");
+    let base_key = base_cache_key("developer");
+    let CacheEntry::Base(mut base) = load_cache_entry(&cache_dir, &base_key).unwrap().unwrap()
     else {
-        panic!("expected root")
+        panic!("expected base")
     };
-    delete_cache_entry(&cache_dir, &root_key).unwrap();
-    root.expires_at = TokenExpiry::new(now + Duration::seconds(30));
-    save_cache_entry(&cache_dir, &root_key, &CacheEntry::Root(root)).unwrap();
+    delete_cache_entry(&cache_dir, &base_key).unwrap();
+    base.expires_at = TokenExpiry::new(now + Duration::seconds(30));
+    save_cache_entry(&cache_dir, &base_key, &CacheEntry::Base(base)).unwrap();
     let client = no_response_client();
     let config: Config = CONFIG.parse().unwrap();
     let mut times = [now, now].into_iter();
@@ -723,16 +723,16 @@ fn token_inside_handoff_margin_is_never_returned() {
     let now = OffsetDateTime::now_utc();
     let temp = tempfile::tempdir().unwrap();
     let cache_dir = temp.path().join("cache");
-    cache_root(&cache_dir, now, "root-token");
-    cache_derived(&cache_dir, now + Duration::seconds(30), "unsafe-child");
-    let root_key = root_cache_key("developer");
-    let CacheEntry::Root(mut root) = load_cache_entry(&cache_dir, &root_key).unwrap().unwrap()
+    cache_base(&cache_dir, now, "base-token");
+    cache_scoped(&cache_dir, now + Duration::seconds(30), "unsafe-child");
+    let base_key = base_cache_key("developer");
+    let CacheEntry::Base(mut base) = load_cache_entry(&cache_dir, &base_key).unwrap().unwrap()
     else {
-        panic!("expected root")
+        panic!("expected base")
     };
-    delete_cache_entry(&cache_dir, &root_key).unwrap();
-    root.expires_at = TokenExpiry::new(now + Duration::seconds(30));
-    save_cache_entry(&cache_dir, &root_key, &CacheEntry::Root(root)).unwrap();
+    delete_cache_entry(&cache_dir, &base_key).unwrap();
+    base.expires_at = TokenExpiry::new(now + Duration::seconds(30));
+    save_cache_entry(&cache_dir, &base_key, &CacheEntry::Base(base)).unwrap();
     let client = no_response_client();
     let config: Config = CONFIG.parse().unwrap();
     let mut times = [now, now].into_iter();
@@ -749,18 +749,21 @@ fn token_inside_handoff_margin_is_never_returned() {
         || times.next().unwrap(),
     );
 
-    assert!(matches!(result, Err(TokenError::NoSourceTokenCached(_))));
+    assert!(matches!(
+        result,
+        Err(TokenError::NoSourceBaseTokenCached(_))
+    ));
     assert!(client.request.borrow().is_none());
 }
 
 #[test]
-fn cached_child_is_not_returned_when_root_provenance_is_missing() {
+fn cached_child_is_not_returned_when_base_provenance_is_missing() {
     let now = OffsetDateTime::now_utc();
     let temp = tempfile::tempdir().unwrap();
     let cache_dir = temp.path().join("cache");
-    cache_root(&cache_dir, now, "root-token");
-    cache_derived(&cache_dir, now + Duration::hours(1), "cached-child");
-    delete_cache_entry(&cache_dir, &root_cache_key("developer")).unwrap();
+    cache_base(&cache_dir, now, "base-token");
+    cache_scoped(&cache_dir, now + Duration::hours(1), "cached-child");
+    delete_cache_entry(&cache_dir, &base_cache_key("developer")).unwrap();
     let client = no_response_client();
     let config: Config = CONFIG.parse().unwrap();
 
@@ -773,10 +776,13 @@ fn cached_child_is_not_returned_when_root_provenance_is_missing() {
             repositories: &[],
         },
         || panic!("auto not expected"),
-        || panic!("clock is not sampled before root provenance is established"),
+        || panic!("clock is not sampled before base provenance is established"),
     );
 
-    assert!(matches!(result, Err(TokenError::NoSourceTokenCached(_))));
+    assert!(matches!(
+        result,
+        Err(TokenError::NoSourceBaseTokenCached(_))
+    ));
     assert!(client.request.borrow().is_none());
 }
 
@@ -785,8 +791,8 @@ fn failed_displaced_revocation_leaves_the_renewed_token_persisted() {
     let now = OffsetDateTime::now_utc();
     let temp = tempfile::tempdir().unwrap();
     let cache_dir = temp.path().join("cache");
-    cache_root(&cache_dir, now, "root-token");
-    let cache_key = cache_derived(&cache_dir, now + Duration::minutes(5), "renewable-child");
+    cache_base(&cache_dir, now, "base-token");
+    let cache_key = cache_scoped(&cache_dir, now + Duration::minutes(5), "renewable-child");
     let mut failing_client = client(IssuedScopedToken {
         access_token: "persisted-child".into(),
         expires_at: Some(TokenExpiry::new(now + Duration::hours(1)).to_string()),
@@ -813,9 +819,9 @@ fn failed_displaced_revocation_leaves_the_renewed_token_persisted() {
             if matches!(&*context, TokenError::RenewalPersisted(profile) if profile == "reader")
     ));
     assert_eq!(&*failing_client.revoked.borrow(), &["renewable-child"]);
-    let CacheEntry::Derived(cached) = load_cache_entry(&cache_dir, &cache_key).unwrap().unwrap()
+    let CacheEntry::Scoped(cached) = load_cache_entry(&cache_dir, &cache_key).unwrap().unwrap()
     else {
-        panic!("expected derived entry")
+        panic!("expected scoped entry")
     };
     assert_eq!(cached.access_token.as_ref(), "persisted-child");
 }

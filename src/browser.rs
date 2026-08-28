@@ -18,7 +18,7 @@ on the verification screen before authorizing.\n\
     );
 }
 
-/// Open base verification URL in default browser unless `no_browser` is set.
+/// Open the device verification URL in the default browser unless `no_browser` is set.
 pub fn open_auth_url(verification_uri: &str, no_browser: bool) {
     if no_browser {
         info!("`no_browser` active; skipping browser launch");

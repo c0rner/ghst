@@ -33,22 +33,22 @@ fn print_profiles<W: Write>(writer: &mut W, config: &Config, verbose: bool) -> i
         if verbose {
             writeln!(writer, "{marker} {name} [{kind}]{default_suffix}")?;
             match profile {
-                ProfileConfig::Root(root) => {
-                    writeln!(writer, "    Account:     {}", root.github_app.account)?;
-                    writeln!(writer, "    Client ID:   {}", root.github_app.client_id)?;
-                    writeln!(writer, "    Repo Scope:  all (root authority)")?;
-                    let capabilities = if root.github_app.client_secret.is_some() {
-                        "root tokens, derived tokens, remote revocation"
+                ProfileConfig::App(app) => {
+                    writeln!(writer, "    Account:     {}", app.github_app.account)?;
+                    writeln!(writer, "    Client ID:   {}", app.github_app.client_id)?;
+                    writeln!(writer, "    Repo Scope:  all (app authority)")?;
+                    let capabilities = if app.github_app.client_secret.is_some() {
+                        "base tokens, scoped tokens, remote revocation"
                     } else {
-                        "root tokens only"
+                        "base tokens only"
                     };
                     writeln!(writer, "    Capabilities: {capabilities}")?;
                 }
-                ProfileConfig::Derived(derived) => {
-                    writeln!(writer, "    Source:      {}", derived.source)?;
-                    writeln!(writer, "    Repo Scope:  {}", derived.repo)?;
-                    if !derived.permissions.is_empty() {
-                        let perms = derived
+                ProfileConfig::Scoped(scoped) => {
+                    writeln!(writer, "    Source:      {}", scoped.source)?;
+                    writeln!(writer, "    Repo Scope:  {}", scoped.repo)?;
+                    if !scoped.permissions.is_empty() {
+                        let perms = scoped
                             .permissions
                             .iter()
                             .map(|(k, v)| format!("{k}={v}"))
@@ -100,10 +100,10 @@ permissions = { contents = "read", pull_requests = "read", issues = "read" }
         let output = String::from_utf8(buf).unwrap();
 
         assert!(output.contains(
-            "  developer [root] - Full developer privilege ceiling backed by the Dev GitHub App"
+            "  developer [app] - Full developer privilege ceiling backed by the Dev GitHub App"
         ));
         assert!(output.contains(
-            "* reader [derived] (default) - Read-only access to repository contents, pull requests, and issues"
+            "* reader [scoped] (default) - Read-only access to repository contents, pull requests, and issues"
         ));
         assert!(!output.contains("secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"));
     }
@@ -116,10 +116,12 @@ permissions = { contents = "read", pull_requests = "read", issues = "read" }
         let output = String::from_utf8(buf).unwrap();
 
         assert!(output.contains("Configured Profiles:"));
-        assert!(output.contains("  developer [root]"));
+        assert!(output.contains("  developer [app]"));
         assert!(output.contains("    Account:     acme-corp"));
         assert!(output.contains("    Client ID:   Iv1.8888888888888888"));
-        assert!(output.contains("* reader [derived] (default)"));
+        assert!(output.contains("    Repo Scope:  all (app authority)"));
+        assert!(output.contains("    Capabilities: base tokens, scoped tokens, remote revocation"));
+        assert!(output.contains("* reader [scoped] (default)"));
         assert!(output.contains("    Source:      developer"));
         assert!(
             output.contains(

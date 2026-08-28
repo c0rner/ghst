@@ -1,4 +1,4 @@
-use super::{TokenError, revoke_with_context, root_cache_key};
+use super::{TokenError, base_cache_key, revoke_with_context};
 use crate::cache::{
     CacheEntry, RUN_CACHE_SCHEMA_VERSION, RunCacheEntry, RunState, SaveCacheEntry, cache_epoch,
     compute_run_cache_key, save_cache_candidate,
@@ -73,7 +73,7 @@ fn mint_with_clock<
     let run_id = generate_run_id()?;
     let cache_key = compute_run_cache_key(&run_id);
     let epoch = cache_epoch(request.cache_dir)?;
-    let generation = prepared.root.generation_fingerprint();
+    let generation = prepared.base.generation_fingerprint();
     let request_time = now();
     let issued =
         super::scoped::issue(client, &prepared, request.cache_dir, request_time, &mut now)?;
@@ -91,7 +91,7 @@ fn mint_with_clock<
             &prepared.source.github_app.client_id,
             &prepared.source.github_app.account,
         ),
-        github_user: prepared.root.github_user,
+        github_user: prepared.base.github_user,
         repo_scope: prepared.scope,
         expires_at: issued.expires_at,
         access_token: issued.access_token,
@@ -101,7 +101,7 @@ fn mint_with_clock<
         &cache_key,
         &candidate,
         epoch,
-        Some((&root_cache_key(&prepared.profile.source), &generation)),
+        Some((&base_cache_key(&prepared.profile.source), &generation)),
     );
     match saved {
         Ok(SaveCacheEntry::Saved) => {
@@ -148,9 +148,8 @@ fn generate_run_id() -> Result<String, TokenError> {
 mod tests {
     use super::*;
     use crate::cache::{
-        CACHE_SCHEMA_VERSION, DerivedCacheEntry, RootCacheEntry, TokenExpiry,
-        authority_fingerprint, compute_cache_key, compute_run_cache_key, policy_fingerprint,
-        save_cache_entry,
+        BaseCacheEntry, CACHE_SCHEMA_VERSION, ScopedCacheEntry, TokenExpiry, authority_fingerprint,
+        compute_cache_key, compute_run_cache_key, policy_fingerprint, save_cache_entry,
     };
     use crate::github::GitHubError;
     use crate::token::{IssuedScopedToken, RevokeTokenClient, ScopedTokenRequest};
@@ -204,17 +203,17 @@ permissions = { contents = "read" }
         .unwrap()
     }
 
-    fn cache_root(cache_dir: &Path, now: OffsetDateTime) {
+    fn cache_base(cache_dir: &Path, now: OffsetDateTime) {
         save_cache_entry(
             cache_dir,
             &compute_cache_key("developer", "all"),
-            &CacheEntry::Root(RootCacheEntry {
+            &CacheEntry::Base(BaseCacheEntry {
                 version: CACHE_SCHEMA_VERSION,
                 profile: "developer".into(),
                 authority_fingerprint: authority_fingerprint("id", "acme"),
                 github_user: "octocat".into(),
                 expires_at: TokenExpiry::new(now + Duration::hours(1)),
-                access_token: "root".into(),
+                access_token: "base".into(),
             }),
         )
         .unwrap();
@@ -233,17 +232,17 @@ permissions = { contents = "read" }
     }
 
     #[test]
-    fn each_run_mints_fresh_despite_a_reusable_derived_token() {
+    fn each_run_mints_fresh_despite_a_reusable_scoped_token() {
         let temp = tempfile::tempdir().unwrap();
         let cache_dir = temp.path().join("cache");
         let now = OffsetDateTime::now_utc();
         let config = config();
-        cache_root(&cache_dir, now);
+        cache_base(&cache_dir, now);
         let permissions = BTreeMap::from([("contents".into(), "read".into())]);
         save_cache_entry(
             &cache_dir,
             &compute_cache_key("reader", "acme/api"),
-            &CacheEntry::Derived(DerivedCacheEntry {
+            &CacheEntry::Scoped(ScopedCacheEntry {
                 version: CACHE_SCHEMA_VERSION,
                 profile: "reader".into(),
                 source_profile: "developer".into(),
@@ -255,8 +254,8 @@ permissions = { contents = "read" }
                 .unwrap()
                 .unwrap()
                 {
-                    CacheEntry::Root(entry) => entry.generation_fingerprint(),
-                    CacheEntry::Derived(_) | CacheEntry::Run(_) => panic!("expected root"),
+                    CacheEntry::Base(entry) => entry.generation_fingerprint(),
+                    CacheEntry::Scoped(_) | CacheEntry::Run(_) => panic!("expected base"),
                 },
                 policy_fingerprint: policy_fingerprint("acme", "acme/api", &permissions),
                 github_user: "octocat".into(),
@@ -284,7 +283,7 @@ permissions = { contents = "read" }
     }
 
     #[test]
-    fn run_rejects_root_profiles_before_minting() {
+    fn run_rejects_app_profiles_before_minting() {
         let temp = tempfile::tempdir().unwrap();
         let config = config();
         let client = MockClient(Cell::new(0));
@@ -300,7 +299,7 @@ permissions = { contents = "read" }
             },
             || panic!("auto is not used"),
         );
-        assert!(matches!(result, Err(TokenError::RunRequiresDerived(_))));
+        assert!(matches!(result, Err(TokenError::RunRequiresScoped(_))));
         assert_eq!(client.0.get(), 0);
     }
 }

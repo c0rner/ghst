@@ -259,8 +259,8 @@ fn attempt_remote_revocation<C: RevokeTokenClient>(
 mod tests {
     use super::*;
     use crate::cache::{
-        AccessToken, CACHE_SCHEMA_VERSION, CacheEntry, DerivedCacheEntry, RUN_CACHE_SCHEMA_VERSION,
-        RootCacheEntry, RunCacheEntry, RunState, TokenExpiry, authority_fingerprint,
+        AccessToken, BaseCacheEntry, CACHE_SCHEMA_VERSION, CacheEntry, RUN_CACHE_SCHEMA_VERSION,
+        RunCacheEntry, RunState, ScopedCacheEntry, TokenExpiry, authority_fingerprint,
         compute_cache_key, compute_run_cache_key, list_all_cache_entries, save_cache_entry,
     };
     use std::cell::{Cell, RefCell};
@@ -317,18 +317,18 @@ mod tests {
         .unwrap()
     }
 
-    fn cache_root(cache_dir: &Path, expiry: OffsetDateTime) {
-        let entry = CacheEntry::Root(RootCacheEntry {
+    fn cache_base(cache_dir: &Path, expiry: OffsetDateTime) {
+        let entry = CacheEntry::Base(BaseCacheEntry {
             version: CACHE_SCHEMA_VERSION,
             profile: "developer".into(),
             authority_fingerprint: authority_fingerprint("id", "acme"),
             github_user: "octocat".into(),
             expires_at: TokenExpiry::new(expiry),
-            access_token: AccessToken::from("root-token"),
+            access_token: AccessToken::from("base-token"),
         });
         save_cache_entry(
             cache_dir,
-            &crate::token::root_cache_key("developer"),
+            &crate::token::base_cache_key("developer"),
             &entry,
         )
         .unwrap();
@@ -338,7 +338,7 @@ mod tests {
     fn live_secretless_entry_is_local_only_and_incomplete() {
         let temp = tempfile::tempdir().unwrap();
         let cache_dir = temp.path().join("cache");
-        cache_root(&cache_dir, OffsetDateTime::now_utc() + Duration::hours(1));
+        cache_base(&cache_dir, OffsetDateTime::now_utc() + Duration::hours(1));
         let client = MockClient(Cell::new(0));
         let report = revoke_all(
             &client,
@@ -358,7 +358,7 @@ mod tests {
         for (offset, remote) in [(Duration::hours(1), 1), (Duration::hours(-1), 0)] {
             let temp = tempfile::tempdir().unwrap();
             let cache_dir = temp.path().join("cache");
-            cache_root(&cache_dir, OffsetDateTime::now_utc() + offset);
+            cache_base(&cache_dir, OffsetDateTime::now_utc() + offset);
             let client = MockClient(Cell::new(0));
             let report = revoke_all(
                 &client,
@@ -378,12 +378,12 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let cache_dir = temp.path().join("cache");
         let now = OffsetDateTime::now_utc();
-        cache_root(&cache_dir, now + Duration::hours(1));
-        let derived_key = compute_cache_key("reader", "acme/api");
+        cache_base(&cache_dir, now + Duration::hours(1));
+        let scoped_key = compute_cache_key("reader", "acme/api");
         save_cache_entry(
             &cache_dir,
-            &derived_key,
-            &CacheEntry::Derived(DerivedCacheEntry {
+            &scoped_key,
+            &CacheEntry::Scoped(ScopedCacheEntry {
                 version: CACHE_SCHEMA_VERSION,
                 profile: "reader".into(),
                 source_profile: "developer".into(),
@@ -393,7 +393,7 @@ mod tests {
                 github_user: "octocat".into(),
                 repo_scope: "acme/api".into(),
                 expires_at: TokenExpiry::new(now + Duration::hours(1)),
-                access_token: AccessToken::from("derived-token"),
+                access_token: AccessToken::from("scoped-token"),
             }),
         )
         .unwrap();
@@ -406,7 +406,7 @@ mod tests {
             &client,
             &config(true),
             &cache_dir,
-            &derived_key[..crate::cache::MIN_CACHE_ID_LENGTH],
+            &scoped_key[..crate::cache::MIN_CACHE_ID_LENGTH],
             now,
         )
         .unwrap()
@@ -417,13 +417,13 @@ mod tests {
 
         assert_eq!(report.remotely_inactive, 1);
         assert!(report.failures.is_empty());
-        assert_eq!(&*client.revoked.borrow(), &["derived-token"]);
+        assert_eq!(&*client.revoked.borrow(), &["scoped-token"]);
         let entries = list_all_cache_entries(&cache_dir).unwrap();
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].0, crate::token::root_cache_key("developer"));
+        assert_eq!(entries[0].0, crate::token::base_cache_key("developer"));
 
         assert!(matches!(
-            revoke_one(&client, &config(true), &cache_dir, &derived_key, now).unwrap(),
+            revoke_one(&client, &config(true), &cache_dir, &scoped_key, now).unwrap(),
             RevokeOneOutcome::NotFound
         ));
     }
@@ -433,14 +433,14 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let cache_dir = temp.path().join("cache");
         let now = OffsetDateTime::now_utc();
-        cache_root(&cache_dir, now + Duration::hours(1));
-        let root_key = crate::token::root_cache_key("developer");
+        cache_base(&cache_dir, now + Duration::hours(1));
+        let base_key = crate::token::base_cache_key("developer");
         let client = RecordingClient {
             revoked: RefCell::new(Vec::new()),
             fails: true,
         };
 
-        let report = match revoke_one(&client, &config(true), &cache_dir, &root_key, now).unwrap() {
+        let report = match revoke_one(&client, &config(true), &cache_dir, &base_key, now).unwrap() {
             RevokeOneOutcome::Revoked(report) => report,
             other => panic!("unexpected outcome: {other:?}"),
         };
@@ -458,7 +458,7 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let cache_dir = temp.path().join("cache");
         let now = OffsetDateTime::now_utc();
-        cache_root(&cache_dir, now + Duration::hours(1));
+        cache_base(&cache_dir, now + Duration::hours(1));
         let first = format!("0123456{}", "a".repeat(57));
         let second = format!("0123456{}", "b".repeat(57));
         std::fs::write(cache_dir.join(format!("{first}.json")), b"{").unwrap();
@@ -503,19 +503,19 @@ mod tests {
         let authority = authority_fingerprint("id", "acme");
         [
             (
-                crate::token::root_cache_key("developer"),
-                crate::cache::CacheEntry::Root(RootCacheEntry {
+                crate::token::base_cache_key("developer"),
+                crate::cache::CacheEntry::Base(BaseCacheEntry {
                     version: CACHE_SCHEMA_VERSION,
                     profile: "developer".into(),
                     authority_fingerprint: authority.clone(),
                     github_user: "octocat".into(),
                     expires_at: TokenExpiry::new(expiry),
-                    access_token: AccessToken::from("root-token"),
+                    access_token: AccessToken::from("base-token"),
                 }),
             ),
             (
                 compute_cache_key("reader", "acme/api"),
-                crate::cache::CacheEntry::Derived(DerivedCacheEntry {
+                crate::cache::CacheEntry::Scoped(ScopedCacheEntry {
                     version: CACHE_SCHEMA_VERSION,
                     profile: "reader".into(),
                     source_profile: "developer".into(),
@@ -525,7 +525,7 @@ mod tests {
                     github_user: "octocat".into(),
                     repo_scope: "acme/api".into(),
                     expires_at: TokenExpiry::new(expiry),
-                    access_token: AccessToken::from("derived-token"),
+                    access_token: AccessToken::from("scoped-token"),
                 }),
             ),
             (

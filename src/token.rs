@@ -1,32 +1,32 @@
 mod acquire;
+mod base;
 pub mod cleanup;
 mod error;
 mod ports;
 mod provenance;
 pub mod revoke;
-mod root;
 pub mod run;
 mod scoped;
 mod types;
 mod validation;
 
 pub use acquire::acquire;
+pub use base::{
+    base_cache_key, load_current_base_entry, load_valid_base_entry, load_valid_base_status,
+    persist_base_response,
+};
 pub use error::TokenError;
 pub use ports::{
-    GitHubUser, IssuedRootToken, IssuedScopedToken, RevokeTokenClient, RootTokenClient,
+    BaseTokenClient, GitHubUser, IssuedBaseToken, IssuedScopedToken, RevokeTokenClient,
     ScopedTokenClient, ScopedTokenRequest,
 };
-pub use root::{
-    load_current_root_entry, load_valid_root_entry, load_valid_root_status, persist_root_response,
-    root_cache_key,
-};
-pub use types::{AcquireRequest, AcquiredToken, RootPersistence, RootTokenStatus};
-pub use validation::{validate_root_expiry, validate_scoped_expiry};
+pub use types::{AcquireRequest, AcquiredToken, BasePersistence, BaseTokenStatus};
+pub use validation::{validate_base_expiry, validate_scoped_expiry};
 
-use crate::config::RootProfile;
+use crate::config::AppProfile;
 fn revoke_with_context<C: RevokeTokenClient + ?Sized>(
     client: &C,
-    profile: &RootProfile,
+    profile: &AppProfile,
     token: &crate::cache::AccessToken,
     context: TokenError,
 ) -> TokenError {

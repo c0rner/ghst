@@ -13,15 +13,15 @@ pub enum TokenError {
     },
     Repository(RepositoryError),
     ProfileNotFound(String),
-    SourceProfileNotRoot {
+    SourceProfileNotApp {
         profile: String,
         source: String,
     },
     ClientSecretRequired(String),
-    NoRootTokenCached(String),
-    NoSourceTokenCached(String),
-    RootScopeRejected(String),
-    RunRequiresDerived(String),
+    NoBaseTokenCached(String),
+    NoSourceBaseTokenCached(String),
+    AppScopeRejected(String),
+    RunRequiresScoped(String),
     Random(getrandom::Error),
     UnexpectedCacheKind {
         profile: String,
@@ -36,7 +36,7 @@ pub enum TokenError {
         profile: String,
         reason: &'static str,
     },
-    RootGenerationChanged(String),
+    BaseGenerationChanged(String),
     RenewalPersisted(String),
     InvalidLifetime {
         token_kind: &'static str,
@@ -59,36 +59,36 @@ impl fmt::Display for TokenError {
                 source,
             } => write!(
                 f,
-                "github rejected the scoped token request for derived profile '{profile}': {source}. The requested permissions or repository access likely exceed the GitHub App installation for source profile '{source_profile}'; check the App installation in GitHub settings and the derived profile's `permissions` and `repo` in profiles.toml"
+                "github rejected the scoped token request for scoped profile '{profile}': {source}. The requested permissions or repository access likely exceed the GitHub App installation for source app profile '{source_profile}'; check the App installation in GitHub settings and the scoped profile's `permissions` and `repo` in profiles.toml"
             ),
             Self::Repository(error) => write!(f, "{error}"),
             Self::ProfileNotFound(profile) => {
                 write!(f, "profile '{profile}' is not defined in configuration")
             }
-            Self::SourceProfileNotRoot { profile, source } => write!(
+            Self::SourceProfileNotApp { profile, source } => write!(
                 f,
-                "derived profile '{profile}' references non-root source profile '{source}'"
+                "scoped profile '{profile}' references non-app source profile '{source}'"
             ),
             Self::ClientSecretRequired(profile) => write!(
                 f,
-                "root profile '{profile}' has no client secret; derived token minting is unavailable"
+                "app profile '{profile}' has no client secret; scoped token minting is unavailable"
             ),
-            Self::NoRootTokenCached(profile) => {
-                write!(f, "no valid token cached for root profile '{profile}'")
+            Self::NoBaseTokenCached(profile) => {
+                write!(f, "no valid base token cached for app profile '{profile}'")
             }
-            Self::NoSourceTokenCached(profile) => {
+            Self::NoSourceBaseTokenCached(profile) => {
                 write!(
                     f,
-                    "no valid token cached for root source profile '{profile}'"
+                    "no valid base token cached for source app profile '{profile}'"
                 )
             }
-            Self::RootScopeRejected(profile) => {
-                write!(f, "root profile '{profile}' cannot be repository-scoped")
+            Self::AppScopeRejected(profile) => {
+                write!(f, "app profile '{profile}' cannot be repository-scoped")
             }
-            Self::RunRequiresDerived(profile) => {
+            Self::RunRequiresScoped(profile) => {
                 write!(
                     f,
-                    "profile '{profile}' is a root profile; run requires a derived profile"
+                    "profile '{profile}' is an app profile; run requires a scoped profile"
                 )
             }
             Self::Random(error) => write!(f, "operating-system randomness unavailable: {error}"),
@@ -108,9 +108,9 @@ impl fmt::Display for TokenError {
                 f,
                 "cached token for profile '{profile}' has stale provenance: {reason}"
             ),
-            Self::RootGenerationChanged(profile) => write!(
+            Self::BaseGenerationChanged(profile) => write!(
                 f,
-                "root token for profile '{profile}' changed while minting; retry the token request"
+                "base token for profile '{profile}' changed while minting; retry the token request"
             ),
             Self::RenewalPersisted(profile) => write!(
                 f,
@@ -173,9 +173,9 @@ mod error_tests {
     #[test]
     fn domain_errors_do_not_name_cli_commands_or_options() {
         for error in [
-            TokenError::NoRootTokenCached("developer".into()),
-            TokenError::NoSourceTokenCached("developer".into()),
-            TokenError::RootScopeRejected("developer".into()),
+            TokenError::NoBaseTokenCached("developer".into()),
+            TokenError::NoSourceBaseTokenCached("developer".into()),
+            TokenError::AppScopeRejected("developer".into()),
         ] {
             let message = error.to_string();
             assert!(!message.contains("ghst"));

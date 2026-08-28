@@ -30,6 +30,10 @@ pub fn print_status<W: Write>(
         .filter_map(|inspection| inspection.cache_key.as_deref())
         .collect();
     debug!(cache_dir = %cache_dir.display(), entries = inspections.len(), "inspected token cache for status");
+    if inspections.is_empty() {
+        writeln!(writer, "No cached tokens.")?;
+        return Ok(());
+    }
     let mut grouped: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
     let mut unmatched = Vec::new();
     for (index, inspection) in inspections.iter().enumerate() {
@@ -45,22 +49,29 @@ pub fn print_status<W: Write>(
     writeln!(writer, "Cached token(s):")?;
     info!("No network request is made; remote revocation cannot be detected.");
     for (name, profile) in &config.profiles {
+        let Some(indices) = grouped.remove(name.as_str()) else {
+            continue;
+        };
         let marker = if config.default_profile.as_deref() == Some(name) {
             "*"
         } else {
             " "
         };
         writeln!(writer, "{marker} {name} [{}]", profile.kind_name())?;
-        match grouped.remove(name.as_str()) {
-            Some(indices) => {
-                for (position, index) in indices.into_iter().enumerate() {
-                    if position > 0 {
-                        writeln!(writer)?;
-                    }
-                    write_entry(writer, &inspections[index], &cache_keys, now)?;
-                }
+        if let crate::config::ProfileConfig::Scoped(scoped) = profile {
+            let permissions = scoped
+                .permissions
+                .iter()
+                .map(|(name, level)| format!("{name}={level}"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            writeln!(writer, "    Permissions: {permissions}")?;
+        }
+        for (position, index) in indices.into_iter().enumerate() {
+            if position > 0 {
+                writeln!(writer)?;
             }
-            None => writeln!(writer, "    Lifetime:    Not cached")?,
+            write_entry(writer, &inspections[index], &cache_keys, now)?;
         }
         writeln!(writer)?;
     }
@@ -195,11 +206,13 @@ permissions = { contents = "read" }
             }),
         )
         .unwrap();
+        std::fs::write(cache_dir.join("malformed.json"), "{}").unwrap();
         let mut output = Vec::new();
         print_status(&mut output, &config, &cache_dir, now).unwrap();
         let output = String::from_utf8(output).unwrap();
-        assert!(output.contains("  developer [app]"));
+        assert!(!output.contains("developer [app]"));
         assert!(output.contains("* reader [scoped]"));
+        assert_eq!(output.matches("Permissions: contents=read").count(), 1);
         assert!(output.contains(&format!(
             "ID:          {}",
             &compute_run_cache_key(run_id)[..crate::cache::MIN_CACHE_ID_LENGTH]
@@ -212,7 +225,33 @@ permissions = { contents = "read" }
         assert!(!output.contains("Process ID:"));
         assert!(output.contains("Command:     cargo test --workspace"));
         assert!(output.contains("Expires:") && output.contains("\n\n    ID:"));
+        assert!(output.contains("Unmatched Entry [malformed.json]"));
+        assert!(output.contains("Lifetime:    Invalid"));
         assert!(!output.contains("status-secret"));
         assert!(!output.contains("second-status-secret"));
+    }
+
+    #[test]
+    fn status_reports_an_empty_cache_without_listing_profiles() {
+        let config: Config = r#"
+version = 1
+[profile.developer]
+github_app.account = "acme"
+github_app.client_id = "id"
+"#
+        .parse()
+        .unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let mut output = Vec::new();
+
+        print_status(
+            &mut output,
+            &config,
+            &temp.path().join("missing-cache"),
+            OffsetDateTime::now_utc(),
+        )
+        .unwrap();
+
+        assert_eq!(String::from_utf8(output).unwrap(), "No cached tokens.\n");
     }
 }

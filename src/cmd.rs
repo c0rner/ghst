@@ -127,7 +127,7 @@ pub struct TokenCmd {
     pub format: OutputFormat,
 }
 
-/// Display active token and profile status.
+/// Display cached token status.
 #[derive(FromArgs, PartialEq, Eq, Debug)]
 #[argh(subcommand, name = "status")]
 pub struct StatusCmd {}

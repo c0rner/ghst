@@ -4,9 +4,11 @@ All notable changes to `ghst` are documented in this file.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-28
+
 ### Breaking
 
-- Adopt app/scoped terminology for profiles and base/scoped terminology for tokens throughout the CLI, cache, diagnostics, configuration model, and documentation. This is a breaking cache change: reusable entries now use schema version 5 and the `base` and `scoped` kind tags. Unsupported or malformed cache artifacts fail closed.
+- Adopt app/scoped terminology for profiles and base/scoped terminology for tokens throughout the CLI, cache, diagnostics, configuration model, and documentation. This is a breaking cache change: reusable entries now use schema version 5 and the `base` and `scoped` kind tags. Unsupported or malformed cache artifacts fail closed ([#53]).
 
 ## [0.5.2] - 2026-08-26
 
@@ -38,7 +40,8 @@ All notable changes to `ghst` are documented in this file.
 
 - First public release.
 
-[Unreleased]: https://github.com/c0rner/ghst/compare/v0.5.2...HEAD
+[Unreleased]: https://github.com/c0rner/ghst/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/c0rner/ghst/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/c0rner/ghst/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/c0rner/ghst/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/c0rner/ghst/releases/tag/v0.5.0
@@ -50,3 +53,4 @@ All notable changes to `ghst` are documented in this file.
 [#43]: https://github.com/c0rner/ghst/pull/43
 [#44]: https://github.com/c0rner/ghst/pull/44
 [#46]: https://github.com/c0rner/ghst/pull/46
+[#53]: https://github.com/c0rner/ghst/pull/53

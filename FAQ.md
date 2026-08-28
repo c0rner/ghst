@@ -9,7 +9,7 @@ This document answers common questions regarding `ghst`'s security architecture,
 ### What problem does `ghst` solve?
 Modern AI coding tools (such as Claude Code, Codex, Aider, OpenCode, and Cursor) often require GitHub access to read issues, inspect code, create branches, or open pull requests. Typically, developers hand these tools broad Personal Access Tokens (PATs) or rely on ambient GitHub CLI credentials (`gh auth login`).
 
-If an autonomous tool hallucinates, executes a malicious prompt injection, or runs a rogue script, an overprivileged credential can compromise private repositories or entire GitHub organizations. `ghst` addresses this by minting short-lived, least-privilege tokens narrowed to the repositories and permissions selected by a derived profile. With `repo = "auto"`, that repository selection resolves from the current Git remote. For `ghst run`, the token is tied to the foreground invocation and remote revocation is requested when the command exits.
+If an autonomous tool hallucinates, executes a malicious prompt injection, or runs a rogue script, an overprivileged credential can compromise private repositories or entire GitHub organizations. `ghst` addresses this by minting short-lived, least-privilege tokens narrowed to the repositories and permissions selected by a scoped profile. With `repo = "auto"`, that repository selection resolves from the current Git remote. For `ghst run`, the token is tied to the foreground invocation and remote revocation is requested when the command exits.
 
 ### Why not just use GitHub Fine-Grained Personal Access Tokens (PATs)?
 Fine-grained PATs improve repository scoping, but they do not solve the automated developer workflow problem:
@@ -118,9 +118,9 @@ will identify abandoned run leases and revoke them with GitHub once network conn
 ### Can I run background daemons with `ghst run`?
 **No.** `ghst run` is designed for foreground process invocations. When the launcher command finishes, `ghst` requests revocation of the token on GitHub. If you launch a detached daemon (e.g. `nono run --detached`), it should not rely on that token remaining available after the parent exits. For long-running or detached workloads, use `ghst token` and manage the token lifecycle manually.
 
-### Why does derived token creation fail with HTTP 403?
-A derived profile can only narrow the authority available to the authorizing user through the
-configured GitHub App installation. The App installation is the authority ceiling: if the derived
+### Why does scoped token creation fail with HTTP 403?
+A scoped profile can only narrow the authority available to the authorizing user through the
+configured GitHub App installation. The App installation is the authority ceiling: if the scoped
 profile requests a permission the App was not granted, or repository access outside the App's
 installation selection, GitHub rejects scoped token creation with HTTP 403.
 
@@ -128,7 +128,7 @@ Check both sides of the request:
 
 1. In GitHub settings, verify the source profile's App installation permissions and repository
    access.
-2. In `~/.config/ghst/profiles.toml`, verify the derived profile's `permissions` and `repo` values.
+2. In `~/.config/ghst/profiles.toml`, verify the scoped profile's `permissions` and `repo` values.
 
 For the complete decision path, enable debug diagnostics:
 
@@ -137,7 +137,7 @@ RUST_LOG=debug ghst token --profile reader --repo acme/api
 ```
 
 Diagnostics are written to stderr so token output on stdout remains machine-readable. Access
-tokens, root tokens, client secrets, device codes, and authorization headers are not logged.
+tokens, base tokens, client secrets, device codes, and authorization headers are not logged.
 
 ---
 
@@ -151,7 +151,7 @@ Each developer still performs their own `ghst login` using their individual GitH
 ### What if our security policy prohibits distributing `client_secret` to developers?
 You can use a **Secretless Multi-App Architecture**:
 1. Org admins register separate GitHub Apps for different roles (e.g., `acme-ghst-reader` with read-only permissions, and `acme-ghst-writer` with pull request permissions).
-2. Developers configure these as secretless root profiles in `profiles.toml` using only `client_id` (no `client_secret` required).
+2. Developers configure these as secretless base profiles in `profiles.toml` using only `client_id` (no `client_secret` required).
 3. Developers log in to the desired profile (`ghst login --profile reader`).
 
 While secretless profiles cannot dynamically derive finer-grained sub-tokens or invoke App-authenticated remote revocation endpoints, they still provide expiring (~8 hour) user access tokens bound to the specific App's permission boundary without requiring any secret on developer disks.
@@ -177,7 +177,7 @@ Many AI coding agents and git helpers check for existing ambient credentials on 
    ```bash
    ghst login --profile developer
    ```
-   *(This gives you an ~8-hour human-authorized root token ceiling).*
+   *(This gives you an ~8-hour human-authorized base token ceiling).*
 3. Run your AI tools inside ephemeral leases:
    ```bash
    ghst run --profile reader -- aider

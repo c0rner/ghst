@@ -5,7 +5,7 @@ mod validation;
 pub use error::ConfigError;
 #[cfg(test)]
 use types::PermissionLevel;
-pub use types::{Config, DerivedProfile, GitHubAppConfig, ProfileConfig, RepoScope, RootProfile};
+pub use types::{BaseProfile, Config, GitHubAppConfig, ProfileConfig, RepoScope, ScopedProfile};
 
 #[cfg(unix)]
 use std::fs::OpenOptions;
@@ -607,11 +607,11 @@ permissions = { contents = "read", security_events = "read", vulnerability_alert
         assert_eq!(config.default_profile.as_deref(), Some("contributor"));
         assert!(matches!(
             config.profiles.get("developer"),
-            Some(ProfileConfig::Root(_))
+            Some(ProfileConfig::Base(_))
         ));
         assert!(matches!(
             config.profiles.get("reader"),
-            Some(ProfileConfig::Derived(_))
+            Some(ProfileConfig::Scoped(_))
         ));
     }
 
@@ -623,44 +623,41 @@ permissions = { contents = "read", security_events = "read", vulnerability_alert
 
         let dev_profile = config.profiles.get("developer").unwrap();
         match dev_profile {
-            ProfileConfig::Root(root) => {
-                assert_eq!(root.github_app.account, "acme-corp");
-                assert_eq!(root.github_app.client_id, "Iv1.8888888888888888");
+            ProfileConfig::Base(base) => {
+                assert_eq!(base.github_app.account, "acme-corp");
+                assert_eq!(base.github_app.client_id, "Iv1.8888888888888888");
                 assert_eq!(
-                    root.github_app.client_secret.as_deref(),
+                    base.github_app.client_secret.as_deref(),
                     Some("secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
                 );
             }
-            ProfileConfig::Derived(_) => panic!("expected root profile"),
+            ProfileConfig::Scoped(_) => panic!("expected base profile"),
         }
 
         let reader_profile = config.profiles.get("reader").unwrap();
         match reader_profile {
-            ProfileConfig::Derived(derived) => {
-                assert_eq!(derived.source, "developer");
-                assert_eq!(derived.repo, RepoScope::Auto);
+            ProfileConfig::Scoped(scoped) => {
+                assert_eq!(scoped.source, "developer");
+                assert_eq!(scoped.repo, RepoScope::Auto);
                 assert_eq!(
-                    derived.permissions.get("contents"),
+                    scoped.permissions.get("contents"),
                     Some(&PermissionLevel::Read)
                 );
             }
-            ProfileConfig::Root(_) => panic!("expected derived profile"),
+            ProfileConfig::Base(_) => panic!("expected scoped profile"),
         }
 
         let sec_reviewer = config.profiles.get("security-reviewer").unwrap();
         match sec_reviewer {
-            ProfileConfig::Derived(derived) => {
-                assert_eq!(derived.source, "security-admin");
+            ProfileConfig::Scoped(scoped) => {
+                assert_eq!(scoped.source, "security-admin");
+                assert_eq!(scoped.repo, RepoScope::Specific("octo-org/api".to_string()));
                 assert_eq!(
-                    derived.repo,
-                    RepoScope::Specific("octo-org/api".to_string())
-                );
-                assert_eq!(
-                    derived.permissions.get("vulnerability_alerts"),
+                    scoped.permissions.get("vulnerability_alerts"),
                     Some(&PermissionLevel::Read)
                 );
             }
-            ProfileConfig::Root(_) => panic!("expected derived profile"),
+            ProfileConfig::Base(_) => panic!("expected scoped profile"),
         }
     }
 
@@ -698,7 +695,7 @@ permissions = { contents = "read", security_events = "read", vulnerability_alert
     }
 
     #[test]
-    fn test_derived_chaining_disallowed() {
+    fn test_scoped_chaining_disallowed() {
         let chaining_config = r#"
 version = 1
 default_profile = "reader"
@@ -718,12 +715,28 @@ permissions = { contents = "read" }
 "#;
         let err: ConfigError = chaining_config.parse::<Config>().unwrap_err();
         match err {
-            ConfigError::DerivedFromNonRoot { profile, source } => {
+            ConfigError::ScopedFromNonBase { profile, source } => {
                 assert_eq!(profile, "sub_reader");
                 assert_eq!(source, "reader");
             }
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn scoped_profile_source_must_exist() {
+        let config = r#"
+version = 1
+
+[profile.reader]
+source = "missing"
+permissions = { contents = "read" }
+"#;
+        assert!(matches!(
+            config.parse::<Config>(),
+            Err(ConfigError::ScopedSourceNotFound { profile, source })
+                if profile == "reader" && source == "missing"
+        ));
     }
 
     #[test]
@@ -736,7 +749,7 @@ permissions = { contents = "read" }
     }
 
     #[test]
-    fn standalone_secretless_root_can_be_default() {
+    fn standalone_secretless_base_can_be_default() {
         let config: Config = r#"
 version = 1
 default_profile = "developer"
@@ -747,10 +760,10 @@ github_app.client_id = "id"
 "#
         .parse()
         .unwrap();
-        let ProfileConfig::Root(root) = config.profiles.get("developer").unwrap() else {
-            panic!("expected root profile");
+        let ProfileConfig::Base(base) = config.profiles.get("developer").unwrap() else {
+            panic!("expected base profile");
         };
-        assert_eq!(root.github_app.client_secret, None);
+        assert_eq!(base.github_app.client_secret, None);
         assert!(format!("{config:?}").contains("client_secret: None"));
     }
 
@@ -759,25 +772,25 @@ github_app.client_id = "id"
         let invalid = VALID_CONFIG.replace("secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx", "   ");
         assert!(matches!(
             invalid.parse::<Config>(),
-            Err(ConfigError::InvalidRootProfile { .. })
+            Err(ConfigError::InvalidBaseProfile { .. })
         ));
     }
 
     #[test]
-    fn derived_profile_cannot_reference_secretless_root() {
+    fn scoped_profile_cannot_reference_secretless_base() {
         let invalid = VALID_CONFIG.replace(
             "github_app.client_secret = \"secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
             "",
         );
         assert!(matches!(
             invalid.parse::<Config>(),
-            Err(ConfigError::DerivedFromSecretlessRoot { profile, source })
+            Err(ConfigError::ScopedFromSecretlessBase { profile, source })
                 if (profile == "contributor" || profile == "reader") && source == "developer"
         ));
     }
 
     #[test]
-    fn test_derived_profile_default_repo() {
+    fn test_scoped_profile_default_repo() {
         let config_str = r#"
 version = 1
 
@@ -793,15 +806,15 @@ permissions = { contents = "read" }
         let config: Config = config_str.parse().unwrap();
         let reader = config.profiles.get("reader").unwrap();
         match reader {
-            ProfileConfig::Derived(derived) => {
-                assert_eq!(derived.repo, RepoScope::Auto);
+            ProfileConfig::Scoped(scoped) => {
+                assert_eq!(scoped.repo, RepoScope::Auto);
             }
-            ProfileConfig::Root(_) => panic!("expected derived profile"),
+            ProfileConfig::Base(_) => panic!("expected scoped profile"),
         }
     }
 
     #[test]
-    fn derived_profile_accepts_multiple_repository_selections() {
+    fn scoped_profile_accepts_multiple_repository_selections() {
         let config: Config = VALID_CONFIG
             .replace(
                 "repo = \"auto\"",
@@ -809,8 +822,8 @@ permissions = { contents = "read" }
             )
             .parse()
             .unwrap();
-        let ProfileConfig::Derived(reader) = config.profiles.get("reader").unwrap() else {
-            panic!("expected derived profile");
+        let ProfileConfig::Scoped(reader) = config.profiles.get("reader").unwrap() else {
+            panic!("expected scoped profile");
         };
         assert_eq!(
             reader.repo,
@@ -829,7 +842,7 @@ permissions = { contents = "read" }
     }
 
     #[test]
-    fn test_root_profile_rejects_repository_scope() {
+    fn test_base_profile_rejects_repository_scope() {
         let config = r#"
 version = 1
 
@@ -851,7 +864,7 @@ github_app.client_secret = "secret"
             r#"
 version = 1
 [profile.developer]
-kind = "root"
+kind = "base"
 github_app.account = "acme"
 github_app.client_id = "id"
 "#,
@@ -866,7 +879,7 @@ github_app.client_id = "id"
             r#"
 version = 1
 [profile.incomplete]
-description = "neither root nor derived"
+description = "neither base nor scoped"
 "#,
             r"
 version = 1
@@ -914,7 +927,7 @@ github_app.client_secret = "secret"
     }
 
     #[test]
-    fn test_empty_derived_permissions_disallowed() {
+    fn test_empty_scoped_permissions_disallowed() {
         let invalid_config = r#"
 version = 1
 
@@ -929,7 +942,7 @@ permissions = {}
 "#;
         let err: ConfigError = invalid_config.parse::<Config>().unwrap_err();
         match err {
-            ConfigError::InvalidDerivedProfile { profile, reason } => {
+            ConfigError::InvalidScopedProfile { profile, reason } => {
                 assert_eq!(profile, "reader");
                 assert!(reason.contains("permissions map must not be empty"));
             }

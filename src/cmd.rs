@@ -118,7 +118,7 @@ pub struct TokenCmd {
     #[argh(option, short = 'p')]
     pub profile: Option<String>,
 
-    /// derived-profile repository selection (all, auto, or owner/repo; repeat to select repositories; rejected for root profiles)
+    /// scoped-profile repository selection (all, auto, or owner/repo; repeat to select repositories; rejected for base profiles)
     #[argh(option, short = 'r')]
     pub repo: Vec<String>,
 
@@ -159,15 +159,15 @@ pub struct RevokeCmd {
 #[argh(subcommand, name = "prune")]
 pub struct PruneCmd {}
 
-/// Run a command with a fresh derived GitHub token. Access that dies with the process.
+/// Run a command with a fresh scoped GitHub token. Access that dies with the process.
 #[derive(FromArgs, PartialEq, Eq, Debug)]
 #[argh(subcommand, name = "run")]
 pub struct RunCmd {
-    /// target derived profile name (override `GHST_PROFILE`)
+    /// target scoped profile name (override `GHST_PROFILE`)
     #[argh(option, short = 'p')]
     pub profile: Option<String>,
 
-    /// derived-profile repository selection (all, auto, or owner/repo; repeat to select repositories)
+    /// scoped-profile repository selection (all, auto, or owner/repo; repeat to select repositories)
     #[argh(option, short = 'r')]
     pub repo: Vec<String>,
 

@@ -6,7 +6,7 @@ letting it discover reusable credentials on the host, `ghst` gives the tool a sh
 user-attributed GitHub token narrowed by the selected profile and repository scope.
 
 ```bash
-# Run an AI agent with the default derived profile and repository selection.
+# Run an AI agent with the default scoped profile and repository selection.
 ghst run -- codex
 
 # Select an explicit least-privilege profile.
@@ -22,7 +22,7 @@ ghst run -- nono run --allow . -- claude
    limits that token to the intersection of the dedicated App installation and the authorizing
    user's access.
 2. `ghst run` asks GitHub for a fresh token narrowed to the repositories and permissions in a
-   derived profile, then supplies it to the foreground child through `GH_TOKEN` and `GITHUB_TOKEN`.
+   scoped profile, then supplies it to the foreground child through `GH_TOKEN` and `GITHUB_TOKEN`.
 3. When the child exits, `ghst` requests remote revocation. A private recovery entry lets
    `ghst prune` retry if a crash, power loss, or GitHub failure interrupts cleanup.
 
@@ -36,7 +36,7 @@ file-descriptor guarantees. It requires a dedicated GitHub App configured with:
 
 - only the permissions and repositories users need;
 - Device Flow and expiring user access tokens enabled;
-- a client secret when derived profiles or remote revocation are required; and
+- a client secret when scoped profiles or remote revocation are required; and
 - **no private keys**.
 
 > [!IMPORTANT]
@@ -96,7 +96,7 @@ opens the file using `VISUAL`, `EDITOR`, or an available `nano`, `vim`, or `vi`.
 `ghst` securely reopens a regular configuration file without following links, restores private
 permissions, and rejects a target that cannot be safely opened and identified instead of repairing
 it through its path. After a successful editor exit, `ghst` validates the complete configuration.
-Edit the starter root profile for the dedicated App and the derived profiles for the authority to
+Edit the starter base profile for the dedicated App and the scoped profiles for the authority to
 delegate:
 
 ```toml
@@ -116,7 +116,7 @@ repo = ["acme-corp/application", "acme-corp/shared-library", "auto"]
 permissions = { contents = "read", pull_requests = "read", issues = "read" }
 ```
 
-Then authenticate the root profile and start the tool:
+Then authenticate the base profile and start the tool:
 
 ```bash
 ghst login --profile developer
@@ -132,9 +132,9 @@ See the repository's [example configuration](profiles.toml) for additional profi
 
 ### Profiles and repository scope
 
-A root profile identifies the dedicated GitHub App whose installation/user intersection becomes
-the authority ceiling. A derived profile is a local scoping recipe: its
-`source` names one root, while `repo` and `permissions` describe the narrower token to request.
+A base profile identifies the dedicated GitHub App whose installation/user intersection becomes
+the authority ceiling. A scoped profile is a local scoping recipe: its
+`source` names one base, while `repo` and `permissions` describe the narrower token to request.
 
 `repo` accepts one selection as a string or several selections as a TOML array. `auto` resolves the
 current Git remote, an explicit `owner/repository` selects that repository, and `all` applies no
@@ -146,7 +146,7 @@ repo = ["acme-corp/application", "acme-corp/shared-library", "auto"]
 ```
 
 After resolving `auto`, `ghst` sorts and deduplicates explicit repositories and requires every
-owner to match the source root profile's configured account. `all` cannot be combined with another
+owner to match the source base profile's configured account. `all` cannot be combined with another
 selection. When one or more `--repo` options are supplied, they replace the complete configured
 selection rather than adding to it; repeated CLI values may still mix explicit repositories and
 `auto`. None of these choices can widen the repositories or permissions granted by GitHub to the
@@ -169,6 +169,11 @@ ghst revoke --all                          # Revoke all locally cached credentia
 Run `ghst --help` or `ghst <command> --help` for the complete command-line interface.
 If you suspect refresh tokens outside the local cache, follow the App-level controls in
 [Responding to Credential or Configuration Exposure](SECURITY.md#responding-to-credential-or-configuration-exposure).
+
+Before 1.0, releases may break configuration or cache formats. Only the current formats are
+supported; unsupported or malformed artifacts fail closed and may need to be recreated or removed
+manually after an upgrade. Removing a cached token file only removes the local copy—it does not
+revoke the token on GitHub. Run `ghst revoke --all` before upgrading.
 
 ## Security boundaries
 

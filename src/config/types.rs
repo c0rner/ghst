@@ -27,22 +27,22 @@ impl fmt::Debug for Config {
 #[derive(PartialEq, Eq, Deserialize)]
 #[serde(untagged)]
 pub enum ProfileConfig {
-    Root(RootProfile),
-    Derived(DerivedProfile),
+    Base(BaseProfile),
+    Scoped(ScopedProfile),
 }
 
 impl ProfileConfig {
     pub const fn kind_name(&self) -> &'static str {
         match self {
-            Self::Root(_) => "root",
-            Self::Derived(_) => "derived",
+            Self::Base(_) => "base",
+            Self::Scoped(_) => "scoped",
         }
     }
 
     pub fn description(&self) -> Option<&str> {
         match self {
-            Self::Root(r) => r.description.as_deref(),
-            Self::Derived(d) => d.description.as_deref(),
+            Self::Base(base) => base.description.as_deref(),
+            Self::Scoped(scoped) => scoped.description.as_deref(),
         }
     }
 }
@@ -50,22 +50,22 @@ impl ProfileConfig {
 impl fmt::Debug for ProfileConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Root(root) => f.debug_tuple("Root").field(root).finish(),
-            Self::Derived(derived) => f.debug_tuple("Derived").field(derived).finish(),
+            Self::Base(base) => f.debug_tuple("Base").field(base).finish(),
+            Self::Scoped(scoped) => f.debug_tuple("Scoped").field(scoped).finish(),
         }
     }
 }
 
 #[derive(PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RootProfile {
+pub struct BaseProfile {
     pub description: Option<String>,
     pub github_app: GitHubAppConfig,
 }
 
-impl fmt::Debug for RootProfile {
+impl fmt::Debug for BaseProfile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("RootProfile")
+        f.debug_struct("BaseProfile")
             .field("description", &self.description)
             .field("github_app", &self.github_app)
             .finish()
@@ -96,7 +96,7 @@ impl fmt::Debug for GitHubAppConfig {
 
 #[derive(PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct DerivedProfile {
+pub struct ScopedProfile {
     pub description: Option<String>,
     pub source: String,
     #[serde(default)]
@@ -105,9 +105,9 @@ pub struct DerivedProfile {
     pub permissions: BTreeMap<String, PermissionLevel>,
 }
 
-impl fmt::Debug for DerivedProfile {
+impl fmt::Debug for ScopedProfile {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DerivedProfile")
+        f.debug_struct("ScopedProfile")
             .field("description", &self.description)
             .field("source", &self.source)
             .field("repo", &self.repo)

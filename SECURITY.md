@@ -19,13 +19,13 @@ other integration that needs a private key or a callback-based OAuth flow.
 
 | GitHub App setting | Required value | Security reason |
 | --- | --- | --- |
-| **Permissions** | Only the repository, organization, and account permissions that `ghst` users need | The App permissions are a platform-enforced ceiling. Derived profiles can narrow this ceiling but cannot repair an unnecessarily broad installation. |
-| **Installation repositories** | Only the repositories that may be accessed through this App | A token cannot access repositories outside the App installation, but `all` in a derived profile applies no further repository narrowing. |
+| **Permissions** | Only the repository, organization, and account permissions that `ghst` users need | The App permissions are a platform-enforced ceiling. Scoped profiles can narrow this ceiling but cannot repair an unnecessarily broad installation. |
+| **Installation repositories** | Only the repositories that may be accessed through this App | A token cannot access repositories outside the App installation, but `all` in a scoped profile applies no further repository narrowing. |
 | **Enable Device Flow** | Enabled | `ghst login` uses only GitHub's Device Flow. GitHub documents this as the flow intended for CLI and headless applications. |
 | **Request user authorization (OAuth) during installation** | Disabled | `ghst` does not use install-time or callback-based web authorization. Keep other OAuth workloads on a separate App. |
 | **Callback URL** | Empty | Device Flow does not use a redirect URI. An empty callback configuration prevents this dedicated App from also serving a web application flow. |
 | **Expire user authorization tokens** / **User-to-server token expiration** | Enabled | GitHub then returns an expiring user access token and a refresh token. `ghst` requires the access-token expiry and destroys the refresh token. |
-| **Client secret** | Generate only if derived profiles or remote revocation are needed | The secret enables scoped-token and revocation endpoints but is not used by Device Flow. It must remain private even though exposure alone has bounded authority. |
+| **Client secret** | Generate only if scoped profiles or remote revocation are needed | The secret enables scoped-token and revocation endpoints but is not used by Device Flow. It must remain private even though exposure alone has bounded authority. |
 | **Private keys** | **None** | A private key can authenticate as the App and mint installation access tokens, bypassing the authorizing-user intersection on which `ghst` relies. |
 | **Webhooks** | Disabled | `ghst` does not consume webhooks. A workload that needs them should use a separate App. |
 
@@ -37,10 +37,10 @@ App uses Device Flow. See GitHub's guides to [registering a GitHub App](https://
 and [choosing minimum permissions](https://docs.github.com/en/apps/creating-github-apps/registering-a-github-app/choosing-permissions-for-a-github-app).
 
 After saving the registration, verify that the **Private keys** list is empty, install the App only
-on the intended account and repositories, and copy its client ID into the root profile. Generate a
-client secret only when derived profiles or remote revocation are required, store it in the `0600`
+on the intended account and repositories, and copy its client ID into the base profile. Generate a
+client secret only when scoped profiles or remote revocation are required, store it in the `0600`
 configuration file, and set `github_app.account` to the target account that owns the permitted
-repositories. A secretless root can perform Device Flow login but cannot mint derived tokens or
+repositories. A secretless base can perform Device Flow login but cannot mint scoped tokens or
 remotely revoke tokens through the App-authenticated endpoints.
 
 ### No Private Keys
@@ -129,7 +129,7 @@ The conclusion changes when the secret is combined with other material:
 | --- | --- |
 | Public `client_id` only | Can initiate Device Flow and attempt to convince a user to authorize it. This risk exists even when no client secret is configured locally. |
 | `client_secret` only | Can authenticate as the OAuth application at applicable endpoints, but has no user or installation authority to access repositories. |
-| `client_secret` plus a live `ghst` root token | Can create independently expiring scoped user tokens while the root token is usable. Those tokens cannot exceed its App/user authority. |
+| `client_secret` plus a live `ghst` base token | Can create independently expiring scoped user tokens while the base token is usable. Those tokens cannot exceed its App/user authority. |
 | Device-Flow refresh token | Can renew the user access token using the public client ID; GitHub does not require the client secret for a refresh token issued through Device Flow. |
 | Private key | Can sign App JWTs and mint installation access tokens for App installations, bypassing the user intersection. This is why private keys are forbidden. |
 | GitHub App administration access | Can change permissions or authorization settings and generate a private key. App administration is therefore part of the trusted computing base. |
@@ -186,21 +186,21 @@ credentials:
 
 | `ghst` term | GitHub meaning |
 | --- | --- |
-| **Root profile** | Local configuration identifying a GitHub App and target account. |
-| **Root token** | GitHub's non-scoped user access token obtained through Device Flow. |
-| **Derived profile** | A local request for repository and permission restrictions. |
-| **Derived token** | GitHub's separate scoped user access token returned by the scoped-token endpoint. |
-| **Run token** | A fresh derived token whose cleanup lease is tied to one top-level command invocation. |
+| **Base profile** | Local configuration identifying a GitHub App and target account. |
+| **Base token** | GitHub's non-scoped user access token obtained through Device Flow. |
+| **Scoped profile** | A local request for repository and permission restrictions. |
+| **Scoped token** | GitHub's separate scoped user access token returned by the scoped-token endpoint. |
+| **Run token** | A fresh scoped token whose cleanup lease is tied to one top-level command invocation. |
 | **Installation access token** | A different, App-attributed credential that requires a private-key-signed JWT; `ghst` never uses it. |
 
 GitHub enforces two boundaries for a user access token. Their intersection is what `ghst` calls a
-root token. `ghst` supplies a third boundary when it asks GitHub to create a derived token:
+base token. `ghst` supplies a third boundary when it asks GitHub to create a scoped token:
 
 1. **App installation:** The token cannot exceed the permissions and repository access granted to
    the GitHub App installation.
 2. **Authorizing user:** The token cannot perform an operation the authorizing user could not
    perform. This is the user intersection that an installation token would bypass.
-3. **Derived profile request:** `ghst` asks GitHub to preserve or further restrict repositories and
+3. **Scoped profile request:** `ghst` asks GitHub to preserve or further restrict repositories and
    permissions. The request can never widen the first two boundaries.
 
 ```mermaid
@@ -210,18 +210,18 @@ venn-beta
         text GAccess["permissions + repositories"]
     set U["Authorizing user"]:30
         text UAccess["permissions + repositories"]
-    set S["Derived profile request"]:20
+    set S["Scoped profile request"]:20
         text SRequest["requested permissions + repositories"]
-    union G,U["ghst root token"]:5
-        text RootGitHub["GitHub non-scoped user access token"]
+    union G,U["ghst base token"]:5
+        text BaseGitHub["GitHub non-scoped user access token"]
     union U,S
     union G,S
-    union G,U,S["ghst derived token"]:20
-        text DerivedGitHub["GitHub scoped user access token"]
+    union G,U,S["ghst scoped token"]:20
+        text ScopedGitHub["GitHub scoped user access token"]
     style G,U fill:lightgreen, color:black
     style G,U,S fill:green, color:white
-    style DerivedGitHub color:white
-    style RootGitHub color:black
+    style ScopedGitHub color:white
+    style BaseGitHub color:black
 ```
 
 GitHub describes this distinction in its
@@ -240,10 +240,10 @@ depend on App permissions.
    lifetime.
 2. Refresh tokens are wrapped in zeroizing memory, dropped immediately after parsing, never cached,
    and never returned to downstream tools.
-3. `ghst` root tokens and reusable derived tokens are stored under `~/.cache/ghst/`. One-off run
+3. `ghst` base tokens and reusable scoped tokens are stored under `~/.cache/ghst/`. One-off run
    tokens are stored temporarily in private recovery entries so interrupted cleanup can be retried.
-4. Root and derived tokens have independent GitHub-issued expiries. Revoking or expiring a root
-   token is not assumed to revoke already-created derived (scoped) tokens.
+4. Base and scoped tokens have independent GitHub-issued expiries. Revoking or expiring a base
+   token is not assumed to revoke already-created scoped (scoped) tokens.
 
 Configuration and cache state have different enforcement:
 
@@ -256,7 +256,7 @@ Configuration and cache state have different enforcement:
 - Cache writes are atomic; symlinked, hard-linked, malformed, or insecure cache state fails closed.
 - Platforms without Unix private-permission semantics cannot persist tokens.
 
-Possession of the local client secret becomes more consequential when paired with a cached root
+Possession of the local client secret becomes more consequential when paired with a cached base
 token. Configuration and cache must therefore be protected as one credential boundary, even though
 the client secret alone has bounded authority.
 
@@ -289,13 +289,13 @@ lease does not follow arbitrary descendants.
 | --- | --- |
 | **Out-of-bound Device Flow authorization** | Human-gated but high impact. The operator must reject every flow they did not initiate locally. App-name matching alone cannot distinguish an attacker using the same public client ID. |
 | **Client secret exposure alone** | Does not directly grant repository access under the required configuration. Rotate it anyway, inspect App settings, and investigate whether it was paired with a user token or authorization artifact. |
-| **Client secret plus root-token exposure** | Allows additional scoped user tokens with independent lifetimes, but cannot exceed the root's App/user intersection. Protect configuration and cache together. |
+| **Client secret plus base-token exposure** | Allows additional scoped user tokens with independent lifetimes, but cannot exceed the base's App/user intersection. Protect configuration and cache together. |
 | **Refresh-token exposure** | Enables renewable user access. `ghst` destroys only refresh tokens it receives; it cannot protect an attacker-controlled flow. |
 | **Departing or malicious developer retains a refresh token** | Outside the trusted-operator boundary. A workstation owner can complete Device Flow outside `ghst` and retain the rotating refresh token, bypassing local lifetime policy. Offboarding must remove the user's GitHub access and authorization; suspected unknown credentials require the centralized App controls below. |
 | **Private key present or exposed** | Outside the threat model and critical. It enables App JWTs and installation access tokens without a user intersection. Delete the key and treat every App installation as potentially affected. |
 | **GitHub App administrator compromise** | Outside the local boundary. An administrator can change permissions, authorization settings, installations, secrets, and private keys. |
-| **Derived-token exfiltration** | Bounded by the profile, App/user intersection, and token expiry, but usable until revoked or expired. |
-| **Root-token exfiltration** | Bounded by the App/user intersection and expiry. Pairing it with the client secret enables scoped-token creation. |
+| **Scoped-token exfiltration** | Bounded by the profile, App/user intersection, and token expiry, but usable until revoked or expired. |
+| **Base-token exfiltration** | Bounded by the App/user intersection and expiry. Pairing it with the client secret enables scoped-token creation. |
 | **Cleanup interruption** | Issuer expiry is the final bound. `ghst prune` retries abandoned run-token cleanup; `ghst revoke <id>` targets one status-reported cache slot, while `ghst revoke --all` attempts remote revocation and local purge for every credential represented in this workstation's cache. |
 | **Trusted operator bypass** | Out of scope. A workstation owner can use another GitHub credential or deliberately expose local state. |
 

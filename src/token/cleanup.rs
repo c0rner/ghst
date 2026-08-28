@@ -2,7 +2,7 @@ use crate::cache::{
     CacheEntry, CacheInspectionState, RunCacheEntry, RunState, claim_abandoned_run,
     claim_released_run, delete_entry_if_unchanged, delete_run_after_cleanup, inspect_cache,
 };
-use crate::config::{Config, RootProfile};
+use crate::config::{BaseProfile, Config};
 use crate::github::GitHubError;
 use crate::token::RevokeTokenClient;
 use std::path::Path;
@@ -265,7 +265,7 @@ fn cleanup_unexpired_entry<C: RevokeTokenClient>(
     entry: CacheEntry,
 ) -> CleanupAttempt {
     match entry {
-        CacheEntry::Root(_) | CacheEntry::Derived(_) => Ok(CleanupOutcome::NoAction),
+        CacheEntry::Base(_) | CacheEntry::Scoped(_) => Ok(CleanupOutcome::NoAction),
         CacheEntry::Run(entry) => {
             cleanup_pruned_run(client, config, cache_dir, cache_key, label, &entry)
         }
@@ -312,7 +312,7 @@ fn cleanup_run_entry<C: RevokeTokenClient>(
     entry: &RunCacheEntry,
 ) -> CleanupAttempt {
     let label = cache_key.to_owned();
-    let Some(root) = validated_root(config, entry) else {
+    let Some(base) = validated_base(config, entry) else {
         tracing::debug!(
             cache_key,
             source_profile = entry.source_profile,
@@ -320,7 +320,7 @@ fn cleanup_run_entry<C: RevokeTokenClient>(
         );
         return Err(CleanupFailure::Configuration { entry: label });
     };
-    let Some(secret) = root.github_app.client_secret.as_deref() else {
+    let Some(secret) = base.github_app.client_secret.as_deref() else {
         tracing::debug!(
             cache_key,
             source_profile = entry.source_profile,
@@ -329,7 +329,7 @@ fn cleanup_run_entry<C: RevokeTokenClient>(
         return Err(CleanupFailure::ClientSecretUnavailable { entry: label });
     };
     match client.delete_token(
-        &root.github_app.client_id,
+        &base.github_app.client_id,
         secret,
         entry.access_token.as_ref(),
     ) {
@@ -360,13 +360,13 @@ fn cleanup_run_entry<C: RevokeTokenClient>(
     }
 }
 
-fn validated_root<'a>(config: &'a Config, entry: &RunCacheEntry) -> Option<&'a RootProfile> {
+fn validated_base<'a>(config: &'a Config, entry: &RunCacheEntry) -> Option<&'a BaseProfile> {
     match super::provenance::for_source(
         config,
         &entry.source_profile,
         &entry.source_authority_fingerprint,
     ) {
-        super::provenance::ConfiguredAuthority::Match(root) => Some(root),
+        super::provenance::ConfiguredAuthority::Match(base) => Some(base),
         super::provenance::ConfiguredAuthority::Mismatch
         | super::provenance::ConfiguredAuthority::Missing => None,
     }
@@ -374,8 +374,8 @@ fn validated_root<'a>(config: &'a Config, entry: &RunCacheEntry) -> Option<&'a R
 
 const fn expiry(entry: &CacheEntry) -> crate::cache::TokenExpiry {
     match entry {
-        CacheEntry::Root(entry) => entry.expires_at,
-        CacheEntry::Derived(entry) => entry.expires_at,
+        CacheEntry::Base(entry) => entry.expires_at,
+        CacheEntry::Scoped(entry) => entry.expires_at,
         CacheEntry::Run(entry) => entry.expires_at,
     }
 }

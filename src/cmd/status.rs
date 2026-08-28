@@ -94,8 +94,8 @@ fn write_entry(
         CacheInspectionState::Invalid => writeln!(writer, "    Lifetime:    Invalid"),
         CacheInspectionState::Current(entry) => {
             let expiry = match entry.as_ref() {
-                CacheEntry::Root(value) => value.expires_at,
-                CacheEntry::Derived(value) => value.expires_at,
+                CacheEntry::Base(value) => value.expires_at,
+                CacheEntry::Scoped(value) => value.expires_at,
                 CacheEntry::Run(value) => value.expires_at,
             };
             let state = if expiry.value() <= now {
@@ -198,6 +198,8 @@ permissions = { contents = "read" }
         let mut output = Vec::new();
         print_status(&mut output, &config, &cache_dir, now).unwrap();
         let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("  developer [base]"));
+        assert!(output.contains("* reader [scoped]"));
         assert!(output.contains(&format!(
             "ID:          {}",
             &compute_run_cache_key(run_id)[..crate::cache::MIN_CACHE_ID_LENGTH]

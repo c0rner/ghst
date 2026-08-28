@@ -29,7 +29,7 @@ pub struct RevokeTransaction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeleteRootOutcome {
+pub enum DeleteBaseOutcome {
     Deleted,
     Missing,
     Changed,
@@ -138,8 +138,8 @@ fn inspect_unlocked(cache_dir: &Path) -> Result<Vec<CacheInspection>, CacheError
 /// Saves a `CacheEntry` to `cache_dir/<hash_key>.json`.
 ///
 /// A compatible current entry is retained. An expired or same-kind
-/// stale-provenance entry is atomically replaced. Malformed, inconsistent, or
-/// wrong-kind entries fail closed. Unsupported schemas are discarded.
+/// stale-provenance entry is atomically replaced. Malformed, inconsistent,
+/// wrong-kind, and unsupported-schema entries fail closed and are retained.
 #[cfg(test)]
 pub fn save_cache_entry(
     cache_dir: &Path,
@@ -160,7 +160,7 @@ pub fn save_cache_candidate(
     hash_key: &str,
     entry: &CacheEntry,
     epoch: u64,
-    expected_root: Option<(&str, &str)>,
+    expected_base: Option<(&str, &str)>,
 ) -> Result<SaveCacheEntry, CacheError> {
     ensure_cache_dir(cache_dir)?;
     validate_entry_key(hash_key, entry)?;
@@ -173,18 +173,18 @@ pub fn save_cache_candidate(
                 actual,
             });
         }
-        if let Some((root_key, generation)) = expected_root {
-            let root = read_cache_entry(&cache_file_path(cache_dir, root_key))?;
-            if !matches!(root, Some(CacheEntry::Root(ref root)) if root.generation_fingerprint() == generation)
+        if let Some((base_key, generation)) = expected_base {
+            let base = read_cache_entry(&cache_file_path(cache_dir, base_key))?;
+            if !matches!(base, Some(CacheEntry::Base(ref base)) if base.generation_fingerprint() == generation)
             {
-                return Err(CacheError::RootGenerationChanged);
+                return Err(CacheError::BaseGenerationChanged);
             }
         }
         save_unlocked(cache_dir, hash_key, entry, &json_bytes)
     })
 }
 
-/// Replaces the exact derived entry selected for renewal under the cache lock.
+/// Replaces the exact scoped entry selected for renewal under the cache lock.
 ///
 /// A compatible entry written by a concurrent renewal is retained instead. The
 /// caller owns cleanup of either the displaced token or its unused candidate.
@@ -194,15 +194,15 @@ pub fn replace_cache_candidate(
     expected: &CacheEntry,
     candidate: &CacheEntry,
     epoch: u64,
-    expected_root: (&str, &str),
+    expected_base: (&str, &str),
     now: time::OffsetDateTime,
 ) -> Result<ReplaceCacheEntry, CacheError> {
     ensure_cache_dir(cache_dir)?;
     validate_entry_key(hash_key, expected)?;
     validate_entry_key(hash_key, candidate)?;
-    if !matches!(expected, CacheEntry::Derived(_)) || !matches!(candidate, CacheEntry::Derived(_)) {
+    if !matches!(expected, CacheEntry::Scoped(_)) || !matches!(candidate, CacheEntry::Scoped(_)) {
         return Err(CacheError::UnexpectedKind {
-            expected: "derived",
+            expected: "scoped",
             actual: candidate.kind_name(),
         });
     }
@@ -215,11 +215,11 @@ pub fn replace_cache_candidate(
                 actual,
             });
         }
-        let (root_key, generation) = expected_root;
-        let root = read_cache_entry(&cache_file_path(cache_dir, root_key))?;
-        if !matches!(root, Some(CacheEntry::Root(ref root)) if root.generation_fingerprint() == generation)
+        let (base_key, generation) = expected_base;
+        let base = read_cache_entry(&cache_file_path(cache_dir, base_key))?;
+        if !matches!(base, Some(CacheEntry::Base(ref base)) if base.generation_fingerprint() == generation)
         {
-            return Err(CacheError::RootGenerationChanged);
+            return Err(CacheError::BaseGenerationChanged);
         }
 
         let cache_file = cache_file_path(cache_dir, hash_key);
@@ -284,7 +284,7 @@ fn persist_cache_file(
 
 fn validate_entry_key(hash_key: &str, entry: &CacheEntry) -> Result<(), CacheError> {
     let actual_key = match entry {
-        CacheEntry::Root(_) | CacheEntry::Derived(_) => {
+        CacheEntry::Base(_) | CacheEntry::Scoped(_) => {
             compute_cache_key(entry.profile(), entry.repo_scope())
         }
         CacheEntry::Run(entry) => compute_run_cache_key(&entry.run_id),
@@ -441,30 +441,30 @@ pub fn delete_entry_if_unchanged(
     })
 }
 
-pub fn delete_root_if_generation(
+pub fn delete_base_if_generation(
     cache_dir: &Path,
     cache_key: &str,
     expected_generation: &str,
-) -> Result<DeleteRootOutcome, CacheError> {
+) -> Result<DeleteBaseOutcome, CacheError> {
     if !cache_dir_exists(cache_dir)? {
-        return Ok(DeleteRootOutcome::Missing);
+        return Ok(DeleteBaseOutcome::Missing);
     }
     validate_cache_key(cache_key)?;
     with_cache_lock(cache_dir, LockMode::Exclusive, || {
         let path = cache_file_path(cache_dir, cache_key);
         let Some(entry) = read_cache_entry(&path)? else {
-            return Ok(DeleteRootOutcome::Missing);
+            return Ok(DeleteBaseOutcome::Missing);
         };
         validate_entry_key(cache_key, &entry)?;
         match entry {
-            CacheEntry::Root(entry) if entry.generation_fingerprint() == expected_generation => {
+            CacheEntry::Base(entry) if entry.generation_fingerprint() == expected_generation => {
                 fs::remove_file(path).map_err(CacheError::Io)?;
                 sync_cache_dir(cache_dir)?;
-                Ok(DeleteRootOutcome::Deleted)
+                Ok(DeleteBaseOutcome::Deleted)
             }
-            CacheEntry::Root(_) => Ok(DeleteRootOutcome::Changed),
+            CacheEntry::Base(_) => Ok(DeleteBaseOutcome::Changed),
             other => Err(CacheError::UnexpectedKind {
-                expected: "root",
+                expected: "base",
                 actual: other.kind_name(),
             }),
         }
@@ -606,23 +606,18 @@ fn read_cache_entry(cache_file: &Path) -> Result<Option<CacheEntry>, CacheError>
                     CacheError::Json(error)
                 })?;
             let expected_version = match header.kind.as_str() {
-                "root" | "derived" => Some(crate::cache::CACHE_SCHEMA_VERSION),
+                "base" | "scoped" => Some(crate::cache::CACHE_SCHEMA_VERSION),
                 "run" => Some(crate::cache::RUN_CACHE_SCHEMA_VERSION),
                 _ => None,
             };
-            if expected_version.is_some() && header.version != expected_version {
-                tracing::warn!(
-                    path = %cache_file.display(),
-                    kind = %header.kind,
-                    version = ?header.version,
-                    "discarding cache entry with unsupported schema"
-                );
-                fs::remove_file(cache_file).map_err(CacheError::Io)?;
-                let cache_dir = cache_file
-                    .parent()
-                    .ok_or(CacheError::Platform("cache entry has no parent directory"))?;
-                sync_cache_dir(cache_dir)?;
-                return Ok(None);
+            if let Some(expected) = expected_version
+                && header.version != Some(expected)
+            {
+                return Err(CacheError::UnsupportedSchema {
+                    kind: header.kind,
+                    version: header.version,
+                    expected,
+                });
             }
             serde_json::from_str(&content)
                 .map(Some)

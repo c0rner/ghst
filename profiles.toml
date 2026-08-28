@@ -10,7 +10,7 @@ version = 1
 default_profile = "contributor"
 
 # ==============================================================================
-# Root Profiles (Backed directly by GitHub Apps)
+# Base Profiles (Backed directly by GitHub Apps)
 # ==============================================================================
 
 [profile.developer]
@@ -26,7 +26,7 @@ github_app.client_id = "Iv1.7777777777777777"
 github_app.client_secret = "secret_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
 
 # ==============================================================================
-# Derived Profiles (Scoped subsets of root profiles)
+# Scoped Profiles (Scoped subsets of base profiles)
 # ==============================================================================
 
 [profile.reader]

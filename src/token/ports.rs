@@ -12,7 +12,7 @@ pub trait RevokeTokenClient {
     ) -> Result<(), GitHubError>;
 }
 
-pub trait RootTokenClient: RevokeTokenClient {
+pub trait BaseTokenClient: RevokeTokenClient {
     fn get_user(&self, access_token: &str) -> Result<GitHubUser, GitHubError>;
 }
 
@@ -23,15 +23,15 @@ pub trait ScopedTokenClient: RevokeTokenClient {
     ) -> Result<IssuedScopedToken, GitHubError>;
 }
 
-pub struct IssuedRootToken {
+pub struct IssuedBaseToken {
     pub access_token: AccessToken,
     pub expires_in: Option<u64>,
 }
 
-impl fmt::Debug for IssuedRootToken {
+impl fmt::Debug for IssuedBaseToken {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
-            .debug_struct("IssuedRootToken")
+            .debug_struct("IssuedBaseToken")
             .field("access_token", &"[REDACTED]")
             .field("expires_in", &self.expires_in)
             .finish()
@@ -46,7 +46,7 @@ pub struct GitHubUser {
 pub struct ScopedTokenRequest<'a> {
     pub client_id: &'a str,
     pub client_secret: &'a str,
-    pub root_token: &'a str,
+    pub base_token: &'a str,
     pub target: &'a str,
     pub repositories: Option<&'a [String]>,
     pub permissions: &'a BTreeMap<String, String>,
@@ -58,7 +58,7 @@ impl fmt::Debug for ScopedTokenRequest<'_> {
             .debug_struct("ScopedTokenRequest")
             .field("client_id", &self.client_id)
             .field("client_secret", &"[REDACTED]")
-            .field("root_token", &"[REDACTED]")
+            .field("base_token", &"[REDACTED]")
             .field("target", &self.target)
             .field("repositories", &self.repositories)
             .field("permissions", &self.permissions)
@@ -91,7 +91,7 @@ mod tests {
         let request = ScopedTokenRequest {
             client_id: "client-id",
             client_secret: "secret-marker",
-            root_token: "root-token-marker",
+            base_token: "base-token-marker",
             target: "acme",
             repositories: None,
             permissions: &permissions,
@@ -99,7 +99,7 @@ mod tests {
 
         let output = format!("{request:?}");
         assert!(!output.contains("secret-marker"));
-        assert!(!output.contains("root-token-marker"));
+        assert!(!output.contains("base-token-marker"));
         assert!(output.contains("[REDACTED]"));
     }
 }

@@ -26,7 +26,7 @@ pub enum CmdError {
     },
     ProfileNotFound(String),
     ProfileRequired,
-    DerivedLoginNotAllowed {
+    ScopedLoginNotAllowed {
         profile: String,
         source: String,
     },
@@ -54,17 +54,17 @@ impl fmt::Display for CmdError {
             Self::Config(err) => write!(f, "configuration error: {err}"),
             Self::Cache(err) => write!(f, "cache error: {err}"),
             Self::GitHub(err) => write!(f, "github error: {err}"),
-            Self::Token(TokenError::NoRootTokenCached(profile)) => write!(
+            Self::Token(TokenError::NoBaseTokenCached(profile)) => write!(
                 f,
-                "No valid cached token found for root profile '{profile}'. Please log in first: ghst login -p {profile}"
+                "No valid cached token found for base profile '{profile}'. Please log in first: ghst login -p {profile}"
             ),
             Self::Token(TokenError::NoSourceTokenCached(profile)) => write!(
                 f,
-                "No valid cached token found for root source profile '{profile}'. Please log in to the root profile first: ghst login -p {profile}"
+                "No valid cached token found for base source profile '{profile}'. Please log in to the base profile first: ghst login -p {profile}"
             ),
-            Self::Token(TokenError::RootScopeRejected(profile)) => write!(
+            Self::Token(TokenError::BaseScopeRejected(profile)) => write!(
                 f,
-                "root profile '{profile}' cannot be repository-scoped; omit --repo to return its raw root token"
+                "base profile '{profile}' cannot be repository-scoped; omit --repo to return its raw base token"
             ),
             Self::Token(err) => err.fmt(f),
             Self::ConfigNotFound(path) => write!(
@@ -93,9 +93,9 @@ impl fmt::Display for CmdError {
                 f,
                 "no profile specified; pass `-p <profile>`, set `GHST_PROFILE`, or configure `default_profile`"
             ),
-            Self::DerivedLoginNotAllowed { profile, source } => write!(
+            Self::ScopedLoginNotAllowed { profile, source } => write!(
                 f,
-                "profile '{profile}' is derived; log in to its root source instead: ghst login -p {source}"
+                "profile '{profile}' is scoped; log in to its base source instead: ghst login -p {source}"
             ),
             Self::InvalidOutputFormat(value) => write!(
                 f,
@@ -155,7 +155,7 @@ impl std::error::Error for CmdError {
             | Self::EditorFailed { .. }
             | Self::ProfileNotFound(_)
             | Self::ProfileRequired
-            | Self::DerivedLoginNotAllowed { .. }
+            | Self::ScopedLoginNotAllowed { .. }
             | Self::InvalidOutputFormat(_)
             | Self::OAuthExpired
             | Self::OAuthAccessDenied
@@ -208,16 +208,28 @@ mod tests {
     #[test]
     fn token_errors_gain_cli_specific_guidance() {
         assert_eq!(
-            CmdError::Token(TokenError::NoRootTokenCached("developer".into())).to_string(),
-            "No valid cached token found for root profile 'developer'. Please log in first: ghst login -p developer"
+            CmdError::Token(TokenError::NoBaseTokenCached("developer".into())).to_string(),
+            "No valid cached token found for base profile 'developer'. Please log in first: ghst login -p developer"
         );
         assert_eq!(
             CmdError::Token(TokenError::NoSourceTokenCached("developer".into())).to_string(),
-            "No valid cached token found for root source profile 'developer'. Please log in to the root profile first: ghst login -p developer"
+            "No valid cached token found for base source profile 'developer'. Please log in to the base profile first: ghst login -p developer"
         );
         assert_eq!(
-            CmdError::Token(TokenError::RootScopeRejected("developer".into())).to_string(),
-            "root profile 'developer' cannot be repository-scoped; omit --repo to return its raw root token"
+            CmdError::Token(TokenError::BaseScopeRejected("developer".into())).to_string(),
+            "base profile 'developer' cannot be repository-scoped; omit --repo to return its raw base token"
+        );
+        assert_eq!(
+            CmdError::ScopedLoginNotAllowed {
+                profile: "reader".into(),
+                source: "developer".into(),
+            }
+            .to_string(),
+            "profile 'reader' is scoped; log in to its base source instead: ghst login -p developer"
+        );
+        assert_eq!(
+            CmdError::Token(TokenError::RunRequiresScoped("developer".into())).to_string(),
+            "profile 'developer' is a base profile; run requires a scoped profile"
         );
     }
 

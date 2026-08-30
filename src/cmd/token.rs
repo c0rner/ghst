@@ -1,3 +1,4 @@
+use crate::cache::compute_cache_key;
 use crate::cmd::{CmdError, GhstCli, OutputFormat, TokenCmd, resolve_profile_name};
 use crate::github::GitHubClient;
 use crate::repository::RepositoryError;
@@ -79,10 +80,11 @@ fn write_token(
             serde_json::to_writer(
                 &mut *writer,
                 &serde_json::json!({
-                    "token": token.access_token.as_ref(),
-                    "expires_at": token.expires_at.to_string(),
+                    "id": &compute_cache_key(token.profile.as_str(), token.repo_scope.as_str(),)[..crate::cache::MIN_CACHE_ID_LENGTH],
+                    "expires_at": token.expires_at.value().unix_timestamp(),
                     "profile": token.profile.as_str(),
                     "repo": token.repo_scope.as_str(),
+                    "token": token.access_token.as_ref(),
                 }),
             )
             .map_err(|source| {
@@ -133,7 +135,10 @@ mod tests {
         write_token(&mut json, &token, OutputFormat::Json).unwrap();
         let value: serde_json::Value = serde_json::from_slice(&json).unwrap();
         assert_eq!(value["token"], "secret-token");
-        assert_eq!(value["expires_at"], token.expires_at.to_string());
+        assert_eq!(
+            value["expires_at"],
+            token.expires_at.value().unix_timestamp()
+        );
         assert_eq!(value["profile"], "reader");
         assert_eq!(value["repo"], "acme/api");
     }

@@ -1,214 +1,76 @@
 # ghst - GitHub Scoped Tokens
 
-`ghst` (pronounced "ghost") puts a secure credential lifetime around AI coding agents and
-developer CLI tools. Instead of handing a tool a broad, long-lived Personal Access Token (PAT) or
-letting it discover reusable credentials on the host, `ghst` gives the tool a short-lived,
-user-attributed GitHub token narrowed by the selected profile and repository scope.
+`ghst` (pronounced "ghost") mints short-lived, least-privilege GitHub user access tokens for AI
+coding agents and developer tools. Instead of granting a broad Personal Access Token (PAT) or
+ambient workstation credentials, `ghst` provides ephemeral, user-attributed tokens narrowed by a
+dedicated GitHub App and local permission profile.
 
 ```bash
-# Run an AI agent with the default scoped profile and repository selection.
+# Run an AI agent with the default scoped profile and repository selection
 ghst run -- codex
 
-# Select an explicit least-privilege profile.
+# Select an explicit least-privilege profile
 ghst run --profile reader -- aider
 
-# Also confine the process with a kernel sandbox.
+# Confine the local process with a kernel sandbox (ghst outside, sandbox inside)
 ghst run -- nono run --allow . -- claude
 ```
 
-## How it works
-
-1. `ghst login` uses GitHub OAuth Device Flow to obtain an expiring user access token. GitHub
-   limits that token to the intersection of the dedicated App installation and the authorizing
-   user's access.
-2. `ghst run` asks GitHub for a fresh token narrowed to the repositories and permissions in a
-   scoped profile, then supplies it to the foreground child through `GH_TOKEN` and `GITHUB_TOKEN`.
-3. When the child exits, `ghst` requests remote revocation. A private recovery entry lets
-   `ghst prune` retry if a crash, power loss, or GitHub failure interrupts cleanup.
-
-GitHub may return a refresh token during login. `ghst` destroys it in memory and never persists or
-passes it to a child process, so delegated access cannot be renewed by the recipient.
-
-## Requirements
-
-`ghst` supports Linux and macOS, where it can enforce Unix ownership, file-permission, and
-file-descriptor guarantees. It requires a dedicated GitHub App configured with:
-
-- only the permissions and repositories users need;
-- Device Flow and expiring user access tokens enabled;
-- a client secret when scoped profiles or remote revocation are required; and
-- **no private keys**.
+## Security Warning & Requirements
 
 > [!IMPORTANT]
-> The exact App settings are part of the security boundary. Follow the
-> [required GitHub App configuration](SECURITY.md#required-github-app-configuration) before logging
-> in. In particular, never generate a private key for an App used by `ghst`.
+> `ghst` requires a **dedicated GitHub App** configured with:
+>
+> - Only the minimum permissions and repositories needed
+> - **Device Flow** enabled and **expiring user access tokens** enabled
+> - **No private keys** (private keys bypass human authorization and are strictly forbidden)
+> - An optional client secret (only needed for scoped profiles or remote revocation)
+>
+> `ghst` controls credential authority and lifetime; **it is not a process sandbox**. Always deny
+> less-trusted tools access to `~/.config/ghst/`, `~/.cache/ghst/`, GitHub CLI state, and SSH keys.
+> See the [Security Model](https://c0rner.github.io/ghst/security/) for full threat analysis.
 
-## Installation
+## User Manual
 
-### GitHub Releases
+Comprehensive, searchable documentation is available in the **[ghst User Manual](https://c0rner.github.io/ghst/)**
+(source in [`docs/src/`](docs/src/)):
 
-Prebuilt archives for macOS and glibc-based Linux (`x86_64` and `aarch64` / Apple Silicon) are
-available on [GitHub Releases](https://github.com/c0rner/ghst/releases). Each archive has a matching
-`.sha256` file, and each release includes a combined `sha256.sum`. Download the archive and its
-checksum before extracting it, then verify them with `sha256sum --check` on Linux or
-`shasum --algorithm 256 --check` on macOS.
+| Section | Description |
+|---|---|
+| **[Getting Started](https://c0rner.github.io/ghst/getting-started/)** | [Installation](https://c0rner.github.io/ghst/getting-started/installation.html), [Required GitHub App Setup](https://c0rner.github.io/ghst/getting-started/github-app.html), and [Quickstart](https://c0rner.github.io/ghst/getting-started/quickstart.html) |
+| **[Concepts](https://c0rner.github.io/ghst/concepts/)** | [Permission Ceiling](https://c0rner.github.io/ghst/concepts/permission-ceiling.html), [Profiles & Token Lifetimes](https://c0rner.github.io/ghst/concepts/profiles-and-tokens.html), and [Security Boundaries](https://c0rner.github.io/ghst/concepts/security-boundaries.html) |
+| **[Security Model](https://c0rner.github.io/ghst/security/)** | [Threat Model](https://c0rner.github.io/ghst/security/threat-model.html), [Authority Intersection](https://c0rner.github.io/ghst/security/authority-model.html), [Device Flow Safety](https://c0rner.github.io/ghst/security/device-flow.html), [Credentials](https://c0rner.github.io/ghst/security/app-credentials.html), and [Consequences Matrix](https://c0rner.github.io/ghst/security/credential-consequences.html) |
+| **[Configuration](https://c0rner.github.io/ghst/configuration/)** | [Global Options](https://c0rner.github.io/ghst/configuration/global.html), [App Profiles](https://c0rner.github.io/ghst/configuration/app-profiles.html), [Scoped Profiles](https://c0rner.github.io/ghst/configuration/scoped-profiles.html), and [Repository Resolution](https://c0rner.github.io/ghst/configuration/repositories.html) |
+| **[Commands](https://c0rner.github.io/ghst/commands/)** | [`edit`](https://c0rner.github.io/ghst/commands/edit.html), [`login`](https://c0rner.github.io/ghst/commands/login.html), [`token`](https://c0rner.github.io/ghst/commands/token.html), [`profiles`](https://c0rner.github.io/ghst/commands/profiles.html), [`status`](https://c0rner.github.io/ghst/commands/status.html), [`run`](https://c0rner.github.io/ghst/commands/run.html), [`prune`](https://c0rner.github.io/ghst/commands/prune.html), [`revoke`](https://c0rner.github.io/ghst/commands/revoke.html) |
+| **[Recipes](https://c0rner.github.io/ghst/recipes/)** | [AI Agents](https://c0rner.github.io/ghst/recipes/ai-agents.html), [Process Sandboxing & MicroVMs](https://c0rner.github.io/ghst/recipes/sandboxing.html), and [Multi-Repository Workflows](https://c0rner.github.io/ghst/recipes/multi-repository.html) |
+| **[Troubleshooting](https://c0rner.github.io/ghst/troubleshooting/)** | [Common Failures](https://c0rner.github.io/ghst/troubleshooting/common-failures.html), [Cleanup & Recovery](https://c0rner.github.io/ghst/troubleshooting/cleanup.html), and [Incident Response](https://c0rner.github.io/ghst/troubleshooting/incident-response.html) |
 
-These checksums detect corruption or a mismatch between files downloaded from the release. Because
-the checksums and archives are published together, they do not provide independent authentication
-of the release publisher.
-
-### Cargo
-
-With a Rust toolchain installed:
+## Quick Installation
 
 ```bash
+# Cargo (recommended if Rust toolchain is installed)
 cargo install --locked ghst
+
+# Or download prebuilt release binaries
+# https://github.com/c0rner/ghst/releases
 ```
 
-This builds the published crate and its locked dependency graph locally. As with other Cargo
-installations, the build may execute code from build dependencies and build scripts.
+## Reporting Security Vulnerabilities
 
-### Shell installer (convenience)
-
-Releases also include a generated `ghst-installer.sh` that selects and downloads the appropriate
-prebuilt archive. It verifies the embedded SHA-256 checksum when `sha256sum` is installed, but
-warns and continues without verification when that command is unavailable. The installer is
-remotely supplied shell code, so use it only if that bootstrap trust model is acceptable. It is
-provided as a convenience, not as the recommended installation method.
-
-```bash
-curl --proto '=https' --tlsv1.2 -LsSf \
-  https://github.com/c0rner/ghst/releases/latest/download/ghst-installer.sh | sh
-```
-
-## Configure and run
-
-The default configuration is `~/.config/ghst/profiles.toml`. Create and open a private starter
-configuration with:
-
-```bash
-ghst edit --init
-```
-
-The command creates the directory with mode `0700` and the file atomically with mode `0600`, then
-opens the file using `VISUAL`, `EDITOR`, or an available `nano`, `vim`, or `vi`. On editor exit,
-`ghst` securely reopens a regular configuration file without following links, restores private
-permissions, and rejects a target that cannot be safely opened and identified instead of repairing
-it through its path. After a successful editor exit, `ghst` validates the complete configuration.
-Edit the starter app profile for the dedicated App and the scoped profiles for the authority to
-delegate:
-
-```toml
-version = 1
-default_profile = "reader"
-
-[profile.developer]
-description = "Developer authority ceiling"
-github_app.account = "acme-corp"
-github_app.client_id = "Iv1.8888888888888888"
-github_app.client_secret = "secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-
-[profile.reader]
-source = "developer"
-description = "Read-only repository access"
-repo = ["acme-corp/application", "acme-corp/shared-library", "auto"]
-permissions = { contents = "read", pull_requests = "read", issues = "read" }
-```
-
-Then authenticate the app profile and start the tool:
-
-```bash
-ghst login --profile developer
-ghst run -- codex
-```
-
-During login, authorize only a Device Flow that you personally started in a trusted terminal and
-that is still waiting locally. Manually enter the displayed code at
-`https://github.com/login/device` and verify that GitHub shows the expected dedicated App. Never
-approve a code received through chat, email, an issue, an AI agent, or another person's terminal.
-
-See the repository's [example configuration](profiles.toml) for additional profiles.
-
-### Profiles and repository scope
-
-An app profile identifies the dedicated GitHub App whose installation/user intersection becomes
-the authority ceiling. A scoped profile is a local scoping recipe: its
-`source` names one app profile, while `repo` and `permissions` describe the narrower token to request.
-
-`repo` accepts one selection as a string or several selections as a TOML array. `auto` resolves the
-current Git remote, an explicit `owner/repository` selects that repository, and `all` applies no
-additional repository narrowing. For example, a profile can combine stable dependencies with the
-current repository:
-
-```toml
-repo = ["acme-corp/application", "acme-corp/shared-library", "auto"]
-```
-
-After resolving `auto`, `ghst` sorts and deduplicates explicit repositories and requires every
-owner to match the source app profile's configured account. `all` cannot be combined with another
-selection. When one or more `--repo` options are supplied, they replace the complete configured
-selection rather than adding to it; repeated CLI values may still mix explicit repositories and
-`auto`. None of these choices can widen the repositories or permissions granted by GitHub to the
-App and authorizing user. Choose the narrowest useful default profile, then override it only when a
-task genuinely needs a different repository set. The complete authority model is documented under
-[Permission Ceiling and Scope Intersection](SECURITY.md#permission-ceiling-and-scope-intersection).
-
-## Common commands
-
-```bash
-ghst edit                                  # Edit, secure, and validate the configuration
-ghst token --profile reader --format env   # Emit a reusable token as environment assignments
-ghst profiles -v                           # Inspect configured profiles
-ghst status                                # Inspect cached token IDs, status, and lifetimes
-ghst prune                                 # Retry abandoned-run cleanup and remove expired entries
-ghst revoke <id>                           # Revoke one cached credential by status ID
-ghst revoke --all                          # Revoke all locally cached credentials
-```
-
-Run `ghst --help` or `ghst <command> --help` for the complete command-line interface.
-If you suspect refresh tokens outside the local cache, follow the App-level controls in
-[Responding to Credential or Configuration Exposure](SECURITY.md#responding-to-credential-or-configuration-exposure).
-
-Before 1.0, releases may break configuration or cache formats. Only the current formats are
-supported; unsupported or malformed artifacts fail closed and may need to be recreated or removed
-manually after an upgrade. Removing a cached token file only removes the local copy—it does not
-revoke the token on GitHub. Run `ghst revoke --all` before upgrading.
-
-## Security boundaries
-
-`ghst` controls GitHub authority and credential lifetime; **it is not a process sandbox**. A
-less-trusted process with unrestricted host access may find GitHub CLI credentials, SSH keys,
-credential helpers, or `ghst` configuration and cache files. Combine `ghst` with a kernel sandbox
-when those resources must be inaccessible:
-
-```bash
-ghst run --profile contributor --repo auto -- \
-  nono run --allow . -- codex
-```
-
-Keep the workload in the foreground. The token lease belongs to the top-level command invocation;
-when that command exits, `ghst` requests revocation even if a detached descendant is still
-running. See the [FAQ](FAQ.md#can-i-run-background-daemons-with-ghst-run) for detached workloads
-and the [sandboxing guidance](SECURITY.md#sandboxing-less-trusted-tools) for the complete host
-credential boundary.
-
-## Further reading
-
-- [FAQ](FAQ.md) answers practical questions about alternatives, AI tools, failure recovery, and
-  team deployment.
-- [Security Architecture & Threat Model](SECURITY.md) defines the required App configuration,
-  security assumptions, credential consequences, and incident response.
+Please do not report security vulnerabilities in public issues. Use the private
+[GitHub Security Advisory form](https://github.com/c0rner/ghst/security/advisories/new) or see
+[SECURITY.md](SECURITY.md).
 
 ## Development
 
 ```bash
 cargo check
-cargo clippy
-cargo fmt -- --check
-cargo test
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-features
+mdbook build docs
 ```
 
 ## License
 
 Licensed under the [Apache License, Version 2.0](LICENSE).
+

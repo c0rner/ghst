@@ -4,6 +4,11 @@ All notable changes to `ghst` are documented in this file.
 
 ## [Unreleased]
 
+### Breaking
+
+- Emit `expires_at` as a Unix timestamp in seconds in `ghst token --format json`, allowing scripts
+  to compare token expiry without parsing RFC 3339.
+
 ## [0.6.0] - 2026-08-28
 
 ### Breaking

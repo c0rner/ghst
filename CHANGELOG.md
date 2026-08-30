@@ -4,10 +4,16 @@ All notable changes to `ghst` are documented in this file.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-30
+
 ### Breaking
 
-- Emit `expires_at` as a Unix timestamp in seconds in `ghst token --format json`, allowing scripts
-  to compare token expiry without parsing RFC 3339.
+- Emit `expires_at` as a Unix timestamp in seconds in `ghst token --format json`, allowing scripts to compare token expiry without parsing RFC 3339 ([#57], [#58]).
+
+### Added
+
+- Add cache slot `id` to `ghst token --format json` output to enable unambiguous token lookup and revocation ([#57], [#58]).
+- Add comprehensive mdBook user manual under `docs/` covering architecture, security concepts, command reference, and workflows ([#57], [#58]).
 
 ## [0.6.0] - 2026-08-28
 
@@ -45,7 +51,8 @@ All notable changes to `ghst` are documented in this file.
 
 - First public release.
 
-[Unreleased]: https://github.com/c0rner/ghst/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/c0rner/ghst/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/c0rner/ghst/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/c0rner/ghst/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/c0rner/ghst/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/c0rner/ghst/compare/v0.5.0...v0.5.1
@@ -59,3 +66,5 @@ All notable changes to `ghst` are documented in this file.
 [#44]: https://github.com/c0rner/ghst/pull/44
 [#46]: https://github.com/c0rner/ghst/pull/46
 [#53]: https://github.com/c0rner/ghst/pull/53
+[#57]: https://github.com/c0rner/ghst/pull/57
+[#58]: https://github.com/c0rner/ghst/pull/58

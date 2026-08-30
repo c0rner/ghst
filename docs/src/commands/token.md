@@ -28,12 +28,12 @@ export GH_TOKEN='<access-token>' GITHUB_TOKEN='<access-token>'
 ```
 
 ```json
-{"expires_at":1785434400,"id":"3a8f1b2","profile":"reader","repo":"example-org/service","token":"<access-token>"}
+{"expires_at":1785434400,"id":"3a8f1b2c3a8f1b2c3a8f1b2c3a8f1b2c3a8f1b2c3a8f1b2c3a8f1b2c3a8f1b2c","profile":"reader","repo":"example-org/service","token":"<access-token>"}
 ```
 
 The env format uses POSIX single-quote escaping. JSON is one compact object followed by a newline;
 `expires_at` is a Unix timestamp in seconds, `repo` is the canonical scope (`all` or a
-comma-separated sorted repository list), and `id` is the cache-slot prefix accepted by
+comma-separated sorted repository list), and `id` is the full cache-slot ID accepted by
 `ghst revoke <id>`.
 
 Every format writes a live credential to stdout. Avoid terminal scrollback, shell tracing,

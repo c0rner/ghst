@@ -80,7 +80,7 @@ fn write_token(
             serde_json::to_writer(
                 &mut *writer,
                 &serde_json::json!({
-                    "id": &compute_cache_key(token.profile.as_str(), token.repo_scope.as_str(),)[..crate::cache::MIN_CACHE_ID_LENGTH],
+                    "id": compute_cache_key(token.profile.as_str(), token.repo_scope.as_str()),
                     "expires_at": token.expires_at.value().unix_timestamp(),
                     "profile": token.profile.as_str(),
                     "repo": token.repo_scope.as_str(),
@@ -135,6 +135,10 @@ mod tests {
         write_token(&mut json, &token, OutputFormat::Json).unwrap();
         let value: serde_json::Value = serde_json::from_slice(&json).unwrap();
         assert_eq!(value["token"], "secret-token");
+        assert_eq!(
+            value["id"],
+            compute_cache_key(token.profile.as_str(), token.repo_scope.as_str())
+        );
         assert_eq!(
             value["expires_at"],
             token.expires_at.value().unix_timestamp()

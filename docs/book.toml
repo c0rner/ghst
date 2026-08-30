@@ -1,0 +1,16 @@
+[book]
+authors = ["ghst contributors"]
+language = "en"
+src = "src"
+title = "ghst User Manual"
+
+[build]
+build-dir = "book"
+
+[output.html]
+site-url = "/ghst/"
+git-repository-url = "https://github.com/c0rner/ghst"
+edit-url-template = "https://github.com/c0rner/ghst/edit/main/docs/{path}"
+
+[output.html.search]
+enable = true

@@ -108,6 +108,7 @@ mod tests {
     fn selection_is_validated_before_loading_configuration() {
         let args = GhstCli {
             config: Some("missing.toml".into()),
+            version: false,
             command: crate::cmd::SubCommand::Revoke(RevokeCmd {
                 id: None,
                 all: false,

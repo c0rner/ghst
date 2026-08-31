@@ -20,9 +20,18 @@ fn init_logging() {
 }
 
 fn main() {
+    if is_standalone_version_request(std::env::args_os().skip(1)) {
+        println!("{}", version_output());
+        return;
+    }
+
     init_logging();
 
     let args: GhstCli = argh::from_env();
+    if args.version {
+        println!("{}", version_output());
+        return;
+    }
     let command = args.command.name();
     debug!(command, "starting command");
 
@@ -53,6 +62,17 @@ fn main() {
     debug!(command, "command completed");
 }
 
+fn is_standalone_version_request(mut args: impl Iterator<Item = std::ffi::OsString>) -> bool {
+    matches!(
+        (args.next(), args.next()),
+        (Some(argument), None) if argument == "--version"
+    )
+}
+
+fn version_output() -> String {
+    format!("ghst {}", cmd::GHST_VERSION)
+}
+
 fn command_exit(command: &str, result: Result<(), cmd::CmdError>) -> i32 {
     match result {
         Ok(()) => 0,
@@ -61,5 +81,21 @@ fn command_exit(command: &str, result: Result<(), cmd::CmdError>) -> i32 {
             eprintln!("Error: {error}");
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn standalone_version_request_is_unambiguous() {
+        assert_eq!(version_output(), format!("ghst {}", cmd::GHST_VERSION));
+        assert!(is_standalone_version_request(
+            ["--version".into()].into_iter()
+        ));
+        assert!(!is_standalone_version_request(
+            ["run".into(), "--version".into()].into_iter()
+        ));
     }
 }

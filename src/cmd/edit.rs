@@ -226,6 +226,7 @@ mod tests {
         let path = temp.path().join("missing.toml");
         let args = GhstCli {
             config: Some(path.clone()),
+            version: false,
             command: crate::cmd::SubCommand::Edit(EditCmd { init: false }),
         };
 

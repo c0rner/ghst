@@ -19,6 +19,8 @@ use time::{UtcOffset, error::IndeterminateOffset};
 
 use crate::cache::{TokenExpiry, format_rfc3339};
 
+pub const GHST_VERSION: &str = env!("CARGO_PKG_VERSION");
+
 fn format_human_expiry(expiry: TokenExpiry) -> String {
     format_human_expiry_with_offset(expiry, UtcOffset::local_offset_at(expiry.value()))
 }
@@ -49,12 +51,17 @@ profiles or directly invoking the GitHub API.",
 {command_name} edit --init
 {command_name} login --profile developer
 {command_name} token --profile reader --repo acme/api --format env
-{command_name} run --profile contributor --repo auto -- llm_tool"
+{command_name} run --profile contributor --repo auto -- llm_tool",
+    note = "Version: {GHST_VERSION}"
 )]
 pub struct GhstCli {
     /// optional path to configuration file (override `GHST_CONFIG` or ~/.config/ghst/profiles.toml)
     #[argh(option, short = 'c')]
     pub config: Option<PathBuf>,
+
+    /// display version information
+    #[argh(switch)]
+    pub version: bool,
 
     #[argh(subcommand)]
     pub command: SubCommand,
@@ -247,6 +254,7 @@ mod tests {
             args,
             GhstCli {
                 config: None,
+                version: false,
                 command: SubCommand::Login(LoginCmd {
                     profile: Some("developer".to_string()),
                     no_browser: false,
@@ -266,6 +274,7 @@ mod tests {
             args,
             GhstCli {
                 config: None,
+                version: false,
                 command: SubCommand::Login(LoginCmd {
                     profile: Some("developer".to_string()),
                     no_browser: true,
@@ -295,6 +304,7 @@ mod tests {
             args,
             GhstCli {
                 config: None,
+                version: false,
                 command: SubCommand::Token(TokenCmd {
                     profile: Some("reader".to_string()),
                     repo: vec!["octo-org/repo1".to_string(), "octo-org/repo2".to_string()],
@@ -306,6 +316,14 @@ mod tests {
 
     #[test]
     fn generated_help_uses_app_and_scoped_profile_terminology() {
+        let top_level_help = GhstCli::from_args(&["ghst"], &["--help"]).unwrap_err();
+        assert!(
+            top_level_help
+                .output
+                .contains(&format!("Version: {GHST_VERSION}"))
+        );
+        assert!(top_level_help.output.contains("--version"));
+
         let token_help = GhstCli::from_args(&["ghst"], &["token", "--help"]).unwrap_err();
         let token_help = token_help
             .output
@@ -346,6 +364,7 @@ mod tests {
             args,
             GhstCli {
                 config: None,
+                version: false,
                 command: SubCommand::Run(RunCmd {
                     profile: Some("reader".to_string()),
                     repo: vec!["acme/api".to_string()],
@@ -388,6 +407,7 @@ mod tests {
             GhstCli::from_args(&["ghst"], &["edit"]).unwrap(),
             GhstCli {
                 config: None,
+                version: false,
                 command: SubCommand::Edit(EditCmd { init: false }),
             }
         );
@@ -395,6 +415,7 @@ mod tests {
             GhstCli::from_args(&["ghst"], &["edit", "--init"]).unwrap(),
             GhstCli {
                 config: None,
+                version: false,
                 command: SubCommand::Edit(EditCmd { init: true }),
             }
         );
@@ -407,6 +428,7 @@ mod tests {
             args,
             GhstCli {
                 config: None,
+                version: false,
                 command: SubCommand::Profiles(ProfilesCmd { verbose: false }),
             }
         );
@@ -416,6 +438,7 @@ mod tests {
             args_v,
             GhstCli {
                 config: None,
+                version: false,
                 command: SubCommand::Profiles(ProfilesCmd { verbose: true }),
             }
         );

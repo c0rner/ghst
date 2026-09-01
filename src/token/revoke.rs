@@ -1,7 +1,6 @@
 use crate::cache::{CacheInspectionState, revoke_transaction};
 use crate::config::Config;
-use crate::github::GitHubError;
-use crate::token::RevokeTokenClient;
+use crate::token::{RemoteError, RevokeTokenClient};
 use std::path::Path;
 use time::OffsetDateTime;
 
@@ -17,7 +16,7 @@ pub enum RevokeFailure {
     },
     GitHubRevocation {
         entry: String,
-        source: GitHubError,
+        source: RemoteError,
     },
     CacheDeletion {
         entry: String,
@@ -274,7 +273,7 @@ mod tests {
             _client_id: &str,
             _client_secret: &str,
             _access_token: &str,
-        ) -> Result<(), GitHubError> {
+        ) -> Result<(), RemoteError> {
             self.0.set(self.0.get() + 1);
             Ok(())
         }
@@ -291,10 +290,10 @@ mod tests {
             _client_id: &str,
             _client_secret: &str,
             access_token: &str,
-        ) -> Result<(), GitHubError> {
+        ) -> Result<(), RemoteError> {
             self.revoked.borrow_mut().push(access_token.to_owned());
             if self.fails {
-                Err(GitHubError::Http {
+                Err(RemoteError::Http {
                     status: 500,
                     message: "revocation failed".into(),
                 })

@@ -299,74 +299,6 @@ fn validate_entry_key(hash_key: &str, entry: &CacheEntry) -> Result<(), CacheErr
     }
 }
 
-pub fn transition_run_to_running(
-    cache_dir: &Path,
-    cache_key: &str,
-    run_id: &str,
-    wrapper_pid: u32,
-    child_pid: u32,
-) -> Result<RunCacheEntry, CacheError> {
-    update_run(cache_dir, cache_key, |entry| {
-        if entry.run_id != run_id
-            || entry.wrapper_pid != wrapper_pid
-            || entry.child_pid.is_some()
-            || entry.state != RunState::Pending
-        {
-            return Err(CacheError::InvalidRunTransition(
-                "pending run ownership did not match",
-            ));
-        }
-        entry.child_pid = Some(child_pid);
-        entry.state = RunState::Running;
-        Ok(())
-    })
-}
-
-pub fn mark_pending_run_for_cleanup(
-    cache_dir: &Path,
-    cache_key: &str,
-    run_id: &str,
-    wrapper_pid: u32,
-    child_pid: Option<u32>,
-) -> Result<RunCacheEntry, CacheError> {
-    update_run(cache_dir, cache_key, |entry| {
-        if entry.run_id != run_id
-            || entry.wrapper_pid != wrapper_pid
-            || entry.child_pid.is_some()
-            || entry.state != RunState::Pending
-        {
-            return Err(CacheError::InvalidRunTransition(
-                "pending run ownership did not match",
-            ));
-        }
-        entry.child_pid = child_pid;
-        entry.state = RunState::CleanupPending;
-        Ok(())
-    })
-}
-
-pub fn claim_released_run(
-    cache_dir: &Path,
-    cache_key: &str,
-    run_id: &str,
-    wrapper_pid: u32,
-    child_pid: u32,
-) -> Result<RunCacheEntry, CacheError> {
-    update_run(cache_dir, cache_key, |entry| {
-        if entry.run_id != run_id
-            || entry.wrapper_pid != wrapper_pid
-            || entry.child_pid != Some(child_pid)
-            || entry.state != RunState::Running
-        {
-            return Err(CacheError::InvalidRunTransition(
-                "released run ownership did not match",
-            ));
-        }
-        entry.state = RunState::CleanupPending;
-        Ok(())
-    })
-}
-
 pub fn claim_abandoned_run(
     cache_dir: &Path,
     cache_key: &str,
@@ -471,7 +403,7 @@ pub fn delete_base_if_generation(
     })
 }
 
-fn update_run(
+pub(super) fn update_run(
     cache_dir: &Path,
     cache_key: &str,
     operation: impl FnOnce(&mut RunCacheEntry) -> Result<(), CacheError>,

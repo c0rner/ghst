@@ -1,10 +1,7 @@
-use crate::cache::{mark_pending_run_for_cleanup, transition_run_to_running};
 use crate::cmd::{CmdError, GhstCli, RunCmd, resolve_profile_name};
 use crate::github::GitHubClient;
-use crate::token::cleanup::{CleanupScope, ReleasedRun, cleanup, cleanup_marked_run};
 use crate::token::run::{MintRunRequest, PendingRun};
 use std::process::{Command, ExitStatus};
-use time::OffsetDateTime;
 
 pub enum RunOutcome {
     GhstError(CmdError),
@@ -56,16 +53,16 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
     let signals = match Forwarder::prepare() {
         Ok(signals) => signals,
         Err(error) => {
-            cleanup_before_handoff(&client, &config, &cache_dir, &pending, None);
+            cleanup_before_handoff(&client, &config, &cache_dir, pending, None);
             return Err(CmdError::Io(error));
         }
     };
 
     tracing::debug!(executable = ?cmd.command[0], "spawning run child process");
-    let mut child = match spawn_command(cmd, pending.access_token.as_ref()) {
+    let mut child = match spawn_command(cmd, pending.access_token()) {
         Ok(child) => child,
         Err(error) => {
-            cleanup_before_handoff(&client, &config, &cache_dir, &pending, None);
+            cleanup_before_handoff(&client, &config, &cache_dir, pending, None);
             return Err(CmdError::Io(error));
         }
     };
@@ -77,25 +74,23 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
         Ok(forwarder) => forwarder,
         Err(error) => {
             terminate_and_wait(&mut child);
-            cleanup_before_handoff(&client, &config, &cache_dir, &pending, Some(child_pid));
+            cleanup_before_handoff(&client, &config, &cache_dir, pending, Some(child_pid));
             return Err(CmdError::Io(error));
         }
     };
 
-    if let Err(error) = transition_run_to_running(
-        &cache_dir,
-        &pending.cache_key,
-        &pending.run_id,
-        wrapper_pid,
-        child_pid,
-    ) {
-        tracing::debug!(child_pid, error = %error, "failed to transition run recovery entry to running");
-        #[cfg(unix)]
-        forwarder.stop();
-        terminate_and_wait(&mut child);
-        cleanup_before_handoff(&client, &config, &cache_dir, &pending, Some(child_pid));
-        return Err(CmdError::Cache(error));
-    }
+    let active = match pending.activate(&cache_dir, child_pid) {
+        Ok(active) => active,
+        Err(error) => {
+            let (source, pending) = error.into_parts();
+            tracing::debug!(child_pid, error = %source, "failed to transition run recovery entry to running");
+            #[cfg(unix)]
+            forwarder.stop();
+            terminate_and_wait(&mut child);
+            cleanup_before_handoff(&client, &config, &cache_dir, pending, Some(child_pid));
+            return Err(CmdError::Cache(source));
+        }
+    };
     tracing::debug!(child_pid, "run recovery entry transitioned to running");
 
     let status = child.wait();
@@ -112,18 +107,7 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
             1
         }
     };
-    let report = cleanup(
-        &client,
-        &config,
-        &cache_dir,
-        CleanupScope::ReleasedRun(&ReleasedRun {
-            cache_key: pending.cache_key,
-            run_id: pending.run_id,
-            wrapper_pid,
-            child_pid,
-        }),
-        OffsetDateTime::now_utc(),
-    );
+    let report = active.finish(&client, &config, &cache_dir);
     report_cleanup(child_pid, report);
     Ok(code)
 }
@@ -188,17 +172,10 @@ fn cleanup_before_handoff(
     client: &GitHubClient,
     config: &crate::config::Config,
     cache_dir: &std::path::Path,
-    pending: &PendingRun,
+    pending: PendingRun,
     child_pid: Option<u32>,
 ) {
-    let report = mark_pending_run_for_cleanup(
-        cache_dir,
-        &pending.cache_key,
-        &pending.run_id,
-        pending.wrapper_pid,
-        child_pid,
-    )
-    .map(|entry| cleanup_marked_run(client, config, cache_dir, &pending.cache_key, &entry));
+    let report = pending.abort(client, config, cache_dir, child_pid);
     match report {
         Ok(report) if report.is_complete() => {
             tracing::debug!("pending run token was cleaned up before child handoff");

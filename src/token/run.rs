@@ -1,11 +1,11 @@
 use super::{TokenError, base_cache_key, revoke_with_context};
 use crate::cache::{
-    CacheEntry, RUN_CACHE_SCHEMA_VERSION, RunCacheEntry, RunState, SaveCacheEntry, cache_epoch,
-    compute_run_cache_key, save_cache_candidate,
+    AccessToken, CacheEntry, CacheError, RUN_CACHE_SCHEMA_VERSION, RunCacheEntry, RunState,
+    SaveCacheEntry, cache_epoch, compute_run_cache_key, save_cache_candidate,
 };
 use crate::config::Config;
 use crate::repository::RepositoryError;
-use crate::token::ScopedTokenClient;
+use crate::token::{RevokeTokenClient, ScopedTokenClient};
 use std::fmt::Write as _;
 use std::path::Path;
 use time::OffsetDateTime;
@@ -19,22 +19,136 @@ pub struct MintRunRequest<'a> {
     pub command: &'a str,
 }
 
+struct RunIdentity {
+    cache_key: String,
+    run_id: String,
+    wrapper_pid: u32,
+}
+
 pub struct PendingRun {
-    pub cache_key: String,
-    pub run_id: String,
-    pub wrapper_pid: u32,
-    pub access_token: crate::cache::AccessToken,
+    identity: RunIdentity,
+    access_token: AccessToken,
+}
+
+pub struct ActiveRun {
+    identity: RunIdentity,
+    child_pid: u32,
+}
+
+pub struct ActivateRunError {
+    source: CacheError,
+    pending: Box<PendingRun>,
 }
 
 impl std::fmt::Debug for PendingRun {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("PendingRun")
-            .field("cache_key", &self.cache_key)
-            .field("run_id", &self.run_id)
-            .field("wrapper_pid", &self.wrapper_pid)
+            .field("cache_key", &self.identity.cache_key)
+            .field("run_id", &self.identity.run_id)
+            .field("wrapper_pid", &self.identity.wrapper_pid)
             .field("access_token", &self.access_token)
             .finish()
+    }
+}
+
+impl std::fmt::Debug for ActivateRunError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ActivateRunError")
+            .field("source", &self.source)
+            .field("pending", &self.pending)
+            .finish()
+    }
+}
+
+impl std::fmt::Display for ActivateRunError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "failed to activate run: {}", self.source)
+    }
+}
+
+impl std::error::Error for ActivateRunError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+impl ActivateRunError {
+    pub fn into_parts(self) -> (CacheError, PendingRun) {
+        (self.source, *self.pending)
+    }
+}
+
+impl PendingRun {
+    pub fn access_token(&self) -> &str {
+        self.access_token.as_ref()
+    }
+
+    pub fn activate(self, cache_dir: &Path, child_pid: u32) -> Result<ActiveRun, ActivateRunError> {
+        match crate::cache::run_storage::activate(
+            cache_dir,
+            &self.identity.cache_key,
+            &self.identity.run_id,
+            self.identity.wrapper_pid,
+            child_pid,
+        ) {
+            Ok(_) => Ok(ActiveRun {
+                identity: self.identity,
+                child_pid,
+            }),
+            Err(source) => Err(ActivateRunError {
+                source,
+                pending: Box::new(self),
+            }),
+        }
+    }
+
+    pub fn abort<C: RevokeTokenClient>(
+        self,
+        client: &C,
+        config: &Config,
+        cache_dir: &Path,
+        child_pid: Option<u32>,
+    ) -> Result<super::cleanup::CleanupReport, CacheError> {
+        let entry = crate::cache::run_storage::abort(
+            cache_dir,
+            &self.identity.cache_key,
+            &self.identity.run_id,
+            self.identity.wrapper_pid,
+            child_pid,
+        )?;
+        Ok(super::cleanup::cleanup_marked_run(
+            client,
+            config,
+            cache_dir,
+            &self.identity.cache_key,
+            &entry,
+        ))
+    }
+}
+
+impl ActiveRun {
+    pub fn finish<C: RevokeTokenClient>(
+        self,
+        client: &C,
+        config: &Config,
+        cache_dir: &Path,
+    ) -> Result<super::cleanup::CleanupReport, CacheError> {
+        let entry = crate::cache::run_storage::finish(
+            cache_dir,
+            &self.identity.cache_key,
+            &self.identity.run_id,
+            self.identity.wrapper_pid,
+            self.child_pid,
+        )?;
+        Ok(super::cleanup::cleanup_marked_run(
+            client,
+            config,
+            cache_dir,
+            &self.identity.cache_key,
+            &entry,
+        ))
     }
 }
 
@@ -115,9 +229,11 @@ fn mint_with_clock<
                 "persisted pending run recovery entry"
             );
             Ok(PendingRun {
-                cache_key,
-                run_id,
-                wrapper_pid: request.wrapper_pid,
+                identity: RunIdentity {
+                    cache_key,
+                    run_id,
+                    wrapper_pid: request.wrapper_pid,
+                },
                 access_token: entry.access_token,
             })
         }
@@ -153,8 +269,9 @@ mod tests {
     };
     use crate::github::GitHubError;
     use crate::token::{IssuedScopedToken, RevokeTokenClient, ScopedTokenRequest};
-    use std::cell::Cell;
+    use std::cell::{Cell, RefCell};
     use std::collections::BTreeMap;
+    use std::path::PathBuf;
     use time::Duration;
 
     struct MockClient(Cell<usize>);
@@ -183,6 +300,54 @@ mod tests {
                     TokenExpiry::new(OffsetDateTime::now_utc() + Duration::hours(1)).to_string(),
                 ),
             })
+        }
+    }
+
+    struct LifecycleClient {
+        cache_entry: Option<(PathBuf, String)>,
+        observed_states: RefCell<Vec<(RunState, Option<u32>)>>,
+        revoked: RefCell<Vec<String>>,
+        fail: Cell<bool>,
+    }
+
+    impl LifecycleClient {
+        fn observing(cache_dir: &Path, cache_key: &str) -> Self {
+            Self {
+                cache_entry: Some((cache_dir.to_owned(), cache_key.to_owned())),
+                observed_states: RefCell::new(Vec::new()),
+                revoked: RefCell::new(Vec::new()),
+                fail: Cell::new(false),
+            }
+        }
+    }
+
+    impl RevokeTokenClient for LifecycleClient {
+        fn delete_token(
+            &self,
+            _client_id: &str,
+            _client_secret: &str,
+            access_token: &str,
+        ) -> Result<(), GitHubError> {
+            if let Some((cache_dir, cache_key)) = &self.cache_entry {
+                let CacheEntry::Run(entry) = crate::cache::load_cache_entry(cache_dir, cache_key)
+                    .unwrap()
+                    .unwrap()
+                else {
+                    panic!("expected run entry")
+                };
+                self.observed_states
+                    .borrow_mut()
+                    .push((entry.state, entry.child_pid));
+            }
+            self.revoked.borrow_mut().push(access_token.to_owned());
+            if self.fail.get() {
+                Err(GitHubError::Http {
+                    status: 500,
+                    message: "failure".into(),
+                })
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -217,6 +382,38 @@ permissions = { contents = "read" }
             }),
         )
         .unwrap();
+    }
+
+    fn pending_run(cache_dir: &Path, run_id: &str) -> PendingRun {
+        let cache_key = compute_run_cache_key(run_id);
+        save_cache_entry(
+            cache_dir,
+            &cache_key,
+            &CacheEntry::Run(RunCacheEntry {
+                version: RUN_CACHE_SCHEMA_VERSION,
+                run_id: run_id.into(),
+                state: RunState::Pending,
+                wrapper_pid: 100,
+                child_pid: None,
+                command: "true".into(),
+                profile: "reader".into(),
+                source_profile: "developer".into(),
+                source_authority_fingerprint: authority_fingerprint("id", "acme"),
+                github_user: "octocat".into(),
+                repo_scope: "acme/api".into(),
+                expires_at: TokenExpiry::new(OffsetDateTime::now_utc() + Duration::hours(1)),
+                access_token: format!("token-{run_id}").into(),
+            }),
+        )
+        .unwrap();
+        PendingRun {
+            identity: RunIdentity {
+                cache_key,
+                run_id: run_id.into(),
+                wrapper_pid: 100,
+            },
+            access_token: format!("token-{run_id}").into(),
+        }
     }
 
     #[test]
@@ -276,10 +473,156 @@ permissions = { contents = "read" }
         };
         let first = mint(&client, &request, || panic!("auto is not used")).unwrap();
         let second = mint(&client, &request, || panic!("auto is not used")).unwrap();
-        assert_eq!(first.access_token.as_ref(), "fresh-1");
-        assert_eq!(second.access_token.as_ref(), "fresh-2");
-        assert_ne!(first.cache_key, second.cache_key);
+        assert_eq!(first.access_token(), "fresh-1");
+        assert_eq!(second.access_token(), "fresh-2");
+        assert_ne!(first.identity.cache_key, second.identity.cache_key);
         assert_eq!(client.0.get(), 2);
+    }
+
+    #[test]
+    fn activation_persists_the_exact_child_owner() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let pending = pending_run(&cache_dir, "activate");
+        let cache_key = pending.identity.cache_key.clone();
+
+        let active = pending.activate(&cache_dir, 200).unwrap();
+
+        assert_eq!(active.child_pid, 200);
+        assert!(matches!(
+            crate::cache::load_cache_entry(&cache_dir, &cache_key).unwrap(),
+            Some(CacheEntry::Run(RunCacheEntry {
+                state: RunState::Running,
+                child_pid: Some(200),
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn abort_before_spawn_marks_without_a_child_then_revokes_and_deletes() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let pending = pending_run(&cache_dir, "abort-before-spawn");
+        let cache_key = pending.identity.cache_key.clone();
+        let client = LifecycleClient::observing(&cache_dir, &cache_key);
+
+        let report = pending.abort(&client, &config(), &cache_dir, None).unwrap();
+
+        assert!(report.is_complete());
+        assert_eq!(
+            &*client.observed_states.borrow(),
+            &[(RunState::CleanupPending, None)]
+        );
+        assert_eq!(&*client.revoked.borrow(), &["token-abort-before-spawn"]);
+        assert!(
+            crate::cache::load_cache_entry(&cache_dir, &cache_key)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn abort_after_spawn_records_the_child_before_cleanup() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let pending = pending_run(&cache_dir, "abort-after-spawn");
+        let cache_key = pending.identity.cache_key.clone();
+        let client = LifecycleClient::observing(&cache_dir, &cache_key);
+        client.fail.set(true);
+
+        let report = pending
+            .abort(&client, &config(), &cache_dir, Some(201))
+            .unwrap();
+
+        assert!(!report.is_complete());
+        assert_eq!(
+            &*client.observed_states.borrow(),
+            &[(RunState::CleanupPending, Some(201))]
+        );
+        assert!(matches!(
+            crate::cache::load_cache_entry(&cache_dir, &cache_key).unwrap(),
+            Some(CacheEntry::Run(RunCacheEntry {
+                state: RunState::CleanupPending,
+                child_pid: Some(201),
+                ..
+            }))
+        ));
+    }
+
+    #[test]
+    fn finish_claims_revokes_and_deletes_the_exact_active_run() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let pending = pending_run(&cache_dir, "finish");
+        let cache_key = pending.identity.cache_key.clone();
+        let active = pending.activate(&cache_dir, 202).unwrap();
+        let client = LifecycleClient::observing(&cache_dir, &cache_key);
+
+        let report = active.finish(&client, &config(), &cache_dir).unwrap();
+
+        assert!(report.is_complete());
+        assert_eq!(
+            &*client.observed_states.borrow(),
+            &[(RunState::CleanupPending, Some(202))]
+        );
+        assert_eq!(&*client.revoked.borrow(), &["token-finish"]);
+        assert!(
+            crate::cache::load_cache_entry(&cache_dir, &cache_key)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn activation_failure_returns_the_cache_error_and_pending_run_without_exposing_its_token() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let mut pending = pending_run(&cache_dir, "owned");
+        pending.identity.run_id = "wrong-owner".into();
+
+        let Err(error) = pending.activate(&cache_dir, 203) else {
+            panic!("mismatched owner unexpectedly activated")
+        };
+        let debug = format!("{error:?}");
+        assert!(!debug.contains("token-owned"));
+        assert!(debug.contains("[REDACTED]"));
+        let (source, recovered) = error.into_parts();
+        assert!(matches!(source, CacheError::InvalidRunTransition(_)));
+        assert_eq!(recovered.access_token(), "token-owned");
+    }
+
+    #[test]
+    fn failed_finish_retains_cleanup_pending_for_a_later_prune() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let pending = pending_run(&cache_dir, "retry");
+        let cache_key = pending.identity.cache_key.clone();
+        let active = pending.activate(&cache_dir, 204).unwrap();
+        let client = LifecycleClient::observing(&cache_dir, &cache_key);
+        client.fail.set(true);
+
+        let report = active.finish(&client, &config(), &cache_dir).unwrap();
+
+        assert!(!report.is_complete());
+        assert!(matches!(
+            crate::cache::load_cache_entry(&cache_dir, &cache_key).unwrap(),
+            Some(CacheEntry::Run(RunCacheEntry {
+                state: RunState::CleanupPending,
+                ..
+            }))
+        ));
+
+        client.fail.set(false);
+        let report =
+            super::super::cleanup::prune(&client, &config(), &cache_dir, OffsetDateTime::now_utc())
+                .unwrap();
+        assert!(report.is_complete());
+        assert!(
+            crate::cache::load_cache_entry(&cache_dir, &cache_key)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]

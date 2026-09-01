@@ -4,7 +4,6 @@ use crate::cache::{
     cache_epoch, compute_cache_key, delete_cache_entry, load_cache_entry, save_cache_entry,
 };
 use crate::config::{Config, GitHubAppConfig, ProfileConfig};
-use crate::github::GitHubError;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -26,7 +25,7 @@ permissions = { contents = "read", pull_requests = "write" }
 "#;
 
 struct MockClient {
-    scoped: RefCell<Option<Result<IssuedScopedToken, GitHubError>>>,
+    scoped: RefCell<Option<Result<IssuedScopedToken, RemoteError>>>,
     request: RefCell<Option<serde_json::Value>>,
     revoked: RefCell<Vec<String>>,
     revoke_fails: bool,
@@ -38,10 +37,10 @@ impl RevokeTokenClient for MockClient {
         _client_id: &str,
         _client_secret: &str,
         access_token: &str,
-    ) -> Result<(), GitHubError> {
+    ) -> Result<(), RemoteError> {
         self.revoked.borrow_mut().push(access_token.to_owned());
         if self.revoke_fails {
-            Err(GitHubError::Http {
+            Err(RemoteError::Http {
                 status: 500,
                 message: "revocation failed".into(),
             })
@@ -52,7 +51,7 @@ impl RevokeTokenClient for MockClient {
 }
 
 impl BaseTokenClient for MockClient {
-    fn get_user(&self, _access_token: &str) -> Result<GitHubUser, GitHubError> {
+    fn get_user(&self, _access_token: &str) -> Result<GitHubUser, RemoteError> {
         Ok(GitHubUser {
             login: "octocat".into(),
         })
@@ -63,7 +62,7 @@ impl ScopedTokenClient for MockClient {
     fn create_scoped_token(
         &self,
         request: &ScopedTokenRequest<'_>,
-    ) -> Result<IssuedScopedToken, GitHubError> {
+    ) -> Result<IssuedScopedToken, RemoteError> {
         self.request.replace(Some(serde_json::json!({
             "client_id": request.client_id,
             "client_secret": request.client_secret,
@@ -134,7 +133,7 @@ fn no_response_client() -> MockClient {
 
 fn failing_scoped_client(status: u16) -> MockClient {
     MockClient {
-        scoped: RefCell::new(Some(Err(GitHubError::Http {
+        scoped: RefCell::new(Some(Err(RemoteError::Http {
             status,
             message: "request rejected".into(),
         }))),
@@ -426,7 +425,7 @@ fn scoped_policy_and_transient_rejections_retain_the_base() {
             )),
             500 => assert!(matches!(
                 result,
-                Err(TokenError::GitHub(GitHubError::Http { status: 500, .. }))
+                Err(TokenError::GitHub(RemoteError::Http { status: 500, .. }))
             )),
             _ => unreachable!("test status is fixed"),
         }
@@ -490,7 +489,7 @@ impl RevokeTokenClient for RejectingGenerationChangingClient<'_> {
         _client_id: &str,
         _client_secret: &str,
         _access_token: &str,
-    ) -> Result<(), GitHubError> {
+    ) -> Result<(), RemoteError> {
         Ok(())
     }
 }
@@ -499,11 +498,11 @@ impl ScopedTokenClient for RejectingGenerationChangingClient<'_> {
     fn create_scoped_token(
         &self,
         _request: &ScopedTokenRequest<'_>,
-    ) -> Result<IssuedScopedToken, GitHubError> {
+    ) -> Result<IssuedScopedToken, RemoteError> {
         let key = base_cache_key("developer");
         delete_cache_entry(self.cache_dir, &key).unwrap();
         cache_base(self.cache_dir, self.now, "replacement-base");
-        Err(GitHubError::Http {
+        Err(RemoteError::Http {
             status: 401,
             message: "rejected old base".into(),
         })
@@ -552,7 +551,7 @@ impl RevokeTokenClient for GenerationChangingClient<'_> {
         _client_id: &str,
         _client_secret: &str,
         access_token: &str,
-    ) -> Result<(), GitHubError> {
+    ) -> Result<(), RemoteError> {
         self.revoked.borrow_mut().push(access_token.to_owned());
         Ok(())
     }
@@ -562,7 +561,7 @@ impl ScopedTokenClient for GenerationChangingClient<'_> {
     fn create_scoped_token(
         &self,
         _request: &ScopedTokenRequest<'_>,
-    ) -> Result<IssuedScopedToken, GitHubError> {
+    ) -> Result<IssuedScopedToken, RemoteError> {
         let key = base_cache_key("developer");
         delete_cache_entry(self.cache_dir, &key).unwrap();
         cache_base(self.cache_dir, self.now, "replacement-base");

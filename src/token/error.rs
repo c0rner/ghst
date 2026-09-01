@@ -1,15 +1,15 @@
-use crate::github::GitHubError;
 use crate::repository::RepositoryError;
+use crate::token::RemoteError;
 use std::fmt;
 
 #[derive(Debug)]
 pub enum TokenError {
     Cache(crate::cache::CacheError),
-    GitHub(GitHubError),
+    GitHub(RemoteError),
     ScopedTokenForbidden {
         profile: String,
         source_profile: String,
-        source: GitHubError,
+        source: RemoteError,
     },
     Repository(RepositoryError),
     ProfileNotFound(String),
@@ -44,7 +44,7 @@ pub enum TokenError {
     },
     RevocationFailed {
         context: Box<Self>,
-        source: GitHubError,
+        source: RemoteError,
     },
 }
 
@@ -148,8 +148,8 @@ impl From<crate::cache::CacheError> for TokenError {
     }
 }
 
-impl From<GitHubError> for TokenError {
-    fn from(error: GitHubError) -> Self {
+impl From<RemoteError> for TokenError {
+    fn from(error: RemoteError) -> Self {
         Self::GitHub(error)
     }
 }

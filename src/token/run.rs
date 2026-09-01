@@ -267,8 +267,7 @@ mod tests {
         BaseCacheEntry, CACHE_SCHEMA_VERSION, ScopedCacheEntry, TokenExpiry, authority_fingerprint,
         compute_cache_key, compute_run_cache_key, policy_fingerprint, save_cache_entry,
     };
-    use crate::github::GitHubError;
-    use crate::token::{IssuedScopedToken, RevokeTokenClient, ScopedTokenRequest};
+    use crate::token::{IssuedScopedToken, RemoteError, RevokeTokenClient, ScopedTokenRequest};
     use std::cell::{Cell, RefCell};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -282,7 +281,7 @@ mod tests {
             _client_id: &str,
             _client_secret: &str,
             _access_token: &str,
-        ) -> Result<(), GitHubError> {
+        ) -> Result<(), RemoteError> {
             Ok(())
         }
     }
@@ -291,7 +290,7 @@ mod tests {
         fn create_scoped_token(
             &self,
             _request: &ScopedTokenRequest<'_>,
-        ) -> Result<IssuedScopedToken, GitHubError> {
+        ) -> Result<IssuedScopedToken, RemoteError> {
             let number = self.0.get() + 1;
             self.0.set(number);
             Ok(IssuedScopedToken {
@@ -327,7 +326,7 @@ mod tests {
             _client_id: &str,
             _client_secret: &str,
             access_token: &str,
-        ) -> Result<(), GitHubError> {
+        ) -> Result<(), RemoteError> {
             if let Some((cache_dir, cache_key)) = &self.cache_entry {
                 let CacheEntry::Run(entry) = crate::cache::load_cache_entry(cache_dir, cache_key)
                     .unwrap()
@@ -341,7 +340,7 @@ mod tests {
             }
             self.revoked.borrow_mut().push(access_token.to_owned());
             if self.fail.get() {
-                Err(GitHubError::Http {
+                Err(RemoteError::Http {
                     status: 500,
                     message: "failure".into(),
                 })

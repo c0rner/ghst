@@ -3,8 +3,7 @@ use crate::cache::{
     delete_entry_if_unchanged, delete_run_after_cleanup, inspect_cache,
 };
 use crate::config::{AppProfile, Config};
-use crate::github::GitHubError;
-use crate::token::RevokeTokenClient;
+use crate::token::{RemoteError, RevokeTokenClient};
 use std::path::Path;
 use time::OffsetDateTime;
 
@@ -24,7 +23,7 @@ pub enum CleanupFailure {
     },
     GitHubRevocation {
         entry: String,
-        source: GitHubError,
+        source: RemoteError,
     },
     CacheDeletion {
         entry: String,
@@ -361,10 +360,10 @@ mod tests {
             _client_id: &str,
             _client_secret: &str,
             access_token: &str,
-        ) -> Result<(), GitHubError> {
+        ) -> Result<(), RemoteError> {
             self.revoked.borrow_mut().push(access_token.to_owned());
             if self.fail.get() {
-                Err(GitHubError::Http {
+                Err(RemoteError::Http {
                     status: 500,
                     message: "failure".into(),
                 })

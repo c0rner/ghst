@@ -1,11 +1,11 @@
-use crate::github::error::GitHubError;
 use crate::github::types::{
     AccessTokenResponse, DeviceCodeResponse, ScopedTokenRequest as ScopedTokenBody,
     ScopedTokenResponse, UserResponse,
 };
 use crate::token::{
-    BaseTokenClient, GitHubUser, IssuedBaseToken, IssuedScopedToken, RevokeTokenClient,
-    ScopedTokenClient, ScopedTokenRequest,
+    BaseTokenClient, DeviceAuthorization, DeviceFlowClient, DeviceFlowPoll, GitHubUser,
+    IssuedBaseToken, IssuedScopedToken, RemoteError, RevokeTokenClient, ScopedTokenClient,
+    ScopedTokenRequest,
 };
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
@@ -58,12 +58,10 @@ impl GitHubClient {
         }
     }
 
-    /// 1. Request device code (`POST /login/device/code`).
-    ///
-    /// # Errors
-    ///
-    /// Returns `GitHubError` if transport, HTTP status, or JSON parsing fails.
-    pub fn request_device_code(&self, client_id: &str) -> Result<DeviceCodeResponse, GitHubError> {
+    fn request_device_code_response(
+        &self,
+        client_id: &str,
+    ) -> Result<DeviceCodeResponse, RemoteError> {
         let url = format!("{}/login/device/code", self.base_url);
         let body = serde_json::json!({ "client_id": client_id });
 
@@ -87,7 +85,7 @@ impl GitHubClient {
             }
         };
 
-        let response: Result<DeviceCodeResponse, GitHubError> = decode_response(res);
+        let response: Result<DeviceCodeResponse, RemoteError> = decode_response(res);
         match &response {
             Ok(device) => debug!(
                 expires_in_seconds = device.expires_in,
@@ -99,16 +97,11 @@ impl GitHubClient {
         response
     }
 
-    /// 2. Poll for token (`POST /login/oauth/access_token`).
-    ///
-    /// # Errors
-    ///
-    /// Returns `Ok(IssuedBaseToken)` on success, or `GitHubError` for OAuth pending/error states.
-    pub fn poll_access_token(
+    fn poll_access_token_response(
         &self,
         client_id: &str,
         device_code: &str,
-    ) -> Result<IssuedBaseToken, GitHubError> {
+    ) -> Result<DeviceFlowPoll, RemoteError> {
         let url = format!("{}/login/oauth/access_token", self.base_url);
         let body = serde_json::json!({
             "client_id": client_id,
@@ -143,45 +136,49 @@ impl GitHubClient {
                 })?;
 
         if value.get("error").is_some() {
-            return Err(oauth_error_from_value(&value));
+            return oauth_poll_from_value(&value);
         }
 
         let response: AccessTokenResponse =
-            serde_json::from_value(value).map_err(GitHubError::Json)?;
+            serde_json::from_value(value).map_err(RemoteError::InvalidResponse)?;
         debug!("GitHub device authorization succeeded");
-        Ok(narrow_base_token(response))
+        Ok(DeviceFlowPoll::Authorized(narrow_base_token(response)))
     }
 }
 
 fn decode_response<T: DeserializeOwned>(
     mut response: ureq::http::Response<ureq::Body>,
-) -> Result<T, GitHubError> {
+) -> Result<T, RemoteError> {
     response.body_mut().read_json().map_err(map_ureq_error)
 }
 
-fn oauth_error_from_value(value: &serde_json::Value) -> GitHubError {
-    let error = value
-        .get("error")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("malformed_oauth_error");
-    let description = value
-        .get("error_description")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned)
-        .or_else(|| {
-            (error == "malformed_oauth_error")
-                .then(|| "OAuth response contained a non-string error field".to_owned())
-        });
+fn oauth_poll_from_value(value: &serde_json::Value) -> Result<DeviceFlowPoll, RemoteError> {
+    match value.get("error").and_then(serde_json::Value::as_str) {
+        Some("authorization_pending") => Ok(DeviceFlowPoll::Pending),
+        Some("slow_down") => Ok(DeviceFlowPoll::SlowDown),
+        Some("expired_token") => Ok(DeviceFlowPoll::Expired),
+        Some("access_denied") => Ok(DeviceFlowPoll::AccessDenied),
+        Some(_) => Err(RemoteError::Protocol {
+            context: "unexpected OAuth error response",
+        }),
+        None => Err(RemoteError::Protocol {
+            context: "malformed OAuth error response",
+        }),
+    }
+}
 
-    match error {
-        "authorization_pending" => GitHubError::OAuthPending,
-        "slow_down" => GitHubError::OAuthSlowDown,
-        "expired_token" => GitHubError::OAuthExpired,
-        "access_denied" => GitHubError::OAuthAccessDenied,
-        _ => GitHubError::OAuthError {
-            error: error.to_owned(),
-            description,
-        },
+impl DeviceFlowClient for GitHubClient {
+    fn request_device_code(&self, client_id: &str) -> Result<DeviceAuthorization, RemoteError> {
+        self.request_device_code_response(client_id)
+            .map(narrow_device_authorization)
+    }
+
+    fn poll_access_token(
+        &self,
+        client_id: &str,
+        device_code: &str,
+    ) -> Result<DeviceFlowPoll, RemoteError> {
+        self.poll_access_token_response(client_id, device_code)
     }
 }
 
@@ -191,11 +188,11 @@ impl RevokeTokenClient for GitHubClient {
         client_id: &str,
         client_secret: &str,
         access_token: &str,
-    ) -> Result<(), GitHubError> {
+    ) -> Result<(), RemoteError> {
         let url = format!("{}/applications/{client_id}/token", self.api_url);
         let body = serde_json::json!({ "access_token": access_token });
         let auth = basic_auth_header(client_id, client_secret);
-        let body_bytes = serde_json::to_vec(&body).map_err(GitHubError::Json)?;
+        let body_bytes = serde_json::to_vec(&body).map_err(RemoteError::InvalidResponse)?;
 
         let request = ureq::http::Request::builder()
             .method("DELETE")
@@ -203,7 +200,7 @@ impl RevokeTokenClient for GitHubClient {
             .header("Authorization", &auth)
             .header("Content-Type", "application/json")
             .body(body_bytes)
-            .map_err(|error| GitHubError::Io(std::io::Error::other(error)))?;
+            .map_err(|error| RemoteError::Transport(std::io::Error::other(error)))?;
 
         debug!(
             method = "DELETE",
@@ -224,7 +221,7 @@ impl ScopedTokenClient for GitHubClient {
     fn create_scoped_token(
         &self,
         request: &ScopedTokenRequest<'_>,
-    ) -> Result<IssuedScopedToken, GitHubError> {
+    ) -> Result<IssuedScopedToken, RemoteError> {
         let url = format!(
             "{}/applications/{}/token/scoped",
             self.api_url, request.client_id
@@ -275,7 +272,7 @@ impl ScopedTokenClient for GitHubClient {
 }
 
 impl BaseTokenClient for GitHubClient {
-    fn get_user(&self, access_token: &str) -> Result<GitHubUser, GitHubError> {
+    fn get_user(&self, access_token: &str) -> Result<GitHubUser, RemoteError> {
         let url = format!("{}/user", self.api_url);
         debug!(
             method = "GET",
@@ -316,6 +313,16 @@ fn narrow_base_token(response: AccessTokenResponse) -> IssuedBaseToken {
     }
 }
 
+fn narrow_device_authorization(response: DeviceCodeResponse) -> DeviceAuthorization {
+    DeviceAuthorization {
+        device_code: response.device_code,
+        user_code: response.user_code,
+        verification_uri: response.verification_uri,
+        expires_in: std::time::Duration::from_secs(response.expires_in),
+        interval: std::time::Duration::from_secs(response.interval),
+    }
+}
+
 fn narrow_user(response: UserResponse) -> GitHubUser {
     GitHubUser {
         login: response.login,
@@ -329,13 +336,15 @@ fn narrow_scoped_token(response: ScopedTokenResponse) -> IssuedScopedToken {
     }
 }
 
-fn map_ureq_error(err: ureq::Error) -> GitHubError {
+fn map_ureq_error(err: ureq::Error) -> RemoteError {
     match err {
-        ureq::Error::StatusCode(code) => GitHubError::Http {
+        ureq::Error::StatusCode(code) => RemoteError::Http {
             status: code,
             message: format!("HTTP status error {code}"),
         },
-        other => GitHubError::Io(std::io::Error::other(other.to_string())),
+        ureq::Error::Json(source) => RemoteError::InvalidResponse(source),
+        ureq::Error::Io(source) => RemoteError::Transport(source),
+        other => RemoteError::Transport(std::io::Error::other(other.to_string())),
     }
 }
 
@@ -504,18 +513,34 @@ mod tests {
     }
 
     #[test]
-    fn oauth_error_mapping_preserves_unknown_error_context() {
+    fn known_oauth_errors_map_to_device_flow_states() {
+        for (error, expected) in [
+            ("authorization_pending", DeviceFlowPoll::Pending),
+            ("slow_down", DeviceFlowPoll::SlowDown),
+            ("expired_token", DeviceFlowPoll::Expired),
+            ("access_denied", DeviceFlowPoll::AccessDenied),
+        ] {
+            let value = serde_json::json!({ "error": error });
+            let actual = oauth_poll_from_value(&value).unwrap();
+            assert_eq!(
+                std::mem::discriminant(&actual),
+                std::mem::discriminant(&expected)
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_oauth_error_is_a_redacted_protocol_failure() {
         let value = serde_json::json!({
             "error": "custom_oauth_failure",
-            "error_description": "The custom request failed."
+            "error_description": "secret response context"
         });
 
-        assert!(matches!(
-            oauth_error_from_value(&value),
-            GitHubError::OAuthError { error, description }
-                if error == "custom_oauth_failure"
-                    && description.as_deref() == Some("The custom request failed.")
-        ));
+        let error = oauth_poll_from_value(&value).unwrap_err();
+        assert!(matches!(error, RemoteError::Protocol { .. }));
+        assert_eq!(error.kind(), "protocol");
+        assert!(!format!("{error:?} {error}").contains("secret response context"));
+        assert!(!format!("{error:?} {error}").contains("custom_oauth_failure"));
     }
 
     #[test]
@@ -526,15 +551,27 @@ mod tests {
             "access_token": "must-not-appear-in-error"
         });
 
-        let error = oauth_error_from_value(&value);
-        assert!(matches!(
-            &error,
-            GitHubError::OAuthError { error, description }
-                if error == "malformed_oauth_error"
-                    && description.as_deref()
-                        == Some("OAuth response contained a non-string error field")
-        ));
+        let error = oauth_poll_from_value(&value).unwrap_err();
+        assert!(matches!(error, RemoteError::Protocol { .. }));
         assert!(!error.to_string().contains("must-not-appear-in-error"));
+    }
+
+    #[test]
+    fn remote_error_mappings_preserve_classification() {
+        let status = map_ureq_error(ureq::Error::StatusCode(404));
+        assert!(matches!(status, RemoteError::Http { status: 404, .. }));
+        assert_eq!(status.kind(), "http");
+        assert!(status.is_not_found());
+
+        let invalid: Result<serde_json::Value, _> = serde_json::from_str("not json");
+        let invalid = invalid.unwrap_err();
+        let error = map_ureq_error(ureq::Error::Json(invalid));
+        assert_eq!(error.kind(), "invalid_response");
+        assert!(std::error::Error::source(&error).is_some());
+
+        let error = map_ureq_error(ureq::Error::Io(std::io::Error::other("offline")));
+        assert_eq!(error.kind(), "transport");
+        assert!(std::error::Error::source(&error).is_some());
     }
 
     #[test]

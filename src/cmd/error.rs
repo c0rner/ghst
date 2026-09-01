@@ -1,7 +1,6 @@
 use crate::cache::CacheError;
 use crate::config::ConfigError;
-use crate::github::GitHubError;
-use crate::token::TokenError;
+use crate::token::{DeviceFlowError, RemoteError, TokenError};
 use std::fmt;
 use std::path::PathBuf;
 
@@ -9,7 +8,7 @@ use std::path::PathBuf;
 pub enum CmdError {
     Config(ConfigError),
     Cache(CacheError),
-    GitHub(GitHubError),
+    GitHub(RemoteError),
     Token(TokenError),
     ConfigNotFound(PathBuf),
     NoEditorFound,
@@ -189,9 +188,19 @@ impl From<TokenError> for CmdError {
     }
 }
 
-impl From<GitHubError> for CmdError {
-    fn from(err: GitHubError) -> Self {
+impl From<RemoteError> for CmdError {
+    fn from(err: RemoteError) -> Self {
         Self::GitHub(err)
+    }
+}
+
+impl From<DeviceFlowError> for CmdError {
+    fn from(error: DeviceFlowError) -> Self {
+        match error {
+            DeviceFlowError::Remote(source) => Self::GitHub(source),
+            DeviceFlowError::Expired => Self::OAuthExpired,
+            DeviceFlowError::AccessDenied => Self::OAuthAccessDenied,
+        }
     }
 }
 
@@ -238,5 +247,17 @@ mod tests {
         let error = CmdError::ConfigNotFound("/tmp/ghst/profiles.toml".into()).to_string();
         assert!(error.contains("/tmp/ghst/profiles.toml"));
         assert!(error.contains("ghst edit --init"));
+    }
+
+    #[test]
+    fn device_flow_terminal_states_keep_login_guidance() {
+        assert_eq!(
+            CmdError::from(DeviceFlowError::Expired).to_string(),
+            "device code expired; run `ghst login` again"
+        );
+        assert_eq!(
+            CmdError::from(DeviceFlowError::AccessDenied).to_string(),
+            "authorization request was denied by the user"
+        );
     }
 }

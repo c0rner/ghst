@@ -124,10 +124,10 @@ pub(super) fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     });
     let response = match response {
         Ok(response) => response,
-        Err(crate::github::GitHubError::Http {
+        Err(crate::token::RemoteError::Http {
             status: 401 | 404, ..
         }) => return Err(permanent_rejection_error(prepared, cache_dir)?),
-        Err(source @ crate::github::GitHubError::Http { status: 403, .. }) => {
+        Err(source @ crate::token::RemoteError::Http { status: 403, .. }) => {
             tracing::debug!(
                 source_profile = prepared.profile.source,
                 account = prepared.source.github_app.account,

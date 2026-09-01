@@ -1,6 +1,7 @@
 mod acquire;
 mod base;
 pub mod cleanup;
+mod device_flow;
 mod error;
 mod ports;
 mod provenance;
@@ -15,10 +16,12 @@ pub use base::{
     base_cache_key, load_current_base_entry, load_valid_base_entry, load_valid_base_status,
     persist_base_response,
 };
+pub use device_flow::{DeviceFlow, DeviceFlowError};
 pub use error::TokenError;
 pub use ports::{
-    BaseTokenClient, GitHubUser, IssuedBaseToken, IssuedScopedToken, RevokeTokenClient,
-    ScopedTokenClient, ScopedTokenRequest,
+    BaseTokenClient, DeviceAuthorization, DeviceFlowClient, DeviceFlowPoll, GitHubUser,
+    IssuedBaseToken, IssuedScopedToken, RemoteError, RevokeTokenClient, ScopedTokenClient,
+    ScopedTokenRequest,
 };
 pub use types::{AcquireRequest, AcquiredToken, BasePersistence, BaseTokenStatus};
 pub use validation::{validate_base_expiry, validate_scoped_expiry};

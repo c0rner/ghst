@@ -8,7 +8,7 @@ use crate::config::PermissionLevel;
 
 /// Response from `POST /login/device/code`
 #[derive(Deserialize)]
-pub struct DeviceCodeResponse {
+pub(super) struct DeviceCodeResponse {
     pub device_code: Zeroizing<String>,
     pub user_code: String,
     pub verification_uri: String,

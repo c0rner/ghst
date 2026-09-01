@@ -1,4 +1,5 @@
 use crate::cache::AccessToken;
+use crate::config::PermissionLevel;
 use crate::github::GitHubError;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -49,7 +50,7 @@ pub struct ScopedTokenRequest<'a> {
     pub base_token: &'a str,
     pub target: &'a str,
     pub repositories: Option<&'a [String]>,
-    pub permissions: &'a BTreeMap<String, String>,
+    pub permissions: &'a BTreeMap<String, PermissionLevel>,
 }
 
 impl fmt::Debug for ScopedTokenRequest<'_> {
@@ -87,7 +88,7 @@ mod tests {
 
     #[test]
     fn scoped_request_debug_redacts_credentials() {
-        let permissions = BTreeMap::from([("contents".into(), "read".into())]);
+        let permissions = BTreeMap::from([("contents".into(), PermissionLevel::Read)]);
         let request = ScopedTokenRequest {
             client_id: "client-id",
             client_secret: "secret-marker",

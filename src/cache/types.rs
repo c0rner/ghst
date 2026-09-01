@@ -326,10 +326,10 @@ pub fn authority_fingerprint(client_id: &str, account: &str) -> String {
     fingerprint(&[client_id, account])
 }
 
-pub fn policy_fingerprint(
+pub fn policy_fingerprint<V: fmt::Display>(
     account: &str,
     repo_scope: &str,
-    permissions: &BTreeMap<String, String>,
+    permissions: &BTreeMap<String, V>,
 ) -> String {
     let permission_string = permissions
         .iter()

@@ -466,10 +466,12 @@ mod tests {
 
     #[test]
     fn scoped_token_request_serialization_is_exact() {
+        use crate::config::PermissionLevel;
+
         let repositories = vec!["api".into(), "web".into()];
         let permissions = BTreeMap::from([
-            ("contents".into(), "read".into()),
-            ("pull_requests".into(), "write".into()),
+            ("contents".into(), PermissionLevel::Read),
+            ("pull_requests".into(), PermissionLevel::Write),
         ]);
         let request = ScopedTokenBody {
             access_token: "base-token",

@@ -2,10 +2,10 @@ use crate::cache::cache_epoch;
 use crate::cache::error::CacheError;
 use crate::cache::fs::{cache_file_path, create_private_tempfile, ensure_cache_dir};
 use crate::cache::key::{compute_cache_key, compute_run_cache_key};
+use crate::cache::run_storage;
 use crate::cache::storage::{
-    DeleteBaseOutcome, claim_abandoned_run, claim_released_run, delete_base_if_generation,
-    delete_cache_entry, delete_run_after_cleanup, load_cache_entry, replace_cache_candidate,
-    save_cache_entry, transition_run_to_running,
+    DeleteBaseOutcome, claim_abandoned_run, delete_base_if_generation, delete_cache_entry,
+    delete_run_after_cleanup, load_cache_entry, replace_cache_candidate, save_cache_entry,
 };
 use crate::cache::types::{
     BaseCacheEntry, CACHE_SCHEMA_VERSION, CacheEntry, RUN_CACHE_SCHEMA_VERSION, ReplaceCacheEntry,
@@ -240,17 +240,17 @@ fn run_lifecycle_transitions_require_exact_ownership() {
     let key = compute_run_cache_key("owned-run");
     save_cache_entry(&directory, &key, &run_entry("owned-run", RunState::Pending)).unwrap();
     assert!(matches!(
-        transition_run_to_running(&directory, &key, "wrong", 100, 200),
+        run_storage::activate(&directory, &key, "wrong", 100, 200),
         Err(CacheError::InvalidRunTransition(_))
     ));
-    let running = transition_run_to_running(&directory, &key, "owned-run", 100, 200).unwrap();
+    let running = run_storage::activate(&directory, &key, "owned-run", 100, 200).unwrap();
     assert_eq!(running.state, RunState::Running);
     assert_eq!(running.child_pid, Some(200));
     assert!(matches!(
-        claim_released_run(&directory, &key, "owned-run", 100, 201),
+        run_storage::finish(&directory, &key, "owned-run", 100, 201),
         Err(CacheError::InvalidRunTransition(_))
     ));
-    let claimed = claim_released_run(&directory, &key, "owned-run", 100, 200).unwrap();
+    let claimed = run_storage::finish(&directory, &key, "owned-run", 100, 200).unwrap();
     assert_eq!(claimed.state, RunState::CleanupPending);
     assert!(delete_run_after_cleanup(&directory, &key, &claimed).unwrap());
     assert!(load_cache_entry(&directory, &key).unwrap().is_none());
@@ -265,7 +265,7 @@ fn abandoned_transition_rejects_a_stale_snapshot() {
     let CacheEntry::Run(snapshot) = load_cache_entry(&directory, &key).unwrap().unwrap() else {
         panic!("expected run entry")
     };
-    transition_run_to_running(&directory, &key, "abandoned", 100, 200).unwrap();
+    run_storage::activate(&directory, &key, "abandoned", 100, 200).unwrap();
     assert!(matches!(
         claim_abandoned_run(&directory, &key, &snapshot),
         Err(CacheError::InvalidRunTransition(_))

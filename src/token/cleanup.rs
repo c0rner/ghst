@@ -1,25 +1,12 @@
 use crate::cache::{
     CacheEntry, CacheInspectionState, RunCacheEntry, RunState, claim_abandoned_run,
-    claim_released_run, delete_entry_if_unchanged, delete_run_after_cleanup, inspect_cache,
+    delete_entry_if_unchanged, delete_run_after_cleanup, inspect_cache,
 };
 use crate::config::{AppProfile, Config};
 use crate::github::GitHubError;
 use crate::token::RevokeTokenClient;
 use std::path::Path;
 use time::OffsetDateTime;
-
-pub struct ReleasedRun {
-    pub cache_key: String,
-    pub run_id: String,
-    pub wrapper_pid: u32,
-    pub child_pid: u32,
-}
-
-#[derive(Clone, Copy)]
-pub enum CleanupScope<'a> {
-    ReleasedRun(&'a ReleasedRun),
-    Prune,
-}
 
 pub enum CleanupFailure {
     InvalidEntry {
@@ -117,53 +104,7 @@ impl CleanupReport {
     }
 }
 
-pub fn cleanup<C: RevokeTokenClient>(
-    client: &C,
-    config: &Config,
-    cache_dir: &Path,
-    scope: CleanupScope<'_>,
-    now: OffsetDateTime,
-) -> Result<CleanupReport, crate::cache::CacheError> {
-    match scope {
-        CleanupScope::ReleasedRun(released) => {
-            tracing::debug!(
-                cache_key = released.cache_key,
-                run_id = released.run_id,
-                wrapper_pid = released.wrapper_pid,
-                child_pid = released.child_pid,
-                "claiming released run for cleanup"
-            );
-            let mut report = CleanupReport::default();
-            let attempt = match claim_released_run(
-                cache_dir,
-                &released.cache_key,
-                &released.run_id,
-                released.wrapper_pid,
-                released.child_pid,
-            ) {
-                Ok(entry) => {
-                    tracing::debug!(
-                        cache_key = released.cache_key,
-                        "released run claimed for cleanup"
-                    );
-                    cleanup_run_entry(client, config, cache_dir, &released.cache_key, &entry)
-                }
-                Err(source) => {
-                    tracing::debug!(cache_key = released.cache_key, error = %source, "failed to claim released run for cleanup");
-                    Err(CleanupFailure::Ownership {
-                        entry: released.cache_key.clone(),
-                        source,
-                    })
-                }
-            };
-            report.record(attempt);
-            Ok(report)
-        }
-        CleanupScope::Prune => prune(client, config, cache_dir, now),
-    }
-}
-
-pub fn cleanup_marked_run<C: RevokeTokenClient>(
+pub(super) fn cleanup_marked_run<C: RevokeTokenClient>(
     client: &C,
     config: &Config,
     cache_dir: &Path,
@@ -181,7 +122,7 @@ pub fn cleanup_marked_run<C: RevokeTokenClient>(
     report
 }
 
-fn prune<C: RevokeTokenClient>(
+pub fn prune<C: RevokeTokenClient>(
     client: &C,
     config: &Config,
     cache_dir: &Path,
@@ -504,7 +445,7 @@ permissions = { contents = "read" }
             .unwrap();
         }
         let client = client();
-        let report = cleanup(&client, &config(), &cache_dir, CleanupScope::Prune, now).unwrap();
+        let report = prune(&client, &config(), &cache_dir, now).unwrap();
         assert_eq!(report.active_runs_skipped, 1);
         assert_eq!(report.revoked_runs, 1);
         assert!(report.is_complete());
@@ -540,7 +481,7 @@ permissions = { contents = "read" }
         )
         .unwrap();
         let client = client();
-        let report = cleanup(&client, &config(), &cache_dir, CleanupScope::Prune, now).unwrap();
+        let report = prune(&client, &config(), &cache_dir, now).unwrap();
         assert_eq!(report.expired_deletions, 1);
         assert!(client.revoked.borrow().is_empty());
         assert!(load_cache_entry(&cache_dir, &key).unwrap().is_none());
@@ -566,7 +507,7 @@ permissions = { contents = "read" }
         save_cache_entry(&cache_dir, &key, &cached).unwrap();
 
         let client = client();
-        let report = cleanup(&client, &config(), &cache_dir, CleanupScope::Prune, now).unwrap();
+        let report = prune(&client, &config(), &cache_dir, now).unwrap();
 
         assert!(client.revoked.borrow().is_empty());
         assert_eq!(report.retained_entries, 1);
@@ -604,7 +545,7 @@ permissions = { contents = "read" }
         let client = client();
         client.fail.set(true);
 
-        let report = cleanup(&client, &config(), &cache_dir, CleanupScope::Prune, now).unwrap();
+        let report = prune(&client, &config(), &cache_dir, now).unwrap();
 
         assert_eq!(report.retained_entries, 1);
         assert!(matches!(
@@ -619,59 +560,5 @@ permissions = { contents = "read" }
                 ..
             }))
         ));
-    }
-
-    #[test]
-    fn released_cleanup_requires_ownership_and_retains_network_failures() {
-        let temp = tempfile::tempdir().unwrap();
-        let cache_dir = temp.path().join("cache");
-        let now = OffsetDateTime::now_utc();
-        let key = compute_run_cache_key("released");
-        save_cache_entry(
-            &cache_dir,
-            &key,
-            &run_entry(
-                "released",
-                RunState::Running,
-                100,
-                Some(200),
-                now + Duration::hours(1),
-            ),
-        )
-        .unwrap();
-        let client = client();
-        let wrong = cleanup(
-            &client,
-            &config(),
-            &cache_dir,
-            CleanupScope::ReleasedRun(&ReleasedRun {
-                cache_key: key.clone(),
-                run_id: "released".into(),
-                wrapper_pid: 100,
-                child_pid: 201,
-            }),
-            now,
-        )
-        .unwrap();
-        assert!(!wrong.is_complete());
-        client.fail.set(true);
-        let failed = cleanup(
-            &client,
-            &config(),
-            &cache_dir,
-            CleanupScope::ReleasedRun(&ReleasedRun {
-                cache_key: key.clone(),
-                run_id: "released".into(),
-                wrapper_pid: 100,
-                child_pid: 200,
-            }),
-            now,
-        )
-        .unwrap();
-        assert!(!failed.is_complete());
-        let CacheEntry::Run(retained) = load_cache_entry(&cache_dir, &key).unwrap().unwrap() else {
-            panic!("expected retained run")
-        };
-        assert_eq!(retained.state, RunState::CleanupPending);
     }
 }

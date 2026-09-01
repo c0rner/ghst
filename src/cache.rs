@@ -2,6 +2,7 @@ mod digest;
 mod error;
 mod fs;
 mod key;
+pub mod run_storage;
 mod storage;
 mod types;
 
@@ -15,9 +16,8 @@ pub use key::{
 };
 pub use storage::{
     CacheInspection, CacheInspectionState, DeleteBaseOutcome, claim_abandoned_run,
-    claim_released_run, delete_base_if_generation, delete_entry_if_unchanged,
-    delete_run_after_cleanup, inspect_cache, load_cache_entry, mark_pending_run_for_cleanup,
-    replace_cache_candidate, revoke_transaction, save_cache_candidate, transition_run_to_running,
+    delete_base_if_generation, delete_entry_if_unchanged, delete_run_after_cleanup, inspect_cache,
+    load_cache_entry, replace_cache_candidate, revoke_transaction, save_cache_candidate,
 };
 #[cfg(test)]
 pub use storage::{delete_cache_entry, list_all_cache_entries, save_cache_entry};

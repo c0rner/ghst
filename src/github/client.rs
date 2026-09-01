@@ -192,7 +192,9 @@ impl RevokeTokenClient for GitHubClient {
         let url = format!("{}/applications/{client_id}/token", self.api_url);
         let body = serde_json::json!({ "access_token": access_token });
         let auth = basic_auth_header(client_id, client_secret);
-        let body_bytes = serde_json::to_vec(&body).map_err(RemoteError::InvalidResponse)?;
+        let body_bytes = serde_json::to_vec(&body).map_err(|_| RemoteError::Protocol {
+            context: "failed to encode token revocation request",
+        })?;
 
         let request = ureq::http::Request::builder()
             .method("DELETE")

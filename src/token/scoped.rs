@@ -8,7 +8,6 @@ use crate::cache::{
 };
 use crate::config::{AppProfile, Config, ProfileConfig, ScopedProfile};
 use crate::repository::{RepositoryError, RepositorySelection};
-use std::collections::BTreeMap;
 use std::path::Path;
 use time::OffsetDateTime;
 
@@ -19,7 +18,6 @@ pub(super) struct PreparedScopedToken<'a> {
     pub base: BaseCacheEntry,
     pub scope: String,
     pub repositories: Option<Vec<String>>,
-    pub permissions: BTreeMap<String, String>,
 }
 
 pub(super) struct ValidatedScopedToken {
@@ -83,11 +81,6 @@ pub(super) fn prepare<'a>(
         base,
         scope,
         repositories: repository_names,
-        permissions: profile
-            .permissions
-            .iter()
-            .map(|(name, level)| (name.clone(), level.to_string()))
-            .collect(),
     })
 }
 
@@ -118,7 +111,7 @@ pub(super) fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
         source_profile = prepared.profile.source,
         account = prepared.source.github_app.account,
         repo_scope = prepared.scope,
-        permissions = ?prepared.permissions,
+        permissions = ?prepared.profile.permissions,
         "requesting scoped token from GitHub"
     );
     let response = client.create_scoped_token(&ScopedTokenRequest {
@@ -127,7 +120,7 @@ pub(super) fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
         base_token: prepared.base.access_token.as_ref(),
         target: &prepared.source.github_app.account,
         repositories: prepared.repositories.as_deref(),
-        permissions: &prepared.permissions,
+        permissions: &prepared.profile.permissions,
     });
     let response = match response {
         Ok(response) => response,
@@ -139,7 +132,7 @@ pub(super) fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
                 source_profile = prepared.profile.source,
                 account = prepared.source.github_app.account,
                 repo_scope = prepared.scope,
-                permissions = ?prepared.permissions,
+                permissions = ?prepared.profile.permissions,
                 "GitHub rejected the scoped token request; requested permissions or repository access likely exceed the GitHub App installation's authority ceiling"
             );
             return Err(TokenError::ScopedTokenForbidden {

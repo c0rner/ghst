@@ -4,6 +4,7 @@ use std::fmt;
 use zeroize::Zeroizing;
 
 use crate::cache::AccessToken;
+use crate::config::PermissionLevel;
 
 /// Response from `POST /login/device/code`
 #[derive(Deserialize)]
@@ -68,7 +69,7 @@ pub struct ScopedTokenRequest<'a> {
     pub target: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repositories: Option<&'a [String]>,
-    pub permissions: &'a BTreeMap<String, String>,
+    pub permissions: &'a BTreeMap<String, PermissionLevel>,
 }
 
 // Hand-written Debug to redact access_token

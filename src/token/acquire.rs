@@ -98,7 +98,7 @@ fn acquire_scoped<
     let policy = policy_fingerprint(
         &prepared.source.github_app.account,
         &prepared.scope,
-        &prepared.permissions,
+        &prepared.profile.permissions,
     );
     let generation = prepared.base.generation_fingerprint();
     let cache_key = compute_cache_key(request.profile_name, &prepared.scope);
@@ -107,7 +107,7 @@ fn acquire_scoped<
         source_profile = prepared.profile.source,
         account = prepared.source.github_app.account,
         repo_scope = prepared.scope,
-        permissions = ?prepared.permissions,
+        permissions = ?prepared.profile.permissions,
         cache_key,
         "prepared scoped token acquisition"
     );

@@ -3,9 +3,9 @@ mod types;
 mod validation;
 
 pub use error::ConfigError;
-#[cfg(test)]
-use types::PermissionLevel;
-pub use types::{AppProfile, Config, GitHubAppConfig, ProfileConfig, RepoScope, ScopedProfile};
+pub use types::{
+    AppProfile, Config, GitHubAppConfig, PermissionLevel, ProfileConfig, RepoScope, ScopedProfile,
+};
 
 #[cfg(unix)]
 use std::fs::OpenOptions;

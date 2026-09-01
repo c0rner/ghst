@@ -435,7 +435,7 @@ permissions = { contents = "read" }
         let now = OffsetDateTime::now_utc();
         let config = config();
         cache_base(&cache_dir, now);
-        let permissions = BTreeMap::from([("contents".into(), "read".into())]);
+        let permissions = BTreeMap::from([("contents".into(), String::from("read"))]);
         save_cache_entry(
             &cache_dir,
             &compute_cache_key("reader", "acme/api"),

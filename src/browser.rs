@@ -3,16 +3,17 @@ use tracing::{info, warn};
 
 /// Print a prominent multiline authorization banner for GitHub OAuth Device Flow.
 pub fn display_auth_instructions(target_account: &str, user_code: &str, verification_uri: &str) {
-    let _ = write_auth_instructions(
+    if let Err(error) = write_auth_instructions(
         &mut std::io::stderr().lock(),
         target_account,
         user_code,
         verification_uri,
-    );
+    ) {
+        warn!("Failed to write device authorization instructions: {error}");
+    }
 }
 
-/// Write a prominent multiline authorization banner for GitHub OAuth Device Flow.
-pub fn write_auth_instructions<W: Write>(
+fn write_auth_instructions<W: Write>(
     writer: &mut W,
     target_account: &str,
     user_code: &str,

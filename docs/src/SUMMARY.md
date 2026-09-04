@@ -32,6 +32,7 @@
   - [`revoke`](commands/revoke.md)
 - [Recipes](recipes/index.md)
   - [AI-agent workflows](recipes/ai-agents.md)
+  - [GitHub CLI with temporary credentials](recipes/github-cli.md)
   - [Process sandboxing & MicroVMs](recipes/sandboxing.md)
   - [Multi-repository setups](recipes/multi-repository.md)
 - [Troubleshooting](troubleshooting/index.md)

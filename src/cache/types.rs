@@ -5,7 +5,6 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt;
 use time::OffsetDateTime;
-use time::format_description::well_known::Rfc3339;
 
 pub const CACHE_SCHEMA_VERSION: u32 = 5;
 pub const RUN_CACHE_SCHEMA_VERSION: u32 = 3;
@@ -227,10 +226,6 @@ pub enum SaveCacheEntry {
 pub enum ReplaceCacheEntry {
     Replaced(Box<CacheEntry>),
     Retained(Box<CacheEntry>),
-}
-
-pub fn format_rfc3339(value: OffsetDateTime) -> String {
-    value.format(&Rfc3339).unwrap_or_default()
 }
 
 pub fn authority_fingerprint(client_id: &str, account: &str) -> String {

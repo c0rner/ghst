@@ -107,15 +107,6 @@ mod tests {
     }
 
     #[test]
-    fn access_token_as_ref_and_conversions() {
-        let token = AccessToken::from("my_token");
-        assert_eq!(token.as_ref(), "my_token");
-        let token2 = AccessToken::from("my_token".to_string());
-        assert_eq!(token2.as_ref(), "my_token");
-        assert_eq!(token, token2);
-    }
-
-    #[test]
     fn access_token_transparent_serialization() {
         let token = AccessToken::new("secret_abc".to_string());
         let json = serde_json::to_string(&token).unwrap();

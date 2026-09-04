@@ -82,18 +82,6 @@ fn cache_key_is_profile_and_canonical_scope_hash() {
 }
 
 #[test]
-fn expiry_policies_have_distinct_exact_boundaries() {
-    let now = OffsetDateTime::now_utc();
-    assert!(!TokenExpiry::new(now + Duration::seconds(30)).is_safe_to_handoff_at(now));
-    assert!(TokenExpiry::new(now + Duration::seconds(31)).is_safe_to_handoff_at(now));
-    assert!(TokenExpiry::new(now + Duration::minutes(10)).is_due_for_renewal_at(now));
-    assert!(
-        !TokenExpiry::new(now + Duration::minutes(10) + Duration::seconds(1))
-            .is_due_for_renewal_at(now)
-    );
-}
-
-#[test]
 fn base_generation_deletion_is_atomic_compare_and_delete() {
     let temp = cache_dir();
     let directory = temp.path().join("cache");

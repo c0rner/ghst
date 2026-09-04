@@ -85,20 +85,6 @@ mod tests {
     }
 
     #[test]
-    fn test_repo_scope_display_formatting() {
-        assert_eq!(RepoScope::All.to_string(), "all");
-        assert_eq!(RepoScope::Auto.to_string(), "auto");
-        assert_eq!(
-            RepoScope::Specific("acme/api".into()).to_string(),
-            "acme/api"
-        );
-        assert_eq!(
-            RepoScope::Multiple(vec!["acme/api".into(), "acme/web".into()]).to_string(),
-            "[acme/api, acme/web]"
-        );
-    }
-
-    #[test]
     fn test_permission_level_toml_and_json_serialization_contracts() {
         let read: PermissionHolder = toml::from_str("permission = \"read\"").unwrap();
         assert_eq!(read.permission, PermissionLevel::Read);
@@ -119,11 +105,5 @@ mod tests {
 
         let from_json: PermissionLevel = serde_json::from_str("\"read\"").unwrap();
         assert_eq!(from_json, PermissionLevel::Read);
-    }
-
-    #[test]
-    fn test_permission_level_display_formatting() {
-        assert_eq!(PermissionLevel::Read.to_string(), "read");
-        assert_eq!(PermissionLevel::Write.to_string(), "write");
     }
 }

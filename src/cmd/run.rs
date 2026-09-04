@@ -27,6 +27,7 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
     }
     let config = crate::config::load(args.config.as_deref())?;
     let profile_name = resolve_profile_name(cmd.profile.as_deref(), &config)?;
+    let profile = config.resolve_token_profile(&profile_name)?;
     let cache_dir = crate::config::cache_dir()?;
     let client = GitHubClient::new();
     let wrapper_pid = std::process::id();
@@ -40,9 +41,8 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
     let pending = crate::token::run::mint(
         &client,
         &MintRunRequest {
-            config: &config,
+            profile: &profile,
             cache_dir: &cache_dir,
-            profile_name: &profile_name,
             repositories: &cmd.repo,
             wrapper_pid,
             command: &command_line,

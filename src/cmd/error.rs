@@ -172,7 +172,10 @@ impl std::error::Error for CmdError {
 
 impl From<ConfigError> for CmdError {
     fn from(err: ConfigError) -> Self {
-        Self::Config(err)
+        match err {
+            ConfigError::ProfileNotFound(profile) => Self::ProfileNotFound(profile),
+            other => Self::Config(other),
+        }
     }
 }
 

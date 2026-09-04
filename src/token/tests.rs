@@ -3,7 +3,8 @@ use crate::cache::{
     BaseCacheEntry, CACHE_SCHEMA_VERSION, CacheEntry, TokenExpiry, authority_fingerprint,
     cache_epoch, compute_cache_key, delete_cache_entry, load_cache_entry, save_cache_entry,
 };
-use crate::config::{Config, GitHubAppConfig, ProfileConfig};
+use crate::config::Config;
+use crate::domain::profile::{AppAuthority, ResolvedTokenProfile};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -194,14 +195,14 @@ fn response_receipt_time_rejects_latency_crossing_the_handoff_margin() {
         expires_at: Some(TokenExpiry::new(now + Duration::seconds(40)).to_string()),
     });
     let config: Config = CONFIG.parse().unwrap();
+    let profile = config.resolve_token_profile("reader").unwrap();
     let mut times = [now, now, now + Duration::seconds(15)].into_iter();
 
     let result = super::acquire::acquire_with_clock(
         &client,
         &AcquireRequest {
-            config: &config,
+            profile: &profile,
             cache_dir: &cache_dir,
-            profile_name: "reader",
             repositories: &[],
         },
         || panic!("auto not expected"),
@@ -219,18 +220,18 @@ fn base_authority_and_kind_are_validated() {
     let cache_dir = temp.path().join("cache");
     cache_base(&cache_dir, now, "base");
     let config: Config = CONFIG.parse().unwrap();
-    let ProfileConfig::App(app) = config.profiles.get("developer").unwrap() else {
-        panic!("expected app profile");
+    let profile = config.resolve_token_profile("developer").unwrap();
+    let ResolvedTokenProfile::Base { app, .. } = profile else {
+        panic!("expected base profile");
     };
     assert!(
-        load_current_base_entry(&cache_dir, "developer", &app.github_app)
+        load_current_base_entry(&cache_dir, "developer", &app.authority)
             .unwrap()
             .is_some()
     );
-    let mismatched = GitHubAppConfig {
-        account: "other".into(),
-        client_id: "id".into(),
-        client_secret: None,
+    let mismatched = AppAuthority {
+        account: "other",
+        client_id: "id",
     };
     assert!(
         load_current_base_entry(&cache_dir, "developer", &mismatched)
@@ -246,6 +247,7 @@ fn base_acquisition_returns_cached_token_and_rejects_repository_scope() {
     let cache_dir = temp.path().join("cache");
     cache_base(&cache_dir, now, "base-token");
     let config: Config = CONFIG.parse().unwrap();
+    let profile = config.resolve_token_profile("developer").unwrap();
     let client = client(IssuedScopedToken {
         access_token: "unused".into(),
         expires_at: None,
@@ -253,9 +255,8 @@ fn base_acquisition_returns_cached_token_and_rejects_repository_scope() {
     let acquired = acquire(
         &client,
         &AcquireRequest {
-            config: &config,
+            profile: &profile,
             cache_dir: &cache_dir,
-            profile_name: "developer",
             repositories: &[],
         },
         || panic!("auto not expected"),
@@ -268,9 +269,8 @@ fn base_acquisition_returns_cached_token_and_rejects_repository_scope() {
         acquire(
             &client,
             &AcquireRequest {
-                config: &config,
+                profile: &profile,
                 cache_dir: &cache_dir,
-                profile_name: "developer",
                 repositories: &["acme/api".into()],
             },
             || panic!("auto not expected"),
@@ -282,8 +282,9 @@ fn base_acquisition_returns_cached_token_and_rejects_repository_scope() {
 #[test]
 fn invalid_base_response_is_revoked_and_not_persisted() {
     let config: Config = CONFIG.parse().unwrap();
-    let ProfileConfig::App(app) = config.profiles.get("developer").unwrap() else {
-        panic!("expected app profile");
+    let profile = config.resolve_token_profile("developer").unwrap();
+    let ResolvedTokenProfile::Base { app, .. } = profile else {
+        panic!("expected base profile");
     };
     let client = client(IssuedScopedToken {
         access_token: "unused".into(),
@@ -298,7 +299,7 @@ fn invalid_base_response_is_revoked_and_not_persisted() {
     assert!(matches!(
         persist_base_response(
             &client,
-            app,
+            &app,
             "developer",
             &cache_dir,
             response,
@@ -333,12 +334,12 @@ fn scoped_acquisition_sends_exact_narrowing_request() {
         )
         .parse()
         .unwrap();
+    let profile = config.resolve_token_profile("reader").unwrap();
     let acquired = acquire(
         &client,
         &AcquireRequest {
-            config: &config,
+            profile: &profile,
             cache_dir: &cache_dir,
-            profile_name: "reader",
             repositories: &[],
         },
         || panic!("auto not expected"),
@@ -372,6 +373,7 @@ fn scoped_acquisition_sends_exact_narrowing_request() {
 #[test]
 fn permanent_scoped_rejection_evicts_the_rejected_base() {
     let config: Config = CONFIG.parse().unwrap();
+    let profile = config.resolve_token_profile("reader").unwrap();
     for status in [401, 404] {
         let now = OffsetDateTime::now_utc();
         let temp = tempfile::tempdir().unwrap();
@@ -380,9 +382,8 @@ fn permanent_scoped_rejection_evicts_the_rejected_base() {
         let result = acquire(
             &failing_scoped_client(status),
             &AcquireRequest {
-                config: &config,
+                profile: &profile,
                 cache_dir: &cache_dir,
-                profile_name: "reader",
                 repositories: &[],
             },
             || panic!("auto not expected"),
@@ -402,6 +403,7 @@ fn permanent_scoped_rejection_evicts_the_rejected_base() {
 #[test]
 fn scoped_policy_and_transient_rejections_retain_the_base() {
     let config: Config = CONFIG.parse().unwrap();
+    let profile = config.resolve_token_profile("reader").unwrap();
     for status in [403, 500] {
         let now = OffsetDateTime::now_utc();
         let temp = tempfile::tempdir().unwrap();
@@ -410,9 +412,8 @@ fn scoped_policy_and_transient_rejections_retain_the_base() {
         let result = acquire(
             &failing_scoped_client(status),
             &AcquireRequest {
-                config: &config,
+                profile: &profile,
                 cache_dir: &cache_dir,
-                profile_name: "reader",
                 repositories: &[],
             },
             || panic!("auto not expected"),
@@ -451,13 +452,13 @@ fn invalid_scoped_response_is_revoked_without_cache_entry() {
         expires_at: None,
     });
     let config: Config = CONFIG.parse().unwrap();
+    let profile = config.resolve_token_profile("reader").unwrap();
     assert!(matches!(
         acquire(
             &client,
             &AcquireRequest {
-                config: &config,
+                profile: &profile,
                 cache_dir: &cache_dir,
-                profile_name: "reader",
                 repositories: &[],
             },
             || panic!("auto not expected"),
@@ -520,13 +521,13 @@ fn permanent_rejection_preserves_a_concurrent_base_replacement() {
         now,
     };
     let config: Config = CONFIG.parse().unwrap();
+    let profile = config.resolve_token_profile("reader").unwrap();
 
     let result = acquire(
         &client,
         &AcquireRequest {
-            config: &config,
+            profile: &profile,
             cache_dir: &cache_dir,
-            profile_name: "reader",
             repositories: &[],
         },
         || panic!("auto not expected"),
@@ -586,13 +587,13 @@ fn base_generation_change_revokes_candidate_and_requests_retry() {
         revoked: RefCell::new(Vec::new()),
     };
     let config: Config = CONFIG.parse().unwrap();
+    let profile = config.resolve_token_profile("reader").unwrap();
     assert!(matches!(
         acquire(
             &client,
             &AcquireRequest {
-                config: &config,
+                profile: &profile,
                 cache_dir: &cache_dir,
-                profile_name: "reader",
                 repositories: &[],
             },
             || panic!("auto not expected"),
@@ -609,6 +610,7 @@ fn cached_scoped_token_remains_usable_after_base_expiry() {
     let cache_dir = temp.path().join("cache");
     cache_base(&cache_dir, now, "base-token");
     let config: Config = CONFIG.parse().unwrap();
+    let profile = config.resolve_token_profile("reader").unwrap();
     let first_client = client(IssuedScopedToken {
         access_token: "child-token".into(),
         expires_at: Some(
@@ -616,9 +618,8 @@ fn cached_scoped_token_remains_usable_after_base_expiry() {
         ),
     });
     let request = AcquireRequest {
-        config: &config,
+        profile: &profile,
         cache_dir: &cache_dir,
-        profile_name: "reader",
         repositories: &[],
     };
     acquire(&first_client, &request, || panic!("auto not expected")).unwrap();
@@ -656,14 +657,14 @@ fn renewable_scoped_token_is_replaced_and_displaced_token_is_revoked() {
         expires_at: Some(exact_expiry.to_string()),
     });
     let config: Config = CONFIG.parse().unwrap();
+    let profile = config.resolve_token_profile("reader").unwrap();
     let mut times = [now, now, now].into_iter();
 
     let acquired = super::acquire::acquire_with_clock(
         &client,
         &AcquireRequest {
-            config: &config,
+            profile: &profile,
             cache_dir: &cache_dir,
-            profile_name: "reader",
             repositories: &[],
         },
         || panic!("auto not expected"),
@@ -698,14 +699,14 @@ fn renewable_scoped_token_falls_back_when_base_is_not_usable() {
     save_cache_entry(&cache_dir, &base_key, &CacheEntry::Base(base)).unwrap();
     let client = no_response_client();
     let config: Config = CONFIG.parse().unwrap();
+    let profile = config.resolve_token_profile("reader").unwrap();
     let mut times = [now, now].into_iter();
 
     let acquired = super::acquire::acquire_with_clock(
         &client,
         &AcquireRequest {
-            config: &config,
+            profile: &profile,
             cache_dir: &cache_dir,
-            profile_name: "reader",
             repositories: &[],
         },
         || panic!("auto not expected"),
@@ -734,14 +735,14 @@ fn token_inside_handoff_margin_is_never_returned() {
     save_cache_entry(&cache_dir, &base_key, &CacheEntry::Base(base)).unwrap();
     let client = no_response_client();
     let config: Config = CONFIG.parse().unwrap();
+    let profile = config.resolve_token_profile("reader").unwrap();
     let mut times = [now, now].into_iter();
 
     let result = super::acquire::acquire_with_clock(
         &client,
         &AcquireRequest {
-            config: &config,
+            profile: &profile,
             cache_dir: &cache_dir,
-            profile_name: "reader",
             repositories: &[],
         },
         || panic!("auto not expected"),
@@ -765,13 +766,13 @@ fn cached_child_is_not_returned_when_base_provenance_is_missing() {
     delete_cache_entry(&cache_dir, &base_cache_key("developer")).unwrap();
     let client = no_response_client();
     let config: Config = CONFIG.parse().unwrap();
+    let profile = config.resolve_token_profile("reader").unwrap();
 
     let result = super::acquire::acquire_with_clock(
         &client,
         &AcquireRequest {
-            config: &config,
+            profile: &profile,
             cache_dir: &cache_dir,
-            profile_name: "reader",
             repositories: &[],
         },
         || panic!("auto not expected"),
@@ -798,14 +799,14 @@ fn failed_displaced_revocation_leaves_the_renewed_token_persisted() {
     });
     failing_client.revoke_fails = true;
     let config: Config = CONFIG.parse().unwrap();
+    let profile = config.resolve_token_profile("reader").unwrap();
     let mut times = [now, now, now].into_iter();
 
     let result = super::acquire::acquire_with_clock(
         &failing_client,
         &AcquireRequest {
-            config: &config,
+            profile: &profile,
             cache_dir: &cache_dir,
-            profile_name: "reader",
             repositories: &[],
         },
         || panic!("auto not expected"),

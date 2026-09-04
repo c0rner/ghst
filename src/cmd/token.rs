@@ -10,6 +10,7 @@ use std::path::Path;
 pub fn run_token(args: &GhstCli, cmd: &TokenCmd) -> Result<(), CmdError> {
     let config = crate::config::load(args.config.as_deref())?;
     let profile_name = resolve_profile_name(cmd.profile.as_deref(), &config)?;
+    let profile = config.resolve_token_profile(&profile_name)?;
     let cache_dir = crate::config::cache_dir()?;
     tracing::debug!(
         profile = profile_name,
@@ -21,11 +22,10 @@ pub fn run_token(args: &GhstCli, cmd: &TokenCmd) -> Result<(), CmdError> {
     let mut stdout = io::stdout().lock();
     execute_token(
         &TokenContext {
-            config: &config,
+            profile: &profile,
             cache_dir: &cache_dir,
             client: &client,
         },
-        &profile_name,
         cmd,
         &mut stdout,
         crate::git::resolve_origin_repo,
@@ -33,14 +33,13 @@ pub fn run_token(args: &GhstCli, cmd: &TokenCmd) -> Result<(), CmdError> {
 }
 
 struct TokenContext<'a, C> {
-    config: &'a crate::config::Config,
+    profile: &'a crate::domain::profile::ResolvedTokenProfile<'a>,
     cache_dir: &'a Path,
     client: &'a C,
 }
 
 fn execute_token<C: ScopedTokenClient, W: Write>(
     context: &TokenContext<'_, C>,
-    profile_name: &str,
     cmd: &TokenCmd,
     writer: &mut W,
     resolve_auto: impl FnMut() -> Result<String, RepositoryError>,
@@ -48,9 +47,8 @@ fn execute_token<C: ScopedTokenClient, W: Write>(
     let token = crate::token::acquire(
         context.client,
         &AcquireRequest {
-            config: context.config,
+            profile: context.profile,
             cache_dir: context.cache_dir,
-            profile_name,
             repositories: &cmd.repo,
         },
         resolve_auto,

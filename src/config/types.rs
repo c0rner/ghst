@@ -3,7 +3,10 @@ use std::fmt;
 
 use serde::Deserialize;
 
-use crate::domain::profile::{PermissionLevel, RepoScope};
+use crate::config::error::ConfigError;
+use crate::domain::profile::{
+    AppAuthority, AppCredentials, AppRegistration, PermissionLevel, RepoScope, ResolvedTokenProfile,
+};
 
 #[derive(PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -14,6 +17,71 @@ pub struct Config {
     pub no_browser: bool,
     #[serde(rename = "profile", default)]
     pub profiles: BTreeMap<String, ProfileConfig>,
+}
+
+impl Config {
+    pub fn resolve_token_profile<'a>(
+        &'a self,
+        name: &str,
+    ) -> Result<ResolvedTokenProfile<'a>, ConfigError> {
+        let (stored_name, profile) = self
+            .profiles
+            .get_key_value(name)
+            .ok_or_else(|| ConfigError::ProfileNotFound(name.to_owned()))?;
+
+        match profile {
+            ProfileConfig::App(app) => Ok(ResolvedTokenProfile::Base {
+                name: stored_name.as_str(),
+                app: AppRegistration {
+                    authority: AppAuthority {
+                        account: &app.github_app.account,
+                        client_id: &app.github_app.client_id,
+                    },
+                    client_secret: app.github_app.client_secret.as_deref(),
+                },
+            }),
+            ProfileConfig::Scoped(scoped) => {
+                let (source_stored_name, source_profile) = self
+                    .profiles
+                    .get_key_value(&scoped.source)
+                    .ok_or_else(|| ConfigError::ScopedSourceNotFound {
+                        profile: stored_name.clone(),
+                        source: scoped.source.clone(),
+                    })?;
+                let source_app = match source_profile {
+                    ProfileConfig::App(app) => app,
+                    ProfileConfig::Scoped(_) => {
+                        return Err(ConfigError::ScopedFromNonApp {
+                            profile: stored_name.clone(),
+                            source: scoped.source.clone(),
+                        });
+                    }
+                };
+                let client_secret =
+                    source_app
+                        .github_app
+                        .client_secret
+                        .as_deref()
+                        .ok_or_else(|| ConfigError::ScopedFromSecretlessApp {
+                            profile: stored_name.clone(),
+                            source: scoped.source.clone(),
+                        })?;
+                Ok(ResolvedTokenProfile::Scoped {
+                    name: stored_name.as_str(),
+                    source_name: source_stored_name.as_str(),
+                    app: AppCredentials {
+                        authority: AppAuthority {
+                            account: &source_app.github_app.account,
+                            client_id: &source_app.github_app.client_id,
+                        },
+                        client_secret,
+                    },
+                    repository_scope: &scoped.repo,
+                    permissions: &scoped.permissions,
+                })
+            }
+        }
+    }
 }
 
 impl fmt::Debug for Config {

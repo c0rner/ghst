@@ -7,7 +7,7 @@ use crate::cache::{
     cache_epoch, compute_cache_key, load_cache_entry, policy_fingerprint, replace_cache_candidate,
     save_cache_candidate,
 };
-use crate::config::{AppProfile, ProfileConfig};
+use crate::domain::profile::{AppAuthority, ResolvedTokenProfile};
 use crate::repository::RepositoryError;
 use crate::token::ScopedTokenClient;
 use std::path::Path;
@@ -31,49 +31,51 @@ pub(super) fn acquire_with_clock<
     resolve_auto: R,
     mut now: N,
 ) -> Result<AcquiredToken, TokenError> {
-    tracing::debug!(
-        profile = request.profile_name,
-        requested_repositories = ?request.repositories,
-        "starting token acquisition"
-    );
-    match request.config.profiles.get(request.profile_name) {
-        Some(ProfileConfig::App(profile)) => {
+    match request.profile {
+        ResolvedTokenProfile::Base { name, app } => {
             tracing::debug!(
-                profile = request.profile_name,
+                profile = *name,
+                requested_repositories = ?request.repositories,
                 profile_kind = "app",
-                "resolved token profile"
+                "starting token acquisition"
             );
-            acquire_base(request, profile, now())
+            acquire_base(
+                request.cache_dir,
+                name,
+                &app.authority,
+                request.repositories,
+                now(),
+            )
         }
-        Some(ProfileConfig::Scoped(_)) => {
+        ResolvedTokenProfile::Scoped { name, .. } => {
             tracing::debug!(
-                profile = request.profile_name,
+                profile = *name,
+                requested_repositories = ?request.repositories,
                 profile_kind = "scoped",
-                "resolved token profile"
+                "starting token acquisition"
             );
             acquire_scoped(client, request, resolve_auto, &mut now)
         }
-        None => Err(TokenError::ProfileNotFound(request.profile_name.to_owned())),
     }
 }
 
 fn acquire_base(
-    request: &AcquireRequest<'_>,
-    profile: &AppProfile,
+    cache_dir: &Path,
+    profile_name: &str,
+    authority: &AppAuthority<'_>,
+    repositories: &[String],
     now: OffsetDateTime,
 ) -> Result<AcquiredToken, TokenError> {
-    if !request.repositories.is_empty() {
-        return Err(TokenError::AppScopeRejected(
-            request.profile_name.to_owned(),
-        ));
+    if !repositories.is_empty() {
+        return Err(TokenError::AppScopeRejected(profile_name.to_owned()));
     }
-    let entry = load_valid_base_entry(request.cache_dir, request.profile_name, profile, now)?
-        .ok_or_else(|| TokenError::NoBaseTokenCached(request.profile_name.to_owned()))?;
-    tracing::debug!(profile = request.profile_name, expires_at = %entry.expires_at, "returning cached base token");
+    let entry = load_valid_base_entry(cache_dir, profile_name, authority, now)?
+        .ok_or_else(|| TokenError::NoBaseTokenCached(profile_name.to_owned()))?;
+    tracing::debug!(profile = profile_name, expires_at = %entry.expires_at, "returning cached base token");
     Ok(AcquiredToken {
         access_token: entry.access_token,
         expires_at: entry.expires_at,
-        profile: request.profile_name.to_owned(),
+        profile: profile_name.to_owned(),
         repo_scope: "all".to_owned(),
     })
 }
@@ -89,48 +91,47 @@ fn acquire_scoped<
     now: &mut N,
 ) -> Result<AcquiredToken, TokenError> {
     let prepared = super::scoped::prepare(
-        request.config,
         request.cache_dir,
-        request.profile_name,
+        request.profile,
         request.repositories,
         resolve_auto,
     )?;
     let policy = policy_fingerprint(
-        &prepared.source.github_app.account,
+        prepared.app.authority.account,
         &prepared.scope,
-        &prepared.profile.permissions,
+        prepared.permissions,
     );
     let generation = prepared.base.generation_fingerprint();
-    let cache_key = compute_cache_key(request.profile_name, &prepared.scope);
+    let cache_key = compute_cache_key(prepared.profile_name, &prepared.scope);
     tracing::debug!(
-        profile = request.profile_name,
-        source_profile = prepared.profile.source,
-        account = prepared.source.github_app.account,
+        profile = prepared.profile_name,
+        source_profile = prepared.source_name,
+        account = prepared.app.authority.account,
         repo_scope = prepared.scope,
-        permissions = ?prepared.profile.permissions,
+        permissions = ?prepared.permissions,
         cache_key,
         "prepared scoped token acquisition"
     );
     let provenance = ScopedProvenance {
-        profile_name: request.profile_name,
-        source_name: &prepared.profile.source,
+        profile_name: prepared.profile_name,
+        source_name: prepared.source_name,
         canonical_scope: &prepared.scope,
         policy: &policy,
         parent_generation: &generation,
-        source_app: &prepared.source.github_app,
+        source_authority: &prepared.app.authority,
     };
     let renewal = match classify_scoped_entry(request.cache_dir, &cache_key, &provenance, now())? {
         CachedScoped::Fresh(entry) => {
-            tracing::debug!(profile = request.profile_name, expires_at = %entry.expires_at, "returning fresh cached scoped token");
+            tracing::debug!(profile = prepared.profile_name, expires_at = %entry.expires_at, "returning fresh cached scoped token");
             return Ok(acquired_scoped(entry));
         }
         CachedScoped::Renewable(entry) => {
-            tracing::debug!(profile = request.profile_name, expires_at = %entry.expires_at, "cached scoped token is in the renewal window");
+            tracing::debug!(profile = prepared.profile_name, expires_at = %entry.expires_at, "cached scoped token is in the renewal window");
             Some(entry)
         }
         CachedScoped::MissingOrUnsafe => {
             tracing::debug!(
-                profile = request.profile_name,
+                profile = prepared.profile_name,
                 "no reusable scoped token is cached; a new token is required"
             );
             None
@@ -138,7 +139,7 @@ fn acquire_scoped<
     };
     mint_and_persist(
         client,
-        request,
+        request.cache_dir,
         MintRequest {
             cache_key: &cache_key,
             policy: &policy,
@@ -155,7 +156,7 @@ struct ScopedProvenance<'a> {
     canonical_scope: &'a str,
     policy: &'a str,
     parent_generation: &'a str,
-    source_app: &'a crate::config::GitHubAppConfig,
+    source_authority: &'a AppAuthority<'a>,
 }
 
 enum CachedScoped {
@@ -188,8 +189,8 @@ fn classify_scoped_entry(
         CacheEntry::Scoped(entry) => {
             let rejection = if entry.source_profile != provenance.source_name {
                 Some("source profile changed")
-            } else if !super::provenance::matches(
-                provenance.source_app,
+            } else if !super::provenance::matches_authority(
+                provenance.source_authority,
                 &entry.source_authority_fingerprint,
             ) {
                 Some("source GitHub App authority changed")
@@ -238,22 +239,16 @@ struct MintRequest<'a> {
 
 fn mint_and_persist<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     client: &C,
-    request: &AcquireRequest<'_>,
+    cache_dir: &Path,
     mint: MintRequest<'_>,
     now: &mut N,
 ) -> Result<AcquiredToken, TokenError> {
-    let epoch = cache_epoch(request.cache_dir)?;
+    let epoch = cache_epoch(cache_dir)?;
     let generation = mint.prepared.base.generation_fingerprint();
-    let secret = mint
-        .prepared
-        .source
-        .github_app
-        .client_secret
-        .as_deref()
-        .ok_or_else(|| TokenError::ClientSecretRequired(mint.prepared.profile.source.clone()))?;
+    let secret = mint.prepared.app.client_secret;
     tracing::debug!(
-        profile = request.profile_name,
-        source_profile = mint.prepared.profile.source,
+        profile = mint.prepared.profile_name,
+        source_profile = mint.prepared.source_name,
         repo_scope = mint.prepared.scope,
         renewal = mint.renewal.is_some(),
         "minting scoped token"
@@ -267,23 +262,22 @@ fn mint_and_persist<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
         && let Some(entry) = mint.renewal
     {
         tracing::debug!(
-            profile = request.profile_name,
+            profile = mint.prepared.profile_name,
             base_expires_at = %mint.prepared.base.expires_at,
             scoped_expires_at = %entry.expires_at,
             "base token cannot safely mint a replacement; returning provenance-valid cached scoped token"
         );
         return Ok(acquired_scoped(entry));
     }
-    let issued =
-        super::scoped::issue(client, &mint.prepared, request.cache_dir, request_time, now)?;
-    tracing::debug!(profile = request.profile_name, expires_at = %issued.expires_at, "received valid scoped token from GitHub");
+    let issued = super::scoped::issue(client, &mint.prepared, cache_dir, request_time, now)?;
+    tracing::debug!(profile = mint.prepared.profile_name, expires_at = %issued.expires_at, "received valid scoped token from GitHub");
     let candidate = CacheEntry::Scoped(ScopedCacheEntry {
         version: CACHE_SCHEMA_VERSION,
-        profile: request.profile_name.to_owned(),
-        source_profile: mint.prepared.profile.source.clone(),
+        profile: mint.prepared.profile_name.to_owned(),
+        source_profile: mint.prepared.source_name.to_owned(),
         source_authority_fingerprint: crate::cache::authority_fingerprint(
-            &mint.prepared.source.github_app.client_id,
-            &mint.prepared.source.github_app.account,
+            mint.prepared.app.authority.client_id,
+            mint.prepared.app.authority.account,
         ),
         parent_generation: mint.prepared.base.generation_fingerprint(),
         policy_fingerprint: mint.policy.to_owned(),
@@ -292,9 +286,9 @@ fn mint_and_persist<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
         expires_at: issued.expires_at,
         access_token: issued.access_token,
     });
-    let base_key = base_cache_key(&mint.prepared.profile.source);
+    let base_key = base_cache_key(mint.prepared.source_name);
     let persistence = persist_candidate(
-        request.cache_dir,
+        cache_dir,
         mint.cache_key,
         mint.renewal,
         &candidate,
@@ -306,21 +300,21 @@ fn mint_and_persist<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
         Ok(result) => result,
         Err(crate::cache::CacheError::BaseGenerationChanged) => {
             tracing::debug!(
-                profile = request.profile_name,
+                profile = mint.prepared.profile_name,
                 "base token generation changed while persisting scoped token; revoking candidate"
             );
             return Err(revoke_with_context(
                 client,
-                mint.prepared.source,
+                &mint.prepared.app.as_registration(),
                 candidate.access_token(),
-                TokenError::BaseGenerationChanged(mint.prepared.profile.source.clone()),
+                TokenError::BaseGenerationChanged(mint.prepared.source_name.to_owned()),
             ));
         }
         Err(error) => {
-            tracing::debug!(profile = request.profile_name, error = %error, "failed to persist scoped token; revoking candidate");
+            tracing::debug!(profile = mint.prepared.profile_name, error = %error, "failed to persist scoped token; revoking candidate");
             return Err(revoke_with_context(
                 client,
-                mint.prepared.source,
+                &mint.prepared.app.as_registration(),
                 candidate.access_token(),
                 TokenError::Cache(error),
             ));
@@ -328,8 +322,8 @@ fn mint_and_persist<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     };
     finish_persisted_candidate(
         client,
-        request,
-        mint.prepared.source,
+        mint.prepared.profile_name,
+        mint.prepared.app.authority.client_id,
         secret,
         candidate,
         saved,
@@ -338,46 +332,36 @@ fn mint_and_persist<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
 
 fn finish_persisted_candidate<C: ScopedTokenClient>(
     client: &C,
-    request: &AcquireRequest<'_>,
-    source: &crate::config::AppProfile,
+    profile_name: &str,
+    client_id: &str,
     secret: &str,
     candidate: CacheEntry,
     saved: PersistedCandidate,
 ) -> Result<AcquiredToken, TokenError> {
     match saved {
         PersistedCandidate::Saved(SaveCacheEntry::Saved) => {
-            tracing::debug!(profile = request.profile_name, "persisted new scoped token");
+            tracing::debug!(profile = profile_name, "persisted new scoped token");
             Ok(acquired_candidate(candidate))
         }
         PersistedCandidate::Saved(SaveCacheEntry::Retained(retained))
         | PersistedCandidate::Renewed(ReplaceCacheEntry::Retained(retained)) => {
             tracing::debug!(
-                profile = request.profile_name,
+                profile = profile_name,
                 "compatible concurrent scoped token won the cache race; revoking unused candidate"
             );
-            revoke_candidate(
-                client,
-                request,
-                &source.github_app.client_id,
-                secret,
-                &candidate,
-            )?;
+            revoke_candidate(client, profile_name, client_id, secret, &candidate)?;
             acquired_retained(*retained)
         }
         PersistedCandidate::Renewed(ReplaceCacheEntry::Replaced(displaced)) => {
             tracing::debug!(
-                profile = request.profile_name,
+                profile = profile_name,
                 "persisted renewed scoped token; revoking displaced token"
             );
-            if let Err(source) = client.delete_token(
-                &source.github_app.client_id,
-                secret,
-                displaced.access_token().as_ref(),
-            ) {
+            if let Err(source) =
+                client.delete_token(client_id, secret, displaced.access_token().as_ref())
+            {
                 return Err(TokenError::RevocationFailed {
-                    context: Box::new(TokenError::RenewalPersisted(
-                        request.profile_name.to_owned(),
-                    )),
+                    context: Box::new(TokenError::RenewalPersisted(profile_name.to_owned())),
                     source,
                 });
             }
@@ -422,7 +406,7 @@ fn persist_candidate(
 
 fn revoke_candidate<C: ScopedTokenClient>(
     client: &C,
-    request: &AcquireRequest<'_>,
+    profile_name: &str,
     client_id: &str,
     secret: &str,
     candidate: &CacheEntry,
@@ -431,7 +415,7 @@ fn revoke_candidate<C: ScopedTokenClient>(
         .delete_token(client_id, secret, candidate.access_token().as_ref())
         .map_err(|source| TokenError::RevocationFailed {
             context: Box::new(TokenError::StaleProvenance {
-                profile: request.profile_name.to_owned(),
+                profile: profile_name.to_owned(),
                 reason: "a compatible concurrent cache winner retained the token",
             }),
             source,

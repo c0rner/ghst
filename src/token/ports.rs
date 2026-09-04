@@ -1,5 +1,5 @@
 use crate::cache::AccessToken;
-use crate::config::PermissionLevel;
+use crate::domain::profile::PermissionLevel;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::time::Duration;

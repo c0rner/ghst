@@ -12,12 +12,6 @@ pub enum TokenError {
         source: RemoteError,
     },
     Repository(RepositoryError),
-    ProfileNotFound(String),
-    SourceProfileNotApp {
-        profile: String,
-        source: String,
-    },
-    ClientSecretRequired(String),
     NoBaseTokenCached(String),
     NoSourceBaseTokenCached(String),
     AppScopeRejected(String),
@@ -62,17 +56,6 @@ impl fmt::Display for TokenError {
                 "github rejected the scoped token request for scoped profile '{profile}': {source}. The requested permissions or repository access likely exceed the GitHub App installation for source app profile '{source_profile}'; check the App installation in GitHub settings and the scoped profile's `permissions` and `repo` in profiles.toml"
             ),
             Self::Repository(error) => write!(f, "{error}"),
-            Self::ProfileNotFound(profile) => {
-                write!(f, "profile '{profile}' is not defined in configuration")
-            }
-            Self::SourceProfileNotApp { profile, source } => write!(
-                f,
-                "scoped profile '{profile}' references non-app source profile '{source}'"
-            ),
-            Self::ClientSecretRequired(profile) => write!(
-                f,
-                "app profile '{profile}' has no client secret; scoped token minting is unavailable"
-            ),
             Self::NoBaseTokenCached(profile) => {
                 write!(f, "no valid base token cached for app profile '{profile}'")
             }

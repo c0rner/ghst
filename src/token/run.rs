@@ -4,6 +4,7 @@ use crate::cache::{
     SaveCacheEntry, cache_epoch, compute_run_cache_key, save_cache_candidate,
 };
 use crate::config::Config;
+use crate::domain::profile::ResolvedTokenProfile;
 use crate::repository::RepositoryError;
 use crate::token::{RevokeTokenClient, ScopedTokenClient};
 use std::fmt::Write as _;
@@ -11,9 +12,8 @@ use std::path::Path;
 use time::OffsetDateTime;
 
 pub struct MintRunRequest<'a> {
-    pub config: &'a Config,
+    pub profile: &'a ResolvedTokenProfile<'a>,
     pub cache_dir: &'a Path,
-    pub profile_name: &'a str,
     pub repositories: &'a [String],
     pub wrapper_pid: u32,
     pub command: &'a str,
@@ -171,15 +171,14 @@ fn mint_with_clock<
     mut now: N,
 ) -> Result<PendingRun, TokenError> {
     let prepared = super::scoped::prepare(
-        request.config,
         request.cache_dir,
-        request.profile_name,
+        request.profile,
         request.repositories,
         resolve_auto,
     )?;
     tracing::debug!(
-        profile = request.profile_name,
-        source_profile = prepared.profile.source,
+        profile = prepared.profile_name,
+        source_profile = prepared.source_name,
         repo_scope = prepared.scope,
         wrapper_pid = request.wrapper_pid,
         "prepared fresh run token request"
@@ -191,7 +190,7 @@ fn mint_with_clock<
     let request_time = now();
     let issued =
         super::scoped::issue(client, &prepared, request.cache_dir, request_time, &mut now)?;
-    tracing::debug!(profile = request.profile_name, expires_at = %issued.expires_at, "received valid run token from GitHub");
+    tracing::debug!(profile = prepared.profile_name, expires_at = %issued.expires_at, "received valid run token from GitHub");
     let candidate = CacheEntry::Run(RunCacheEntry {
         version: RUN_CACHE_SCHEMA_VERSION,
         run_id: run_id.clone(),
@@ -199,11 +198,11 @@ fn mint_with_clock<
         wrapper_pid: request.wrapper_pid,
         child_pid: None,
         command: request.command.to_owned(),
-        profile: request.profile_name.to_owned(),
-        source_profile: prepared.profile.source.clone(),
+        profile: prepared.profile_name.to_owned(),
+        source_profile: prepared.source_name.to_owned(),
         source_authority_fingerprint: crate::cache::authority_fingerprint(
-            &prepared.source.github_app.client_id,
-            &prepared.source.github_app.account,
+            prepared.app.authority.client_id,
+            prepared.app.authority.account,
         ),
         github_user: prepared.base.github_user,
         repo_scope: prepared.scope,
@@ -215,7 +214,7 @@ fn mint_with_clock<
         &cache_key,
         &candidate,
         epoch,
-        Some((&base_cache_key(&prepared.profile.source), &generation)),
+        Some((&base_cache_key(prepared.source_name), &generation)),
     );
     match saved {
         Ok(SaveCacheEntry::Saved) => {
@@ -223,7 +222,7 @@ fn mint_with_clock<
                 unreachable!("run candidate changed kind")
             };
             tracing::debug!(
-                profile = request.profile_name,
+                profile = prepared.profile_name,
                 cache_key,
                 run_id,
                 "persisted pending run recovery entry"
@@ -239,10 +238,10 @@ fn mint_with_clock<
         }
         Ok(SaveCacheEntry::Retained(_)) => unreachable!("run entries are never reusable"),
         Err(source_error) => {
-            tracing::debug!(profile = request.profile_name, error = %source_error, "failed to persist pending run recovery entry; revoking candidate");
+            tracing::debug!(profile = prepared.profile_name, error = %source_error, "failed to persist pending run recovery entry; revoking candidate");
             Err(revoke_with_context(
                 client,
-                prepared.source,
+                &prepared.app.as_registration(),
                 candidate.access_token(),
                 TokenError::Cache(source_error),
             ))
@@ -462,10 +461,10 @@ permissions = { contents = "read" }
         )
         .unwrap();
         let client = MockClient(Cell::new(0));
+        let profile = config.resolve_token_profile("reader").unwrap();
         let request = MintRunRequest {
-            config: &config,
+            profile: &profile,
             cache_dir: &cache_dir,
-            profile_name: "reader",
             repositories: &[],
             wrapper_pid: std::process::id(),
             command: "true",
@@ -629,12 +628,12 @@ permissions = { contents = "read" }
         let temp = tempfile::tempdir().unwrap();
         let config = config();
         let client = MockClient(Cell::new(0));
+        let profile = config.resolve_token_profile("developer").unwrap();
         let result = mint(
             &client,
             &MintRunRequest {
-                config: &config,
+                profile: &profile,
                 cache_dir: temp.path(),
-                profile_name: "developer",
                 repositories: &[],
                 wrapper_pid: std::process::id(),
                 command: "true",

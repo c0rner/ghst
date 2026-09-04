@@ -17,6 +17,7 @@ pub enum ConfigError {
     Parse(toml::de::Error),
     UnsupportedVersion(u32),
     MissingDefaultProfile(String),
+    ProfileNotFound(String),
     ScopedSourceNotFound {
         profile: String,
         source: String,
@@ -67,6 +68,9 @@ impl fmt::Display for ConfigError {
             Self::MissingDefaultProfile(p) => {
                 write!(f, "default profile '{p}' is not defined in profiles")
             }
+            Self::ProfileNotFound(profile) => {
+                write!(f, "profile '{profile}' is not defined in configuration")
+            }
             Self::ScopedSourceNotFound { profile, source } => write!(
                 f,
                 "scoped profile '{profile}' references unknown source profile '{source}'"
@@ -100,6 +104,7 @@ impl std::error::Error for ConfigError {
             | Self::InsecurePath { .. }
             | Self::UnsupportedVersion(_)
             | Self::MissingDefaultProfile(_)
+            | Self::ProfileNotFound(_)
             | Self::ScopedSourceNotFound { .. }
             | Self::ScopedFromNonApp { .. }
             | Self::ScopedFromSecretlessApp { .. }

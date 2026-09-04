@@ -1,7 +1,8 @@
-use crate::cache::TokenExpiry;
-use crate::config::Config;
 use std::fmt;
 use std::path::Path;
+
+use crate::cache::TokenExpiry;
+use crate::domain::profile::ResolvedTokenProfile;
 
 pub struct AcquiredToken {
     pub access_token: crate::cache::AccessToken,
@@ -32,8 +33,7 @@ pub struct BaseTokenStatus {
 }
 
 pub struct AcquireRequest<'a> {
-    pub config: &'a Config,
+    pub profile: &'a ResolvedTokenProfile<'a>,
     pub cache_dir: &'a Path,
-    pub profile_name: &'a str,
     pub repositories: &'a [String],
 }

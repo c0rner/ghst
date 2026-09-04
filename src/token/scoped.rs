@@ -1,3 +1,7 @@
+use std::collections::BTreeMap;
+use std::path::Path;
+use time::OffsetDateTime;
+
 use super::{
     IssuedScopedToken, ScopedTokenClient, ScopedTokenRequest, TokenError, base_cache_key,
     load_current_base_entry, revoke_with_context, validate_scoped_expiry,
@@ -6,15 +10,14 @@ use crate::cache::{
     AccessToken, BaseCacheEntry, CacheError, DeleteBaseOutcome, TokenExpiry,
     delete_base_if_generation,
 };
-use crate::config::{AppProfile, Config, ProfileConfig, ScopedProfile};
+use crate::domain::profile::{AppCredentials, PermissionLevel, ResolvedTokenProfile};
 use crate::repository::{RepositoryError, RepositorySelection};
-use std::path::Path;
-use time::OffsetDateTime;
 
 pub(super) struct PreparedScopedToken<'a> {
     pub profile_name: &'a str,
-    pub profile: &'a ScopedProfile,
-    pub source: &'a AppProfile,
+    pub source_name: &'a str,
+    pub app: &'a AppCredentials<'a>,
+    pub permissions: &'a BTreeMap<String, PermissionLevel>,
     pub base: BaseCacheEntry,
     pub scope: String,
     pub repositories: Option<Vec<String>>,
@@ -27,41 +30,37 @@ pub(super) struct ValidatedScopedToken {
 }
 
 pub(super) fn prepare<'a>(
-    config: &'a Config,
     cache_dir: &Path,
-    profile_name: &'a str,
+    profile: &'a ResolvedTokenProfile<'a>,
     repositories: &[String],
     resolve_auto: impl FnMut() -> Result<String, RepositoryError>,
 ) -> Result<PreparedScopedToken<'a>, TokenError> {
-    let profile = match config.profiles.get(profile_name) {
-        Some(ProfileConfig::Scoped(profile)) => profile,
-        Some(ProfileConfig::App(_)) => {
-            return Err(TokenError::RunRequiresScoped(profile_name.to_owned()));
-        }
-        None => return Err(TokenError::ProfileNotFound(profile_name.to_owned())),
-    };
-    let source = match config.profiles.get(&profile.source) {
-        Some(ProfileConfig::App(source)) => source,
-        Some(ProfileConfig::Scoped(_)) => {
-            return Err(TokenError::SourceProfileNotApp {
-                profile: profile_name.to_owned(),
-                source: profile.source.clone(),
-            });
-        }
-        None => return Err(TokenError::ProfileNotFound(profile.source.clone())),
+    let ResolvedTokenProfile::Scoped {
+        name: profile_name,
+        source_name,
+        app,
+        repository_scope,
+        permissions,
+    } = profile
+    else {
+        return Err(TokenError::RunRequiresScoped(match profile {
+            ResolvedTokenProfile::Base { name, .. } | ResolvedTokenProfile::Scoped { name, .. } => {
+                (*name).to_owned()
+            }
+        }));
     };
     let selection = RepositorySelection::resolve(
         repositories,
-        &profile.repo,
-        &source.github_app.account,
+        repository_scope,
+        app.authority.account,
         resolve_auto,
     )?;
     let scope = selection.canonical();
     let repository_names = selection.repository_names();
     tracing::debug!(
-        profile = profile_name,
-        source_profile = profile.source,
-        account = source.github_app.account,
+        profile = *profile_name,
+        source_profile = *source_name,
+        account = app.authority.account,
         selection_source = if repositories.is_empty() {
             "profile"
         } else {
@@ -69,15 +68,16 @@ pub(super) fn prepare<'a>(
         },
         repo_scope = scope,
         repositories = ?repository_names,
-        permissions = ?profile.permissions,
+        permissions = ?permissions,
         "resolved scoped token policy"
     );
-    let base = load_current_base_entry(cache_dir, &profile.source, &source.github_app)?
-        .ok_or_else(|| TokenError::NoSourceBaseTokenCached(profile.source.clone()))?;
+    let base = load_current_base_entry(cache_dir, source_name, &app.authority)?
+        .ok_or_else(|| TokenError::NoSourceBaseTokenCached((*source_name).to_owned()))?;
     Ok(PreparedScopedToken {
         profile_name,
-        profile,
-        source,
+        source_name,
+        app,
+        permissions,
         base,
         scope,
         repositories: repository_names,
@@ -93,34 +93,28 @@ pub(super) fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
 ) -> Result<ValidatedScopedToken, TokenError> {
     if !prepared.base.expires_at.is_safe_to_handoff_at(request_time) {
         tracing::debug!(
-            source_profile = prepared.profile.source,
+            source_profile = prepared.source_name,
             expires_at = %prepared.base.expires_at,
             "base token is inside the handoff safety margin and cannot mint a scoped token"
         );
         return Err(TokenError::NoSourceBaseTokenCached(
-            prepared.profile.source.clone(),
+            prepared.source_name.to_owned(),
         ));
     }
-    let secret = prepared
-        .source
-        .github_app
-        .client_secret
-        .as_deref()
-        .ok_or_else(|| TokenError::ClientSecretRequired(prepared.profile.source.clone()))?;
     tracing::debug!(
-        source_profile = prepared.profile.source,
-        account = prepared.source.github_app.account,
+        source_profile = prepared.source_name,
+        account = prepared.app.authority.account,
         repo_scope = prepared.scope,
-        permissions = ?prepared.profile.permissions,
+        permissions = ?prepared.permissions,
         "requesting scoped token from GitHub"
     );
     let response = client.create_scoped_token(&ScopedTokenRequest {
-        client_id: &prepared.source.github_app.client_id,
-        client_secret: secret,
+        client_id: prepared.app.authority.client_id,
+        client_secret: prepared.app.client_secret,
         base_token: prepared.base.access_token.as_ref(),
-        target: &prepared.source.github_app.account,
+        target: prepared.app.authority.account,
         repositories: prepared.repositories.as_deref(),
-        permissions: &prepared.profile.permissions,
+        permissions: prepared.permissions,
     });
     let response = match response {
         Ok(response) => response,
@@ -129,20 +123,20 @@ pub(super) fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
         }) => return Err(permanent_rejection_error(prepared, cache_dir)?),
         Err(source @ crate::token::RemoteError::Http { status: 403, .. }) => {
             tracing::debug!(
-                source_profile = prepared.profile.source,
-                account = prepared.source.github_app.account,
+                source_profile = prepared.source_name,
+                account = prepared.app.authority.account,
                 repo_scope = prepared.scope,
-                permissions = ?prepared.profile.permissions,
+                permissions = ?prepared.permissions,
                 "GitHub rejected the scoped token request; requested permissions or repository access likely exceed the GitHub App installation's authority ceiling"
             );
             return Err(TokenError::ScopedTokenForbidden {
                 profile: prepared.profile_name.to_owned(),
-                source_profile: prepared.profile.source.clone(),
+                source_profile: prepared.source_name.to_owned(),
                 source,
             });
         }
         Err(source) => {
-            tracing::debug!(source_profile = prepared.profile.source, error = %source, "GitHub scoped token request failed");
+            tracing::debug!(source_profile = prepared.source_name, error = %source, "GitHub scoped token request failed");
             return Err(TokenError::GitHub(source));
         }
     };
@@ -153,7 +147,7 @@ pub(super) fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     } = response;
     match validate_scoped_expiry(expires_at.as_deref(), received_at) {
         Ok(expires_at) => {
-            tracing::debug!(source_profile = prepared.profile.source, expires_at = %expires_at, "validated scoped token lifetime");
+            tracing::debug!(source_profile = prepared.source_name, expires_at = %expires_at, "validated scoped token lifetime");
             Ok(ValidatedScopedToken {
                 access_token,
                 expires_at,
@@ -161,10 +155,10 @@ pub(super) fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
             })
         }
         Err(error) => {
-            tracing::debug!(source_profile = prepared.profile.source, error = %error, "issued scoped token had an invalid lifetime");
+            tracing::debug!(source_profile = prepared.source_name, error = %error, "issued scoped token had an invalid lifetime");
             Err(revoke_with_context(
                 client,
-                prepared.source,
+                &prepared.app.as_registration(),
                 &access_token,
                 error,
             ))
@@ -176,7 +170,7 @@ fn permanent_rejection_error(
     prepared: &PreparedScopedToken<'_>,
     cache_dir: &Path,
 ) -> Result<TokenError, CacheError> {
-    let source_profile = &prepared.profile.source;
+    let source_profile = prepared.source_name;
     let generation = prepared.base.generation_fingerprint();
     let outcome =
         delete_base_if_generation(cache_dir, &base_cache_key(source_profile), &generation)?;
@@ -194,8 +188,10 @@ fn permanent_rejection_error(
                 source_profile,
                 "rejected base token was replaced while minting"
             );
-            return Ok(TokenError::BaseGenerationChanged(source_profile.clone()));
+            return Ok(TokenError::BaseGenerationChanged(source_profile.to_owned()));
         }
     }
-    Ok(TokenError::NoSourceBaseTokenCached(source_profile.clone()))
+    Ok(TokenError::NoSourceBaseTokenCached(
+        source_profile.to_owned(),
+    ))
 }

@@ -5,7 +5,7 @@ use crate::cache::{
     BaseCacheEntry, CACHE_SCHEMA_VERSION, CacheEntry, SaveCacheEntry, authority_fingerprint,
     compute_cache_key, load_cache_entry, save_cache_candidate,
 };
-use crate::config::{AppProfile, GitHubAppConfig};
+use crate::domain::profile::{AppAuthority, AppRegistration};
 use crate::token::{BaseTokenClient, IssuedBaseToken};
 use std::path::Path;
 use time::OffsetDateTime;
@@ -17,10 +17,10 @@ pub fn base_cache_key(profile_name: &str) -> String {
 pub fn load_valid_base_entry(
     cache_dir: &Path,
     profile_name: &str,
-    profile: &AppProfile,
+    authority: &AppAuthority<'_>,
     now: OffsetDateTime,
 ) -> Result<Option<BaseCacheEntry>, TokenError> {
-    let entry = load_current_base_entry(cache_dir, profile_name, &profile.github_app)?;
+    let entry = load_current_base_entry(cache_dir, profile_name, authority)?;
     match entry {
         Some(entry) if entry.expires_at.is_safe_to_handoff_at(now) => {
             tracing::debug!(
@@ -45,16 +45,17 @@ pub fn load_valid_base_entry(
 pub fn load_valid_base_status(
     cache_dir: &Path,
     profile_name: &str,
-    profile: &AppProfile,
+    authority: &AppAuthority<'_>,
     now: OffsetDateTime,
 ) -> Result<Option<BaseTokenStatus>, TokenError> {
-    load_valid_base_entry(cache_dir, profile_name, profile, now).map(|entry| entry.map(base_status))
+    load_valid_base_entry(cache_dir, profile_name, authority, now)
+        .map(|entry| entry.map(base_status))
 }
 
 pub fn load_current_base_entry(
     cache_dir: &Path,
     profile_name: &str,
-    github_app: &GitHubAppConfig,
+    authority: &AppAuthority<'_>,
 ) -> Result<Option<BaseCacheEntry>, TokenError> {
     let key = base_cache_key(profile_name);
     let Some(entry) = load_cache_entry(cache_dir, &key)? else {
@@ -73,11 +74,11 @@ pub fn load_current_base_entry(
     }
     match entry {
         CacheEntry::Base(entry) => {
-            if !super::provenance::matches(github_app, &entry.authority_fingerprint) {
+            if !super::provenance::matches_authority(authority, &entry.authority_fingerprint) {
                 tracing::debug!(
                     profile = profile_name,
-                    account = github_app.account,
-                    client_id = github_app.client_id,
+                    account = authority.account,
+                    client_id = authority.client_id,
                     "cached base token was rejected because its configured authority changed"
                 );
                 return Ok(None);
@@ -102,7 +103,7 @@ pub fn load_current_base_entry(
 
 pub fn persist_base_response<C: BaseTokenClient>(
     client: &C,
-    profile: &AppProfile,
+    app: &AppRegistration<'_>,
     profile_name: &str,
     cache_dir: &Path,
     response: IssuedBaseToken,
@@ -117,7 +118,7 @@ pub fn persist_base_response<C: BaseTokenClient>(
         Ok(expiry) => expiry,
         Err(error) => {
             tracing::debug!(profile = profile_name, error = %error, "issued base token had an invalid lifetime");
-            return Err(revoke_with_context(client, profile, &access_token, error));
+            return Err(revoke_with_context(client, app, &access_token, error));
         }
     };
     tracing::debug!(profile = profile_name, expires_at = %expiry, "validated issued base token lifetime");
@@ -127,7 +128,7 @@ pub fn persist_base_response<C: BaseTokenClient>(
             tracing::debug!(profile = profile_name, error = %error, "failed to identify the GitHub user for issued base token");
             return Err(revoke_with_context(
                 client,
-                profile,
+                app,
                 &access_token,
                 TokenError::GitHub(error),
             ));
@@ -137,8 +138,8 @@ pub fn persist_base_response<C: BaseTokenClient>(
         version: CACHE_SCHEMA_VERSION,
         profile: profile_name.to_owned(),
         authority_fingerprint: authority_fingerprint(
-            &profile.github_app.client_id,
-            &profile.github_app.account,
+            app.authority.client_id,
+            app.authority.account,
         ),
         github_user: user.login,
         expires_at: expiry,
@@ -156,7 +157,7 @@ pub fn persist_base_response<C: BaseTokenClient>(
             tracing::debug!(profile = profile_name, error = %error, "failed to persist issued base token");
             return Err(revoke_with_context(
                 client,
-                profile,
+                app,
                 candidate.access_token(),
                 TokenError::Cache(error),
             ));
@@ -178,7 +179,7 @@ pub fn persist_base_response<C: BaseTokenClient>(
                 );
                 let cleanup = revoke_with_context(
                     client,
-                    profile,
+                    app,
                     candidate.access_token(),
                     TokenError::StaleProvenance {
                         profile: profile_name.to_owned(),

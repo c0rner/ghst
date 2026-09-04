@@ -26,33 +26,35 @@ pub use ports::{
 pub use types::{AcquireRequest, AcquiredToken, BasePersistence, BaseTokenStatus};
 pub use validation::{validate_base_expiry, validate_scoped_expiry};
 
-use crate::config::AppProfile;
+use crate::domain::profile::AppRegistration;
+
 fn revoke_with_context<C: RevokeTokenClient + ?Sized>(
     client: &C,
-    profile: &AppProfile,
+    app: &AppRegistration<'_>,
     token: &crate::cache::AccessToken,
     context: TokenError,
 ) -> TokenError {
-    let Some(secret) = profile.github_app.client_secret.as_deref() else {
+    let Some(secret) = app.client_secret else {
         tracing::warn!(
             "client secret unavailable; unused remote token could not be revoked and may remain active until GitHub invalidates it or it is manually revoked"
         );
         return context;
     };
     tracing::debug!(
-        client_id = profile.github_app.client_id,
+        client_id = app.authority.client_id,
         "revoking unused token after a failed or concurrent operation"
     );
-    match client.delete_token(&profile.github_app.client_id, secret, token.as_ref()) {
+    match client.delete_token(app.authority.client_id, secret, token.as_ref()) {
         Ok(()) => {
-            tracing::debug!(
-                client_id = profile.github_app.client_id,
-                "unused token revoked"
-            );
+            tracing::debug!(client_id = app.authority.client_id, "unused token revoked");
             context
         }
         Err(source) => {
-            tracing::debug!(client_id = profile.github_app.client_id, error = %source, "failed to revoke unused token");
+            tracing::debug!(
+                client_id = app.authority.client_id,
+                error = %source,
+                "failed to revoke unused token"
+            );
             TokenError::RevocationFailed {
                 context: Box::new(context),
                 source,

@@ -3,9 +3,7 @@ mod types;
 mod validation;
 
 pub use error::ConfigError;
-pub use types::{
-    AppProfile, Config, GitHubAppConfig, PermissionLevel, ProfileConfig, RepoScope, ScopedProfile,
-};
+pub use types::{AppProfile, Config, GitHubAppConfig, ProfileConfig};
 
 #[cfg(unix)]
 use std::fs::OpenOptions;
@@ -565,6 +563,7 @@ pub fn cache_dir() -> Result<PathBuf, ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::profile::{PermissionLevel, RepoScope, ResolvedTokenProfile};
 
     const VALID_CONFIG: &str = r#"
 version = 1
@@ -1303,6 +1302,100 @@ permissions = {}
                 reason: "expected a regular file",
                 ..
             })
+        ));
+    }
+
+    #[test]
+    fn test_resolve_token_profile_base_and_scoped() {
+        let config: Config = VALID_CONFIG.parse().unwrap();
+
+        let dev = config.resolve_token_profile("developer").unwrap();
+        match dev {
+            ResolvedTokenProfile::Base { name, app } => {
+                assert_eq!(name, "developer");
+                assert_eq!(app.authority.account, "acme-corp");
+                assert_eq!(app.authority.client_id, "Iv1.8888888888888888");
+                assert_eq!(
+                    app.client_secret,
+                    Some("secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx")
+                );
+            }
+            ResolvedTokenProfile::Scoped { .. } => panic!("expected base profile"),
+        }
+
+        let reader = config.resolve_token_profile("reader").unwrap();
+        match reader {
+            ResolvedTokenProfile::Scoped {
+                name,
+                source_name,
+                app,
+                repository_scope,
+                permissions,
+            } => {
+                assert_eq!(name, "reader");
+                assert_eq!(source_name, "developer");
+                assert_eq!(app.authority.account, "acme-corp");
+                assert_eq!(app.authority.client_id, "Iv1.8888888888888888");
+                assert_eq!(app.client_secret, "secret_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx");
+                assert_eq!(*repository_scope, RepoScope::Auto);
+                assert_eq!(permissions.get("contents"), Some(&PermissionLevel::Read));
+            }
+            ResolvedTokenProfile::Base { .. } => panic!("expected scoped profile"),
+        }
+
+        let resolved_with_temporary_lookup = {
+            let lookup = String::from("reader");
+            config.resolve_token_profile(&lookup).unwrap()
+        };
+        match resolved_with_temporary_lookup {
+            ResolvedTokenProfile::Scoped { name, .. } => assert_eq!(name, "reader"),
+            ResolvedTokenProfile::Base { .. } => panic!("expected scoped profile"),
+        }
+    }
+
+    #[test]
+    fn test_resolve_token_profile_fail_closed_validation() {
+        let config: Config = VALID_CONFIG.parse().unwrap();
+
+        let err = config.resolve_token_profile("unknown").unwrap_err();
+        assert!(matches!(err, ConfigError::ProfileNotFound(ref p) if p == "unknown"));
+
+        let mut malformed = config;
+        if let Some(ProfileConfig::Scoped(scoped)) = malformed.profiles.get_mut("reader") {
+            scoped.source = "missing-source".to_owned();
+        }
+        let err = malformed.resolve_token_profile("reader").unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::ScopedSourceNotFound {
+                ref profile,
+                ref source
+            } if profile == "reader" && source == "missing-source"
+        ));
+
+        if let Some(ProfileConfig::Scoped(scoped)) = malformed.profiles.get_mut("reader") {
+            scoped.source = "security-reviewer".to_owned();
+        }
+        let err = malformed.resolve_token_profile("reader").unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::ScopedFromNonApp {
+                ref profile,
+                ref source
+            } if profile == "reader" && source == "security-reviewer"
+        ));
+
+        let mut bypass = VALID_CONFIG.parse::<Config>().unwrap();
+        if let Some(ProfileConfig::App(app)) = bypass.profiles.get_mut("developer") {
+            app.github_app.client_secret = None;
+        }
+        let err = bypass.resolve_token_profile("reader").unwrap_err();
+        assert!(matches!(
+            err,
+            ConfigError::ScopedFromSecretlessApp {
+                ref profile,
+                ref source
+            } if profile == "reader" && source == "developer"
         ));
     }
 }

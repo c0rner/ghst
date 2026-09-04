@@ -1,7 +1,7 @@
 use crate::browser::{display_auth_instructions, open_auth_url};
 use crate::cache::cache_epoch;
 use crate::cmd::{CmdError, GhstCli, LoginCmd, format_human_expiry, resolve_profile_name};
-use crate::config::ProfileConfig;
+use crate::domain::profile::ResolvedTokenProfile;
 use crate::github::GitHubClient;
 use crate::token::{BasePersistence, DeviceFlow};
 use time::OffsetDateTime;
@@ -11,15 +11,14 @@ use tracing::{debug, info};
 pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
     let config = crate::config::load(args.config.as_deref())?;
     let profile_name = resolve_profile_name(cmd.profile.as_deref(), &config)?;
-    let app_profile = match config.profiles.get(&profile_name) {
-        Some(ProfileConfig::App(app)) => app,
-        Some(ProfileConfig::Scoped(scoped)) => {
+    let app = match config.resolve_token_profile(&profile_name)? {
+        ResolvedTokenProfile::Base { app, .. } => app,
+        ResolvedTokenProfile::Scoped { source_name, .. } => {
             return Err(CmdError::ScopedLoginNotAllowed {
                 profile: profile_name,
-                source: scoped.source.clone(),
+                source: source_name.to_owned(),
             });
         }
-        None => return Err(CmdError::ProfileNotFound(profile_name)),
     };
 
     let cache_dir = crate::config::cache_dir()?;
@@ -30,7 +29,7 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
     if let Some(status) = crate::token::load_valid_base_status(
         &cache_dir,
         &profile_name,
-        app_profile,
+        &app.authority,
         OffsetDateTime::now_utc(),
     )? {
         debug!(
@@ -47,9 +46,9 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
     let mut flow = DeviceFlow::new(&client, std::thread::sleep, &profile_name);
     let epoch = cache_epoch(&cache_dir)?;
     info!(profile = profile_name, "initiating OAuth Device Flow");
-    let device = flow.request_authorization(&app_profile.github_app.client_id)?;
+    let device = flow.request_authorization(app.authority.client_id)?;
     display_auth_instructions(
-        &app_profile.github_app.account,
+        app.authority.account,
         &device.user_code,
         &device.verification_uri,
     );
@@ -65,7 +64,7 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
         poll_interval_seconds = device.interval.as_secs(),
         "device authorization request created"
     );
-    let response = flow.poll_authorization(&app_profile.github_app.client_id, &device)?;
+    let response = flow.poll_authorization(app.authority.client_id, &device)?;
     debug!(
         profile = profile_name,
         "device authorization completed; validating and caching base token"
@@ -73,7 +72,7 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
 
     match crate::token::persist_base_response(
         &client,
-        app_profile,
+        &app,
         &profile_name,
         &cache_dir,
         response,

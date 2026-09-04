@@ -103,7 +103,7 @@ fn shell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::TokenExpiry;
+    use crate::domain::credential::TokenExpiry;
     use time::{Duration, OffsetDateTime};
 
     fn token(access_token: &str) -> AcquiredToken {

@@ -1,11 +1,11 @@
 use std::fmt;
 use std::path::Path;
 
-use crate::cache::TokenExpiry;
+use crate::domain::credential::{AccessToken, TokenExpiry};
 use crate::domain::profile::ResolvedTokenProfile;
 
 pub struct AcquiredToken {
-    pub access_token: crate::cache::AccessToken,
+    pub access_token: AccessToken,
     pub expires_at: TokenExpiry,
     pub profile: String,
     pub repo_scope: String,

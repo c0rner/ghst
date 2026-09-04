@@ -9,8 +9,9 @@ use crate::cache::storage::{
 };
 use crate::cache::types::{
     BaseCacheEntry, CACHE_SCHEMA_VERSION, CacheEntry, RUN_CACHE_SCHEMA_VERSION, ReplaceCacheEntry,
-    RunCacheEntry, RunState, SaveCacheEntry, ScopedCacheEntry, TokenExpiry, authority_fingerprint,
+    RunCacheEntry, RunState, SaveCacheEntry, ScopedCacheEntry, authority_fingerprint,
 };
+use crate::domain::credential::TokenExpiry;
 use std::fs;
 use std::io::Write;
 use std::sync::{Arc, Barrier};

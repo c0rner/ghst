@@ -6,10 +6,8 @@ use super::{
     IssuedScopedToken, ScopedTokenClient, ScopedTokenRequest, TokenError, base_cache_key,
     load_current_base_entry, revoke_with_context, validate_scoped_expiry,
 };
-use crate::cache::{
-    AccessToken, BaseCacheEntry, CacheError, DeleteBaseOutcome, TokenExpiry,
-    delete_base_if_generation,
-};
+use crate::cache::{BaseCacheEntry, CacheError, DeleteBaseOutcome, delete_base_if_generation};
+use crate::domain::credential::{AccessToken, TokenExpiry};
 use crate::domain::profile::{AppCredentials, PermissionLevel, ResolvedTokenProfile};
 use crate::repository::{RepositoryError, RepositorySelection};
 

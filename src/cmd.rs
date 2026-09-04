@@ -17,7 +17,8 @@ use std::path::PathBuf;
 use std::str::FromStr;
 use time::{UtcOffset, error::IndeterminateOffset};
 
-use crate::cache::{TokenExpiry, format_rfc3339};
+use crate::cache::format_rfc3339;
+use crate::domain::credential::TokenExpiry;
 
 pub const GHST_VERSION: &str = env!("CARGO_PKG_VERSION");
 

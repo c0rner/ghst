@@ -1,9 +1,10 @@
 use super::*;
 use crate::cache::{
-    BaseCacheEntry, CACHE_SCHEMA_VERSION, CacheEntry, TokenExpiry, authority_fingerprint,
-    cache_epoch, compute_cache_key, delete_cache_entry, load_cache_entry, save_cache_entry,
+    BaseCacheEntry, CACHE_SCHEMA_VERSION, CacheEntry, authority_fingerprint, cache_epoch,
+    compute_cache_key, delete_cache_entry, load_cache_entry, save_cache_entry,
 };
 use crate::config::Config;
+use crate::domain::credential::TokenExpiry;
 use crate::domain::profile::{AppAuthority, ResolvedTokenProfile};
 use std::cell::RefCell;
 use std::collections::BTreeMap;

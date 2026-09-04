@@ -1,9 +1,10 @@
 use super::{TokenError, base_cache_key, revoke_with_context};
 use crate::cache::{
-    AccessToken, CacheEntry, CacheError, RUN_CACHE_SCHEMA_VERSION, RunCacheEntry, RunState,
-    SaveCacheEntry, cache_epoch, compute_run_cache_key, save_cache_candidate,
+    CacheEntry, CacheError, RUN_CACHE_SCHEMA_VERSION, RunCacheEntry, RunState, SaveCacheEntry,
+    cache_epoch, compute_run_cache_key, save_cache_candidate,
 };
 use crate::config::Config;
+use crate::domain::credential::AccessToken;
 use crate::domain::profile::ResolvedTokenProfile;
 use crate::repository::RepositoryError;
 use crate::token::{RevokeTokenClient, ScopedTokenClient};
@@ -263,9 +264,10 @@ fn generate_run_id() -> Result<String, TokenError> {
 mod tests {
     use super::*;
     use crate::cache::{
-        BaseCacheEntry, CACHE_SCHEMA_VERSION, ScopedCacheEntry, TokenExpiry, authority_fingerprint,
+        BaseCacheEntry, CACHE_SCHEMA_VERSION, ScopedCacheEntry, authority_fingerprint,
         compute_cache_key, compute_run_cache_key, policy_fingerprint, save_cache_entry,
     };
+    use crate::domain::credential::TokenExpiry;
     use crate::token::{IssuedScopedToken, RemoteError, RevokeTokenClient, ScopedTokenRequest};
     use std::cell::{Cell, RefCell};
     use std::collections::BTreeMap;

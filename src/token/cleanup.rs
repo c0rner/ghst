@@ -312,7 +312,7 @@ fn validated_app<'a>(config: &'a Config, entry: &RunCacheEntry) -> Option<&'a Ap
     }
 }
 
-const fn expiry(entry: &CacheEntry) -> crate::cache::TokenExpiry {
+const fn expiry(entry: &CacheEntry) -> crate::domain::credential::TokenExpiry {
     match entry {
         CacheEntry::Base(entry) => entry.expires_at,
         CacheEntry::Scoped(entry) => entry.expires_at,
@@ -343,9 +343,10 @@ fn pid_is_alive(_pid: u32) -> bool {
 mod tests {
     use super::*;
     use crate::cache::{
-        RUN_CACHE_SCHEMA_VERSION, RunState, TokenExpiry, authority_fingerprint,
-        compute_run_cache_key, load_cache_entry, save_cache_entry,
+        RUN_CACHE_SCHEMA_VERSION, RunState, authority_fingerprint, compute_run_cache_key,
+        load_cache_entry, save_cache_entry,
     };
+    use crate::domain::credential::TokenExpiry;
     use std::cell::{Cell, RefCell};
     use time::Duration;
 

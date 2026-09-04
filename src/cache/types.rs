@@ -1,103 +1,14 @@
 use crate::cache::digest::encode_hex;
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use crate::domain::credential::{AccessToken, TokenExpiry};
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fmt;
+use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
-use time::{Duration, OffsetDateTime};
-use zeroize::Zeroizing;
 
 pub const CACHE_SCHEMA_VERSION: u32 = 5;
 pub const RUN_CACHE_SCHEMA_VERSION: u32 = 3;
-pub const TOKEN_SAFETY_MARGIN: Duration = Duration::seconds(30);
-pub const SCOPED_TOKEN_RENEWAL_WINDOW: Duration = Duration::minutes(10);
-
-/// A secret access token that is zeroized on drop and never exposed by `Debug`.
-#[derive(PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct AccessToken(Zeroizing<String>);
-
-impl AccessToken {
-    pub fn new(value: String) -> Self {
-        Self(Zeroizing::new(value))
-    }
-}
-
-impl AsRef<str> for AccessToken {
-    fn as_ref(&self) -> &str {
-        self.0.as_str()
-    }
-}
-
-impl From<String> for AccessToken {
-    fn from(value: String) -> Self {
-        Self::new(value)
-    }
-}
-
-impl From<&str> for AccessToken {
-    fn from(value: &str) -> Self {
-        Self::new(value.to_owned())
-    }
-}
-
-impl fmt::Debug for AccessToken {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str("[REDACTED]")
-    }
-}
-
-/// A parsed RFC 3339 token expiration timestamp.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct TokenExpiry(OffsetDateTime);
-
-impl TokenExpiry {
-    pub const fn new(value: OffsetDateTime) -> Self {
-        Self(value)
-    }
-
-    pub const fn value(self) -> OffsetDateTime {
-        self.0
-    }
-
-    pub fn parse(value: &str) -> Result<Self, time::error::Parse> {
-        OffsetDateTime::parse(value, &Rfc3339).map(Self)
-    }
-
-    pub fn is_safe_to_handoff_at(self, now: OffsetDateTime) -> bool {
-        self.0 > now + TOKEN_SAFETY_MARGIN
-    }
-
-    pub fn is_due_for_renewal_at(self, now: OffsetDateTime) -> bool {
-        self.0 <= now + SCOPED_TOKEN_RENEWAL_WINDOW
-    }
-}
-
-impl fmt::Display for TokenExpiry {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let value = self.0.format(&Rfc3339).map_err(|_| fmt::Error)?;
-        f.write_str(&value)
-    }
-}
-
-impl Serialize for TokenExpiry {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
-}
-
-impl<'de> Deserialize<'de> for TokenExpiry {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let value = String::deserialize(deserializer)?;
-        Self::parse(&value).map_err(serde::de::Error::custom)
-    }
-}
 
 #[derive(PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

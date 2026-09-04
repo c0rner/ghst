@@ -141,9 +141,10 @@ fn write_entry(
 mod tests {
     use super::*;
     use crate::cache::{
-        AccessToken, CacheEntry, RUN_CACHE_SCHEMA_VERSION, RunCacheEntry, RunState, TokenExpiry,
-        authority_fingerprint, compute_run_cache_key, save_cache_entry,
+        CacheEntry, RUN_CACHE_SCHEMA_VERSION, RunCacheEntry, RunState, authority_fingerprint,
+        compute_run_cache_key, save_cache_entry,
     };
+    use crate::domain::credential::{AccessToken, TokenExpiry};
     use time::Duration;
 
     #[test]

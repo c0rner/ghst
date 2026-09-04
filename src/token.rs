@@ -31,7 +31,7 @@ use crate::domain::profile::AppRegistration;
 fn revoke_with_context<C: RevokeTokenClient + ?Sized>(
     client: &C,
     app: &AppRegistration<'_>,
-    token: &crate::cache::AccessToken,
+    token: &crate::domain::credential::AccessToken,
     context: TokenError,
 ) -> TokenError {
     let Some(secret) = app.client_secret else {

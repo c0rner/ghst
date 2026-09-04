@@ -5,7 +5,7 @@ GitHub CLI signed out, `ghst` can instead supply a GitHub-issued, typically eigh
 access token to a trusted interactive shell. The actual lifetime is set by GitHub and reported by
 `ghst`.
 
-The workflow creates two deliberate trust levels:
+The workflow uses two deliberate credential scopes:
 
 - The human-operated shell receives an expiring base token for ordinary `gh` commands.
 - Each less-trusted foreground command receives a fresh token narrowed to selected repositories
@@ -28,7 +28,7 @@ invalid.
 $ ghst login --profile base-profile
 ```
 
-Complete Device Flow from a trusted terminal and browser. `ghst` caches the expiring base token
+Complete the Device Flow from a trusted terminal and browser. `ghst` caches the expiring base token
 and immediately destroys the refresh token. This step does not export a credential into the shell.
 
 ## 3. Export the base token into a trusted shell
@@ -66,3 +66,7 @@ $ ghst run --profile scoped-profile -- some-command
 scoped token. The parent shell retains its base token, and `ghst` requests revocation of the run
 token when the command exits. This preserves the normal GitHub CLI experience for the human while
 preventing the child from inheriting the base token through those environment variables.
+
+This environment replacement is not a process-isolation boundary. Without an OS sandbox, a child
+running as your user may still read host state such as `~/.cache/ghst/` or another process's
+environment. Follow the [sandboxing recipe](sandboxing.md) when running less-trusted commands.

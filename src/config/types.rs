@@ -1,6 +1,9 @@
-use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fmt;
+
+use serde::Deserialize;
+
+use crate::domain::profile::{PermissionLevel, RepoScope};
 
 #[derive(PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -113,44 +116,5 @@ impl fmt::Debug for ScopedProfile {
             .field("repo", &self.repo)
             .field("permissions", &self.permissions)
             .finish()
-    }
-}
-
-#[derive(Debug, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum RepoScope {
-    All,
-    #[default]
-    Auto,
-    #[serde(untagged)]
-    Specific(String),
-    #[serde(untagged)]
-    Multiple(Vec<String>),
-}
-
-impl fmt::Display for RepoScope {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::All => write!(f, "all"),
-            Self::Auto => write!(f, "auto"),
-            Self::Specific(repo) => write!(f, "{repo}"),
-            Self::Multiple(repositories) => write!(f, "[{}]", repositories.join(", ")),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PermissionLevel {
-    Read,
-    Write,
-}
-
-impl fmt::Display for PermissionLevel {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Read => write!(f, "read"),
-            Self::Write => write!(f, "write"),
-        }
     }
 }

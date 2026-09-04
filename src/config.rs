@@ -3,9 +3,7 @@ mod types;
 mod validation;
 
 pub use error::ConfigError;
-pub use types::{
-    AppProfile, Config, GitHubAppConfig, PermissionLevel, ProfileConfig, RepoScope, ScopedProfile,
-};
+pub use types::{AppProfile, Config, GitHubAppConfig, ProfileConfig, ScopedProfile};
 
 #[cfg(unix)]
 use std::fs::OpenOptions;
@@ -565,6 +563,7 @@ pub fn cache_dir() -> Result<PathBuf, ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::profile::{PermissionLevel, RepoScope};
 
     const VALID_CONFIG: &str = r#"
 version = 1

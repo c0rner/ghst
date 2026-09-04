@@ -1,6 +1,7 @@
-use crate::config::RepoScope;
 use std::collections::BTreeSet;
 use std::fmt;
+
+use crate::domain::profile::RepoScope;
 
 #[derive(Debug)]
 pub enum RepositoryError {

@@ -2,6 +2,7 @@ mod browser;
 mod cache;
 mod cmd;
 mod config;
+mod domain;
 mod git;
 mod github;
 mod repository;

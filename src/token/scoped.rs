@@ -3,12 +3,13 @@ use std::path::Path;
 use time::OffsetDateTime;
 
 use super::{
-    IssuedScopedToken, ScopedTokenClient, ScopedTokenRequest, TokenError, base_cache_key,
-    load_current_base_entry, revoke_with_context, validate_scoped_expiry,
+    TokenError, base_cache_key, load_current_base_entry, revoke_with_context,
+    validate_scoped_expiry,
 };
 use crate::cache::{BaseCacheEntry, CacheError, DeleteBaseOutcome, delete_base_if_generation};
 use crate::domain::credential::{AccessToken, TokenExpiry};
 use crate::domain::profile::{AppCredentials, PermissionLevel};
+use crate::ports::scoped::{IssuedScopedToken, ScopedTokenClient, ScopedTokenRequest};
 use crate::repository::RepositorySelection;
 
 pub(super) struct PreparedScopedToken<'a> {
@@ -93,10 +94,10 @@ pub(super) fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     });
     let response = match response {
         Ok(response) => response,
-        Err(crate::token::RemoteError::Http {
+        Err(crate::ports::remote::RemoteError::Http {
             status: 401 | 404, ..
         }) => return Err(permanent_rejection_error(prepared, cache_dir)?),
-        Err(source @ crate::token::RemoteError::Http { status: 403, .. }) => {
+        Err(source @ crate::ports::remote::RemoteError::Http { status: 403, .. }) => {
             tracing::debug!(
                 source_profile = prepared.source_name,
                 account = prepared.app.authority.account,

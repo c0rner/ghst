@@ -1,8 +1,9 @@
 use crate::cache::compute_cache_key;
 use crate::cmd::{CmdError, GhstCli, OutputFormat, TokenCmd, resolve_profile_name};
 use crate::github::GitHubClient;
+use crate::ports::scoped::ScopedTokenClient;
 use crate::repository::RepositoryError;
-use crate::token::{AcquireRequest, AcquiredToken, ScopedTokenClient};
+use crate::token::{AcquireRequest, AcquiredToken};
 use std::io::{self, Write};
 use std::path::Path;
 

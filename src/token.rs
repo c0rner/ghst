@@ -3,7 +3,6 @@ mod base;
 pub mod cleanup;
 mod device_flow;
 mod error;
-mod ports;
 mod provenance;
 pub mod revoke;
 pub mod run;
@@ -18,15 +17,11 @@ pub use base::{
 };
 pub use device_flow::{DeviceFlow, DeviceFlowError};
 pub use error::TokenError;
-pub use ports::{
-    BaseTokenClient, DeviceAuthorization, DeviceFlowClient, DeviceFlowPoll, GitHubUser,
-    IssuedBaseToken, IssuedScopedToken, RemoteError, RevokeTokenClient, ScopedTokenClient,
-    ScopedTokenRequest,
-};
 pub use types::{AcquireRequest, AcquiredToken, BasePersistence, BaseTokenStatus};
 pub use validation::{validate_base_expiry, validate_scoped_expiry};
 
 use crate::domain::profile::AppRegistration;
+use crate::ports::remote::RevokeTokenClient;
 
 fn revoke_with_context<C: RevokeTokenClient + ?Sized>(
     client: &C,

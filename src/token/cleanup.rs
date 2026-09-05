@@ -3,7 +3,7 @@ use crate::cache::{
     delete_entry_if_unchanged, delete_run_after_cleanup, inspect_cache,
 };
 use crate::config::{AppProfile, Config};
-use crate::token::{RemoteError, RevokeTokenClient};
+use crate::ports::remote::{RemoteError, RevokeTokenClient};
 use std::path::Path;
 use time::OffsetDateTime;
 

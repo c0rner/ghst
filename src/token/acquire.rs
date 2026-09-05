@@ -1,3 +1,4 @@
+use crate::domain::provenance::ScopedProvenance;
 use std::path::Path;
 use time::OffsetDateTime;
 
@@ -11,7 +12,7 @@ use crate::cache::{
     save_cache_candidate,
 };
 use crate::domain::profile::AppAuthority;
-use crate::token::ScopedTokenClient;
+use crate::ports::scoped::ScopedTokenClient;
 
 pub fn acquire<C: ScopedTokenClient>(
     client: &C,
@@ -104,13 +105,17 @@ fn acquire_scoped<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
         cache_key,
         "prepared scoped token acquisition"
     );
+    let source_authority = crate::cache::authority_fingerprint(
+        prepared.app.authority.client_id,
+        prepared.app.authority.account,
+    );
     let provenance = ScopedProvenance {
-        profile_name: prepared.profile_name,
-        source_name: prepared.source_name,
-        canonical_scope: &prepared.scope,
+        profile: prepared.profile_name,
+        source_profile: prepared.source_name,
+        repo_scope: &prepared.scope,
         policy: &policy,
         parent_generation: &generation,
-        source_authority: &prepared.app.authority,
+        source_authority: &source_authority,
     };
     let renewal = match classify_scoped_entry(cache_dir, &cache_key, &provenance, now())? {
         CachedScoped::Fresh(entry) => {
@@ -142,15 +147,6 @@ fn acquire_scoped<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     )
 }
 
-struct ScopedProvenance<'a> {
-    profile_name: &'a str,
-    source_name: &'a str,
-    canonical_scope: &'a str,
-    policy: &'a str,
-    parent_generation: &'a str,
-    source_authority: &'a AppAuthority<'a>,
-}
-
 enum CachedScoped {
     Fresh(ScopedCacheEntry),
     Renewable(ScopedCacheEntry),
@@ -165,41 +161,27 @@ fn classify_scoped_entry(
 ) -> Result<CachedScoped, TokenError> {
     let Some(entry) = load_cache_entry(cache_dir, cache_key)? else {
         tracing::debug!(
-            profile = provenance.profile_name,
+            profile = provenance.profile,
             cache_key,
             "scoped token cache miss"
         );
         return Ok(CachedScoped::MissingOrUnsafe);
     };
-    if entry.profile() != provenance.profile_name {
+    if entry.profile() != provenance.profile {
         return Err(TokenError::InconsistentCacheMetadata {
-            profile: provenance.profile_name.to_owned(),
+            profile: provenance.profile.to_owned(),
             found: entry.profile().to_owned(),
         });
     }
     match entry {
         CacheEntry::Scoped(entry) => {
-            let rejection = if entry.source_profile != provenance.source_name {
-                Some("source profile changed")
-            } else if !super::provenance::matches_authority(
-                provenance.source_authority,
-                &entry.source_authority_fingerprint,
-            ) {
-                Some("source GitHub App authority changed")
-            } else if entry.repo_scope != provenance.canonical_scope {
-                Some("repository scope changed")
-            } else if entry.policy_fingerprint != provenance.policy {
-                Some("permissions or target account changed")
-            } else if entry.parent_generation != provenance.parent_generation {
-                Some("parent base token generation changed")
-            } else if !entry.expires_at.is_safe_to_handoff_at(now) {
-                Some("token is expired or inside the handoff safety margin")
-            } else {
-                None
-            };
+            let rejection = entry.provenance().mismatch(provenance).or_else(|| {
+                (!entry.expires_at.is_safe_to_handoff_at(now))
+                    .then_some("token is expired or inside the handoff safety margin")
+            });
             if let Some(reason) = rejection {
                 tracing::debug!(
-                    profile = provenance.profile_name,
+                    profile = provenance.profile,
                     cache_key,
                     expires_at = %entry.expires_at,
                     reason,
@@ -214,7 +196,7 @@ fn classify_scoped_entry(
         }
         other @ (CacheEntry::Base(_) | CacheEntry::Run(_)) => {
             Err(TokenError::UnexpectedCacheKind {
-                profile: provenance.profile_name.to_owned(),
+                profile: provenance.profile.to_owned(),
                 expected: "scoped",
                 actual: other.kind_name(),
             })

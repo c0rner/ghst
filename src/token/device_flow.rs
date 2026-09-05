@@ -1,6 +1,6 @@
-use crate::token::{
-    DeviceAuthorization, DeviceFlowClient, DeviceFlowPoll, IssuedBaseToken, RemoteError,
-};
+use crate::ports::base::IssuedBaseToken;
+use crate::ports::device::{DeviceAuthorization, DeviceFlowClient, DeviceFlowPoll};
+use crate::ports::remote::RemoteError;
 use std::fmt;
 use std::time::Duration;
 use tracing::{debug, warn};

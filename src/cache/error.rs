@@ -19,6 +19,9 @@ pub enum CacheError {
         actual: &'static str,
     },
     RunCollision(String),
+    RunLifecycle {
+        source: crate::domain::run::RunLifecycleError,
+    },
     InvalidRunTransition(&'static str),
     MalformedEpoch,
     EpochExhausted,
@@ -59,6 +62,7 @@ impl fmt::Display for CacheError {
                 )
             }
             Self::RunCollision(key) => write!(f, "run cache key collision at '{key}'"),
+            Self::RunLifecycle { source } => write!(f, "invalid run cache lifecycle: {source}"),
             Self::InvalidRunTransition(reason) => {
                 write!(f, "invalid run cache lifecycle transition: {reason}")
             }
@@ -101,6 +105,7 @@ impl fmt::Display for CacheError {
 impl std::error::Error for CacheError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::RunLifecycle { source } => Some(source),
             Self::Io(err) => Some(err),
             Self::Json(err) => Some(err),
             Self::InsecurePath { .. }
@@ -117,5 +122,11 @@ impl std::error::Error for CacheError {
             | Self::UnsupportedSchema { .. }
             | Self::Platform(_) => None,
         }
+    }
+}
+
+impl From<crate::domain::run::RunLifecycleError> for CacheError {
+    fn from(source: crate::domain::run::RunLifecycleError) -> Self {
+        Self::RunLifecycle { source }
     }
 }

@@ -6,6 +6,9 @@ use crate::cache::{
 use crate::config::Config;
 use crate::domain::credential::TokenExpiry;
 use crate::domain::profile::{AppAuthority, ResolvedTokenProfile};
+use crate::ports::base::{BaseTokenClient, GitHubUser, IssuedBaseToken};
+use crate::ports::remote::{RemoteError, RevokeTokenClient};
+use crate::ports::scoped::{IssuedScopedToken, ScopedTokenClient, ScopedTokenRequest};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::Path;

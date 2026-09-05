@@ -283,6 +283,9 @@ fn persist_cache_file(
 }
 
 fn validate_entry_key(hash_key: &str, entry: &CacheEntry) -> Result<(), CacheError> {
+    if let CacheEntry::Run(run) = entry {
+        run.lifecycle()?;
+    }
     let actual_key = match entry {
         CacheEntry::Base(_) | CacheEntry::Scoped(_) => {
             compute_cache_key(entry.profile(), entry.repo_scope())
@@ -305,12 +308,13 @@ pub fn claim_abandoned_run(
     expected: &RunCacheEntry,
 ) -> Result<RunCacheEntry, CacheError> {
     update_run(cache_dir, cache_key, |entry| {
-        if entry != expected || !matches!(entry.state, RunState::Pending | RunState::Running) {
+        if entry != expected {
             return Err(CacheError::InvalidRunTransition(
                 "abandoned run changed while checking liveness",
             ));
         }
-        entry.state = RunState::CleanupPending;
+        let phase = entry.lifecycle()?.claim_abandoned()?;
+        entry.set_phase(phase);
         Ok(())
     })
 }
@@ -426,13 +430,11 @@ pub(super) fn update_run(
             }
         };
         operation(&mut entry)?;
-        let bytes = serde_json::to_vec_pretty(&CacheEntry::Run(entry)).map_err(CacheError::Json)?;
+        let entry = CacheEntry::Run(entry);
+        let bytes = serde_json::to_vec_pretty(&entry).map_err(CacheError::Json)?;
         persist_cache_file(cache_dir, &path, &bytes)?;
-        let CacheEntry::Run(entry) = read_cache_entry(&path)?.ok_or(
-            CacheError::InvalidRunTransition("run recovery entry disappeared after transition"),
-        )?
-        else {
-            unreachable!("persisted run entry changed kind")
+        let CacheEntry::Run(entry) = entry else {
+            unreachable!("entry is a run")
         };
         Ok(entry)
     })
@@ -552,10 +554,15 @@ fn read_cache_entry(cache_file: &Path) -> Result<Option<CacheEntry>, CacheError>
                 });
             }
             serde_json::from_str(&content)
-                .map(Some)
                 .map_err(|error| {
                     tracing::debug!(path = %cache_file.display(), error = %error, "failed to decode current cache entry");
                     CacheError::Json(error)
+                })
+                .and_then(|entry| {
+                    if let CacheEntry::Run(run) = &entry {
+                        run.lifecycle()?;
+                    }
+                    Ok(Some(entry))
                 })
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),

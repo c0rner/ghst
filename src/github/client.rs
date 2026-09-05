@@ -2,11 +2,10 @@ use crate::github::types::{
     AccessTokenResponse, DeviceCodeResponse, ScopedTokenRequest as ScopedTokenBody,
     ScopedTokenResponse, UserResponse,
 };
-use crate::token::{
-    BaseTokenClient, DeviceAuthorization, DeviceFlowClient, DeviceFlowPoll, GitHubUser,
-    IssuedBaseToken, IssuedScopedToken, RemoteError, RevokeTokenClient, ScopedTokenClient,
-    ScopedTokenRequest,
-};
+use crate::ports::base::{BaseTokenClient, GitHubUser, IssuedBaseToken};
+use crate::ports::device::{DeviceAuthorization, DeviceFlowClient, DeviceFlowPoll};
+use crate::ports::remote::{RemoteError, RevokeTokenClient};
+use crate::ports::scoped::{IssuedScopedToken, ScopedTokenClient, ScopedTokenRequest};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde::de::DeserializeOwned;

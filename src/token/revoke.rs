@@ -1,6 +1,6 @@
 use crate::cache::{CacheInspectionState, revoke_transaction};
 use crate::config::Config;
-use crate::token::{RemoteError, RevokeTokenClient};
+use crate::ports::remote::{RemoteError, RevokeTokenClient};
 use std::path::Path;
 use time::OffsetDateTime;
 

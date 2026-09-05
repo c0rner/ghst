@@ -6,7 +6,7 @@ use crate::cache::{
     compute_cache_key, load_cache_entry, save_cache_candidate,
 };
 use crate::domain::profile::{AppAuthority, AppRegistration};
-use crate::token::{BaseTokenClient, IssuedBaseToken};
+use crate::ports::base::{BaseTokenClient, IssuedBaseToken};
 use std::path::Path;
 use time::OffsetDateTime;
 

@@ -11,8 +11,9 @@ use crate::cache::{
 use crate::config::Config;
 use crate::domain::credential::AccessToken;
 use crate::domain::profile::{AppCredentials, PermissionLevel};
+use crate::ports::remote::RevokeTokenClient;
+use crate::ports::scoped::ScopedTokenClient;
 use crate::repository::RepositorySelection;
-use crate::token::{RevokeTokenClient, ScopedTokenClient};
 
 pub struct MintRunRequest<'a> {
     pub cache_dir: &'a Path,
@@ -269,7 +270,8 @@ mod tests {
         compute_cache_key, compute_run_cache_key, policy_fingerprint, save_cache_entry,
     };
     use crate::domain::credential::TokenExpiry;
-    use crate::token::{IssuedScopedToken, RemoteError, RevokeTokenClient, ScopedTokenRequest};
+    use crate::ports::remote::{RemoteError, RevokeTokenClient};
+    use crate::ports::scoped::{IssuedScopedToken, ScopedTokenRequest};
     use std::cell::{Cell, RefCell};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -604,7 +606,7 @@ permissions = { contents = "read" }
         assert!(!debug.contains("token-owned"));
         assert!(debug.contains("[REDACTED]"));
         let (source, recovered) = error.into_parts();
-        assert!(matches!(source, CacheError::InvalidRunTransition(_)));
+        assert!(matches!(source, CacheError::RunLifecycle { .. }));
         assert_eq!(recovered.access_token(), "token-owned");
     }
 

@@ -1,7 +1,8 @@
 use crate::cache::CacheError;
 use crate::config::ConfigError;
+use crate::ports::remote::RemoteError;
 use crate::repository::RepositoryError;
-use crate::token::{DeviceFlowError, RemoteError, TokenError};
+use crate::token::{DeviceFlowError, TokenError};
 use std::fmt;
 use std::path::PathBuf;
 

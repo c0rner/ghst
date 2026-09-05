@@ -1,5 +1,7 @@
 use crate::cache::digest::encode_hex;
 use crate::domain::credential::{AccessToken, TokenExpiry};
+use crate::domain::provenance::ScopedProvenance;
+use crate::domain::run::{RunLifecycle, RunLifecycleError, RunOwner, RunPhase};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -76,15 +78,10 @@ impl CacheEntry {
                 existing.profile == candidate.profile
                     && existing.authority_fingerprint == candidate.authority_fingerprint
             }
-            (Self::Scoped(existing), Self::Scoped(candidate)) => {
-                existing.profile == candidate.profile
-                    && existing.source_profile == candidate.source_profile
-                    && existing.source_authority_fingerprint
-                        == candidate.source_authority_fingerprint
-                    && existing.repo_scope == candidate.repo_scope
-                    && existing.parent_generation == candidate.parent_generation
-                    && existing.policy_fingerprint == candidate.policy_fingerprint
-            }
+            (Self::Scoped(existing), Self::Scoped(candidate)) => existing
+                .provenance()
+                .mismatch(&candidate.provenance())
+                .is_none(),
             _ => false,
         }
     }
@@ -145,6 +142,19 @@ pub struct ScopedCacheEntry {
     pub access_token: AccessToken,
 }
 
+impl ScopedCacheEntry {
+    pub fn provenance(&self) -> ScopedProvenance<'_> {
+        ScopedProvenance {
+            profile: &self.profile,
+            source_profile: &self.source_profile,
+            source_authority: &self.source_authority_fingerprint,
+            repo_scope: &self.repo_scope,
+            policy: &self.policy_fingerprint,
+            parent_generation: &self.parent_generation,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunState {
@@ -169,6 +179,32 @@ pub struct RunCacheEntry {
     pub repo_scope: String,
     pub expires_at: TokenExpiry,
     pub access_token: AccessToken,
+}
+
+impl RunCacheEntry {
+    pub fn lifecycle(&self) -> Result<RunLifecycle<'_>, RunLifecycleError> {
+        let phase = match (self.state, self.child_pid) {
+            (RunState::Pending, None) => RunPhase::Pending,
+            (RunState::Running, Some(child_pid)) => RunPhase::Running { child_pid },
+            (RunState::CleanupPending, child_pid) => RunPhase::CleanupPending { child_pid },
+            _ => return Err(RunLifecycleError::InvalidChild),
+        };
+        Ok(RunLifecycle::new(
+            RunOwner {
+                run_id: &self.run_id,
+                wrapper_pid: self.wrapper_pid,
+            },
+            phase,
+        ))
+    }
+
+    pub const fn set_phase(&mut self, phase: RunPhase) {
+        (self.state, self.child_pid) = match phase {
+            RunPhase::Pending => (RunState::Pending, None),
+            RunPhase::Running { child_pid } => (RunState::Running, Some(child_pid)),
+            RunPhase::CleanupPending { child_pid } => (RunState::CleanupPending, child_pid),
+        };
+    }
 }
 
 impl fmt::Debug for RunCacheEntry {

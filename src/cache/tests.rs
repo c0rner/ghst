@@ -43,7 +43,7 @@ fn run_entry(run_id: &str, state: RunState) -> CacheEntry {
         run_id: run_id.into(),
         state,
         wrapper_pid: 100,
-        child_pid: None,
+        child_pid: (state == RunState::Running).then_some(101),
         command: "true".into(),
         profile: "reader".into(),
         source_profile: "developer".into(),
@@ -228,16 +228,18 @@ fn run_lifecycle_transitions_require_exact_ownership() {
     let directory = temp.path().join("cache");
     let key = compute_run_cache_key("owned-run");
     save_cache_entry(&directory, &key, &run_entry("owned-run", RunState::Pending)).unwrap();
+    let before = fs::read(cache_file_path(&directory, &key)).unwrap();
     assert!(matches!(
         run_storage::activate(&directory, &key, "wrong", 100, 200),
-        Err(CacheError::InvalidRunTransition(_))
+        Err(CacheError::RunLifecycle { .. })
     ));
+    assert_eq!(fs::read(cache_file_path(&directory, &key)).unwrap(), before);
     let running = run_storage::activate(&directory, &key, "owned-run", 100, 200).unwrap();
     assert_eq!(running.state, RunState::Running);
     assert_eq!(running.child_pid, Some(200));
     assert!(matches!(
         run_storage::finish(&directory, &key, "owned-run", 100, 201),
-        Err(CacheError::InvalidRunTransition(_))
+        Err(CacheError::RunLifecycle { .. })
     ));
     let claimed = run_storage::finish(&directory, &key, "owned-run", 100, 200).unwrap();
     assert_eq!(claimed.state, RunState::CleanupPending);
@@ -688,4 +690,40 @@ fn concurrent_saves_retain_one_compatible_winner() {
             .count(),
         1
     );
+}
+
+#[test]
+fn invalid_decoded_run_lifecycle_is_rejected_and_retained() {
+    for (state, child_pid) in [(RunState::Pending, Some(101)), (RunState::Running, None)] {
+        let temp = cache_dir();
+        let directory = temp.path().join("cache");
+        ensure_cache_dir(&directory).unwrap();
+        let key = compute_run_cache_key("invalid-lifecycle");
+        let path = cache_file_path(&directory, &key);
+        let CacheEntry::Run(mut invalid) = run_entry("invalid-lifecycle", state) else {
+            unreachable!()
+        };
+        invalid.child_pid = child_pid;
+        let bytes = serde_json::to_vec(&CacheEntry::Run(invalid)).unwrap();
+        let mut file = create_private_tempfile(&directory).unwrap();
+        file.write_all(&bytes).unwrap();
+        file.persist(&path).unwrap();
+
+        assert!(matches!(
+            load_cache_entry(&directory, &key),
+            Err(CacheError::RunLifecycle {
+                source: crate::domain::run::RunLifecycleError::InvalidChild
+            })
+        ));
+        assert!(run_storage::activate(&directory, &key, "invalid-lifecycle", 100, 200).is_err());
+        assert!(
+            save_cache_entry(
+                &directory,
+                &key,
+                &run_entry("invalid-lifecycle", RunState::Pending)
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+    }
 }

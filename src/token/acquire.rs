@@ -251,15 +251,27 @@ fn mint_and_persist<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
         .base
         .expires_at
         .is_safe_to_handoff_at(request_time)
-        && let Some(entry) = mint.renewal
     {
-        tracing::debug!(
-            profile = mint.prepared.profile_name,
-            base_expires_at = %mint.prepared.base.expires_at,
-            scoped_expires_at = %entry.expires_at,
-            "base token cannot safely mint a replacement; returning provenance-valid cached scoped token"
-        );
-        return Ok(acquired_scoped(entry));
+        if let Some(entry) = mint.renewal {
+            if entry.expires_at.is_safe_to_handoff_at(request_time) {
+                tracing::debug!(
+                    profile = mint.prepared.profile_name,
+                    base_expires_at = %mint.prepared.base.expires_at,
+                    scoped_expires_at = %entry.expires_at,
+                    "base token cannot safely mint a replacement; returning provenance-valid cached scoped token"
+                );
+                return Ok(acquired_scoped(entry));
+            }
+            tracing::debug!(
+                profile = mint.prepared.profile_name,
+                base_expires_at = %mint.prepared.base.expires_at,
+                scoped_expires_at = %entry.expires_at,
+                "base token cannot safely mint a replacement and cached scoped token is inside the handoff safety margin"
+            );
+        }
+        return Err(TokenError::NoSourceBaseTokenCached(
+            mint.prepared.source_name.to_owned(),
+        ));
     }
     let issued = super::scoped::issue(client, &mint.prepared, cache_dir, request_time, now)?;
     tracing::debug!(profile = mint.prepared.profile_name, expires_at = %issued.expires_at, "received valid scoped token from GitHub");

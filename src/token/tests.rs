@@ -678,6 +678,68 @@ fn renewable_scoped_token_falls_back_when_base_is_not_usable() {
 }
 
 #[test]
+fn fallback_child_inside_handoff_margin_is_rejected_when_base_cannot_mint() {
+    let now = OffsetDateTime::now_utc();
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    cache_base(&cache_dir, now, "base-token");
+    cache_scoped(&cache_dir, now + Duration::seconds(31), "renewable-child");
+    let base_key = base_cache_key("developer");
+    let CacheEntry::Base(mut base) = load_cache_entry(&cache_dir, &base_key).unwrap().unwrap()
+    else {
+        panic!("expected base")
+    };
+    delete_cache_entry(&cache_dir, &base_key).unwrap();
+    base.expires_at = TokenExpiry::new(now + Duration::seconds(30));
+    save_cache_entry(&cache_dir, &base_key, &CacheEntry::Base(base)).unwrap();
+    let client = no_response_client();
+    let config: Config = CONFIG.parse().unwrap();
+    let profile = config.resolve_token_profile("reader").unwrap();
+    let mut times = [now, now + Duration::seconds(2)].into_iter();
+
+    let result =
+        super::acquire::acquire_with_clock(&client, scoped_request(&cache_dir, &profile), || {
+            times.next().unwrap()
+        });
+
+    assert!(matches!(
+        result,
+        Err(TokenError::NoSourceBaseTokenCached(_))
+    ));
+    assert!(client.request.borrow().is_none());
+}
+
+#[test]
+fn fallback_child_on_valid_side_of_handoff_margin_is_returned_when_base_cannot_mint() {
+    let now = OffsetDateTime::now_utc();
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    cache_base(&cache_dir, now, "base-token");
+    cache_scoped(&cache_dir, now + Duration::seconds(33), "renewable-child");
+    let base_key = base_cache_key("developer");
+    let CacheEntry::Base(mut base) = load_cache_entry(&cache_dir, &base_key).unwrap().unwrap()
+    else {
+        panic!("expected base")
+    };
+    delete_cache_entry(&cache_dir, &base_key).unwrap();
+    base.expires_at = TokenExpiry::new(now + Duration::seconds(30));
+    save_cache_entry(&cache_dir, &base_key, &CacheEntry::Base(base)).unwrap();
+    let client = no_response_client();
+    let config: Config = CONFIG.parse().unwrap();
+    let profile = config.resolve_token_profile("reader").unwrap();
+    let mut times = [now, now + Duration::seconds(2)].into_iter();
+
+    let acquired =
+        super::acquire::acquire_with_clock(&client, scoped_request(&cache_dir, &profile), || {
+            times.next().unwrap()
+        })
+        .unwrap();
+
+    assert_eq!(acquired.access_token.as_ref(), "renewable-child");
+    assert!(client.request.borrow().is_none());
+}
+
+#[test]
 fn token_inside_handoff_margin_is_never_returned() {
     let now = OffsetDateTime::now_utc();
     let temp = tempfile::tempdir().unwrap();

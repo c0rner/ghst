@@ -1,3 +1,6 @@
+use std::path::Path;
+use time::OffsetDateTime;
+
 use super::{
     AcquireRequest, AcquiredToken, TokenError, base_cache_key, load_valid_base_entry,
     revoke_with_context,
@@ -7,54 +10,57 @@ use crate::cache::{
     cache_epoch, compute_cache_key, load_cache_entry, policy_fingerprint, replace_cache_candidate,
     save_cache_candidate,
 };
-use crate::domain::profile::{AppAuthority, ResolvedTokenProfile};
-use crate::repository::RepositoryError;
+use crate::domain::profile::AppAuthority;
 use crate::token::ScopedTokenClient;
-use std::path::Path;
-use time::OffsetDateTime;
 
 pub fn acquire<C: ScopedTokenClient>(
     client: &C,
-    request: &AcquireRequest<'_>,
-    resolve_auto: impl FnMut() -> Result<String, RepositoryError>,
+    request: AcquireRequest<'_>,
 ) -> Result<AcquiredToken, TokenError> {
-    acquire_with_clock(client, request, resolve_auto, OffsetDateTime::now_utc)
+    acquire_with_clock(client, request, OffsetDateTime::now_utc)
 }
 
-pub(super) fn acquire_with_clock<
-    C: ScopedTokenClient,
-    R: FnMut() -> Result<String, RepositoryError>,
-    N: FnMut() -> OffsetDateTime,
->(
+pub(super) fn acquire_with_clock<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     client: &C,
-    request: &AcquireRequest<'_>,
-    resolve_auto: R,
+    request: AcquireRequest<'_>,
     mut now: N,
 ) -> Result<AcquiredToken, TokenError> {
-    match request.profile {
-        ResolvedTokenProfile::Base { name, app } => {
+    match request {
+        AcquireRequest::Base {
+            cache_dir,
+            profile_name,
+            authority,
+        } => {
             tracing::debug!(
-                profile = *name,
-                requested_repositories = ?request.repositories,
+                profile = profile_name,
                 profile_kind = "app",
                 "starting token acquisition"
             );
-            acquire_base(
-                request.cache_dir,
-                name,
-                &app.authority,
-                request.repositories,
-                now(),
-            )
+            acquire_base(cache_dir, profile_name, &authority, now())
         }
-        ResolvedTokenProfile::Scoped { name, .. } => {
+        AcquireRequest::Scoped {
+            cache_dir,
+            profile_name,
+            source_name,
+            app,
+            permissions,
+            repositories,
+        } => {
             tracing::debug!(
-                profile = *name,
-                requested_repositories = ?request.repositories,
+                profile = profile_name,
+                source_profile = source_name,
                 profile_kind = "scoped",
                 "starting token acquisition"
             );
-            acquire_scoped(client, request, resolve_auto, &mut now)
+            let prepared = super::scoped::prepare(
+                cache_dir,
+                profile_name,
+                source_name,
+                app,
+                permissions,
+                &repositories,
+            )?;
+            acquire_scoped(client, cache_dir, prepared, &mut now)
         }
     }
 }
@@ -63,12 +69,8 @@ fn acquire_base(
     cache_dir: &Path,
     profile_name: &str,
     authority: &AppAuthority<'_>,
-    repositories: &[String],
     now: OffsetDateTime,
 ) -> Result<AcquiredToken, TokenError> {
-    if !repositories.is_empty() {
-        return Err(TokenError::AppScopeRejected(profile_name.to_owned()));
-    }
     let entry = load_valid_base_entry(cache_dir, profile_name, authority, now)?
         .ok_or_else(|| TokenError::NoBaseTokenCached(profile_name.to_owned()))?;
     tracing::debug!(profile = profile_name, expires_at = %entry.expires_at, "returning cached base token");
@@ -80,22 +82,12 @@ fn acquire_base(
     })
 }
 
-fn acquire_scoped<
-    C: ScopedTokenClient,
-    R: FnMut() -> Result<String, RepositoryError>,
-    N: FnMut() -> OffsetDateTime,
->(
+fn acquire_scoped<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     client: &C,
-    request: &AcquireRequest<'_>,
-    resolve_auto: R,
+    cache_dir: &Path,
+    prepared: super::scoped::PreparedScopedToken<'_>,
     now: &mut N,
 ) -> Result<AcquiredToken, TokenError> {
-    let prepared = super::scoped::prepare(
-        request.cache_dir,
-        request.profile,
-        request.repositories,
-        resolve_auto,
-    )?;
     let policy = policy_fingerprint(
         prepared.app.authority.account,
         &prepared.scope,
@@ -120,7 +112,7 @@ fn acquire_scoped<
         parent_generation: &generation,
         source_authority: &prepared.app.authority,
     };
-    let renewal = match classify_scoped_entry(request.cache_dir, &cache_key, &provenance, now())? {
+    let renewal = match classify_scoped_entry(cache_dir, &cache_key, &provenance, now())? {
         CachedScoped::Fresh(entry) => {
             tracing::debug!(profile = prepared.profile_name, expires_at = %entry.expires_at, "returning fresh cached scoped token");
             return Ok(acquired_scoped(entry));
@@ -139,7 +131,7 @@ fn acquire_scoped<
     };
     mint_and_persist(
         client,
-        request.cache_dir,
+        cache_dir,
         MintRequest {
             cache_key: &cache_key,
             policy: &policy,

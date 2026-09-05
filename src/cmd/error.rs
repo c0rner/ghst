@@ -1,5 +1,6 @@
 use crate::cache::CacheError;
 use crate::config::ConfigError;
+use crate::repository::RepositoryError;
 use crate::token::{DeviceFlowError, RemoteError, TokenError};
 use std::fmt;
 use std::path::PathBuf;
@@ -10,6 +11,9 @@ pub enum CmdError {
     Cache(CacheError),
     GitHub(RemoteError),
     Token(TokenError),
+    Repository(RepositoryError),
+    AppScopeRejected(String),
+    RunRequiresScoped(String),
     ConfigNotFound(PathBuf),
     NoEditorFound,
     InvalidEditorCommand {
@@ -53,6 +57,15 @@ impl fmt::Display for CmdError {
             Self::Config(err) => write!(f, "configuration error: {err}"),
             Self::Cache(err) => write!(f, "cache error: {err}"),
             Self::GitHub(err) => write!(f, "github error: {err}"),
+            Self::Repository(err) => write!(f, "{err}"),
+            Self::AppScopeRejected(profile) => write!(
+                f,
+                "app profile '{profile}' cannot be repository-scoped; omit --repo to return its raw base token"
+            ),
+            Self::RunRequiresScoped(profile) => write!(
+                f,
+                "profile '{profile}' is an app profile; run requires a scoped profile"
+            ),
             Self::Token(TokenError::NoBaseTokenCached(profile)) => write!(
                 f,
                 "No valid base token found for app profile '{profile}'. Please log in first: ghst login -p {profile}"
@@ -60,10 +73,6 @@ impl fmt::Display for CmdError {
             Self::Token(TokenError::NoSourceBaseTokenCached(profile)) => write!(
                 f,
                 "No valid base token found for source app profile '{profile}'. Please log in to the app profile first: ghst login -p {profile}"
-            ),
-            Self::Token(TokenError::AppScopeRejected(profile)) => write!(
-                f,
-                "app profile '{profile}' cannot be repository-scoped; omit --repo to return its raw base token"
             ),
             Self::Token(err) => err.fmt(f),
             Self::ConfigNotFound(path) => write!(
@@ -146,9 +155,12 @@ impl std::error::Error for CmdError {
             Self::Cache(err) => Some(err),
             Self::GitHub(err) => Some(err),
             Self::Token(err) => Some(err),
+            Self::Repository(err) => Some(err),
             Self::EditorLaunch { source, .. } => Some(source),
             Self::Io(err) => Some(err),
-            Self::ConfigNotFound(_)
+            Self::AppScopeRejected(_)
+            | Self::RunRequiresScoped(_)
+            | Self::ConfigNotFound(_)
             | Self::NoEditorFound
             | Self::InvalidEditorCommand { .. }
             | Self::EditorFailed { .. }
@@ -191,6 +203,12 @@ impl From<TokenError> for CmdError {
     }
 }
 
+impl From<RepositoryError> for CmdError {
+    fn from(err: RepositoryError) -> Self {
+        Self::Repository(err)
+    }
+}
+
 impl From<RemoteError> for CmdError {
     fn from(err: RemoteError) -> Self {
         Self::GitHub(err)
@@ -228,7 +246,7 @@ mod tests {
             "No valid base token found for source app profile 'developer'. Please log in to the app profile first: ghst login -p developer"
         );
         assert_eq!(
-            CmdError::Token(TokenError::AppScopeRejected("developer".into())).to_string(),
+            CmdError::AppScopeRejected("developer".into()).to_string(),
             "app profile 'developer' cannot be repository-scoped; omit --repo to return its raw base token"
         );
         assert_eq!(
@@ -240,7 +258,7 @@ mod tests {
             "profile 'reader' is scoped; log in to its source app profile instead: ghst login -p developer"
         );
         assert_eq!(
-            CmdError::Token(TokenError::RunRequiresScoped("developer".into())).to_string(),
+            CmdError::RunRequiresScoped("developer".into()).to_string(),
             "profile 'developer' is an app profile; run requires a scoped profile"
         );
     }

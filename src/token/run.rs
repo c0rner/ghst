@@ -1,20 +1,26 @@
-use super::{TokenError, base_cache_key, revoke_with_context};
-use crate::cache::{
-    AccessToken, CacheEntry, CacheError, RUN_CACHE_SCHEMA_VERSION, RunCacheEntry, RunState,
-    SaveCacheEntry, cache_epoch, compute_run_cache_key, save_cache_candidate,
-};
-use crate::config::Config;
-use crate::domain::profile::ResolvedTokenProfile;
-use crate::repository::RepositoryError;
-use crate::token::{RevokeTokenClient, ScopedTokenClient};
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 use time::OffsetDateTime;
 
+use super::{TokenError, base_cache_key, revoke_with_context};
+use crate::cache::{
+    CacheEntry, CacheError, RUN_CACHE_SCHEMA_VERSION, RunCacheEntry, RunState, SaveCacheEntry,
+    cache_epoch, compute_run_cache_key, save_cache_candidate,
+};
+use crate::config::Config;
+use crate::domain::credential::AccessToken;
+use crate::domain::profile::{AppCredentials, PermissionLevel};
+use crate::repository::RepositorySelection;
+use crate::token::{RevokeTokenClient, ScopedTokenClient};
+
 pub struct MintRunRequest<'a> {
-    pub profile: &'a ResolvedTokenProfile<'a>,
     pub cache_dir: &'a Path,
-    pub repositories: &'a [String],
+    pub profile_name: &'a str,
+    pub source_name: &'a str,
+    pub app: AppCredentials<'a>,
+    pub permissions: &'a BTreeMap<String, PermissionLevel>,
+    pub repositories: RepositorySelection,
     pub wrapper_pid: u32,
     pub command: &'a str,
 }
@@ -155,26 +161,22 @@ impl ActiveRun {
 pub fn mint<C: ScopedTokenClient>(
     client: &C,
     request: &MintRunRequest<'_>,
-    resolve_auto: impl FnMut() -> Result<String, RepositoryError>,
 ) -> Result<PendingRun, TokenError> {
-    mint_with_clock(client, request, resolve_auto, OffsetDateTime::now_utc)
+    mint_with_clock(client, request, OffsetDateTime::now_utc)
 }
 
-fn mint_with_clock<
-    C: ScopedTokenClient,
-    R: FnMut() -> Result<String, RepositoryError>,
-    N: FnMut() -> OffsetDateTime,
->(
+fn mint_with_clock<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     client: &C,
     request: &MintRunRequest<'_>,
-    resolve_auto: R,
     mut now: N,
 ) -> Result<PendingRun, TokenError> {
     let prepared = super::scoped::prepare(
         request.cache_dir,
-        request.profile,
-        request.repositories,
-        resolve_auto,
+        request.profile_name,
+        request.source_name,
+        request.app,
+        request.permissions,
+        &request.repositories,
     )?;
     tracing::debug!(
         profile = prepared.profile_name,
@@ -263,9 +265,10 @@ fn generate_run_id() -> Result<String, TokenError> {
 mod tests {
     use super::*;
     use crate::cache::{
-        BaseCacheEntry, CACHE_SCHEMA_VERSION, ScopedCacheEntry, TokenExpiry, authority_fingerprint,
+        BaseCacheEntry, CACHE_SCHEMA_VERSION, ScopedCacheEntry, authority_fingerprint,
         compute_cache_key, compute_run_cache_key, policy_fingerprint, save_cache_entry,
     };
+    use crate::domain::credential::TokenExpiry;
     use crate::token::{IssuedScopedToken, RemoteError, RevokeTokenClient, ScopedTokenRequest};
     use std::cell::{Cell, RefCell};
     use std::collections::BTreeMap;
@@ -431,7 +434,6 @@ permissions = { contents = "read" }
         let temp = tempfile::tempdir().unwrap();
         let cache_dir = temp.path().join("cache");
         let now = OffsetDateTime::now_utc();
-        let config = config();
         cache_base(&cache_dir, now);
         let permissions = BTreeMap::from([("contents".into(), String::from("read"))]);
         save_cache_entry(
@@ -461,16 +463,32 @@ permissions = { contents = "read" }
         )
         .unwrap();
         let client = MockClient(Cell::new(0));
-        let profile = config.resolve_token_profile("reader").unwrap();
+        let app = AppCredentials {
+            authority: crate::domain::profile::AppAuthority {
+                account: "acme",
+                client_id: "id",
+            },
+            client_secret: "secret",
+        };
+        let scoped_permissions = BTreeMap::from([("contents".into(), PermissionLevel::Read)]);
         let request = MintRunRequest {
-            profile: &profile,
             cache_dir: &cache_dir,
-            repositories: &[],
+            profile_name: "reader",
+            source_name: "developer",
+            app,
+            permissions: &scoped_permissions,
+            repositories: RepositorySelection::resolve(
+                &["acme/api".into()],
+                &crate::domain::profile::RepoScope::All,
+                "acme",
+                || panic!("auto is not used"),
+            )
+            .unwrap(),
             wrapper_pid: std::process::id(),
             command: "true",
         };
-        let first = mint(&client, &request, || panic!("auto is not used")).unwrap();
-        let second = mint(&client, &request, || panic!("auto is not used")).unwrap();
+        let first = mint(&client, &request).unwrap();
+        let second = mint(&client, &request).unwrap();
         assert_eq!(first.access_token(), "fresh-1");
         assert_eq!(second.access_token(), "fresh-2");
         assert_ne!(first.identity.cache_key, second.identity.cache_key);
@@ -621,26 +639,5 @@ permissions = { contents = "read" }
                 .unwrap()
                 .is_none()
         );
-    }
-
-    #[test]
-    fn run_rejects_app_profiles_before_minting() {
-        let temp = tempfile::tempdir().unwrap();
-        let config = config();
-        let client = MockClient(Cell::new(0));
-        let profile = config.resolve_token_profile("developer").unwrap();
-        let result = mint(
-            &client,
-            &MintRunRequest {
-                profile: &profile,
-                cache_dir: temp.path(),
-                repositories: &[],
-                wrapper_pid: std::process::id(),
-                command: "true",
-            },
-            || panic!("auto is not used"),
-        );
-        assert!(matches!(result, Err(TokenError::RunRequiresScoped(_))));
-        assert_eq!(client.0.get(), 0);
     }
 }

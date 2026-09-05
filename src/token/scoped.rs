@@ -6,17 +6,15 @@ use super::{
     IssuedScopedToken, ScopedTokenClient, ScopedTokenRequest, TokenError, base_cache_key,
     load_current_base_entry, revoke_with_context, validate_scoped_expiry,
 };
-use crate::cache::{
-    AccessToken, BaseCacheEntry, CacheError, DeleteBaseOutcome, TokenExpiry,
-    delete_base_if_generation,
-};
-use crate::domain::profile::{AppCredentials, PermissionLevel, ResolvedTokenProfile};
-use crate::repository::{RepositoryError, RepositorySelection};
+use crate::cache::{BaseCacheEntry, CacheError, DeleteBaseOutcome, delete_base_if_generation};
+use crate::domain::credential::{AccessToken, TokenExpiry};
+use crate::domain::profile::{AppCredentials, PermissionLevel};
+use crate::repository::RepositorySelection;
 
 pub(super) struct PreparedScopedToken<'a> {
     pub profile_name: &'a str,
     pub source_name: &'a str,
-    pub app: &'a AppCredentials<'a>,
+    pub app: AppCredentials<'a>,
     pub permissions: &'a BTreeMap<String, PermissionLevel>,
     pub base: BaseCacheEntry,
     pub scope: String,
@@ -31,48 +29,25 @@ pub(super) struct ValidatedScopedToken {
 
 pub(super) fn prepare<'a>(
     cache_dir: &Path,
-    profile: &'a ResolvedTokenProfile<'a>,
-    repositories: &[String],
-    resolve_auto: impl FnMut() -> Result<String, RepositoryError>,
+    profile_name: &'a str,
+    source_name: &'a str,
+    app: AppCredentials<'a>,
+    permissions: &'a BTreeMap<String, PermissionLevel>,
+    repositories: &RepositorySelection,
 ) -> Result<PreparedScopedToken<'a>, TokenError> {
-    let ResolvedTokenProfile::Scoped {
-        name: profile_name,
-        source_name,
-        app,
-        repository_scope,
-        permissions,
-    } = profile
-    else {
-        return Err(TokenError::RunRequiresScoped(match profile {
-            ResolvedTokenProfile::Base { name, .. } | ResolvedTokenProfile::Scoped { name, .. } => {
-                (*name).to_owned()
-            }
-        }));
-    };
-    let selection = RepositorySelection::resolve(
-        repositories,
-        repository_scope,
-        app.authority.account,
-        resolve_auto,
-    )?;
-    let scope = selection.canonical();
-    let repository_names = selection.repository_names();
+    let scope = repositories.canonical();
+    let repository_names = repositories.repository_names();
     tracing::debug!(
-        profile = *profile_name,
-        source_profile = *source_name,
+        profile = profile_name,
+        source_profile = source_name,
         account = app.authority.account,
-        selection_source = if repositories.is_empty() {
-            "profile"
-        } else {
-            "cli"
-        },
         repo_scope = scope,
         repositories = ?repository_names,
         permissions = ?permissions,
         "resolved scoped token policy"
     );
     let base = load_current_base_entry(cache_dir, source_name, &app.authority)?
-        .ok_or_else(|| TokenError::NoSourceBaseTokenCached((*source_name).to_owned()))?;
+        .ok_or_else(|| TokenError::NoSourceBaseTokenCached(source_name.to_owned()))?;
     Ok(PreparedScopedToken {
         profile_name,
         source_name,

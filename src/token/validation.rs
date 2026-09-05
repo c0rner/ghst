@@ -1,5 +1,5 @@
 use super::TokenError;
-use crate::cache::TokenExpiry;
+use crate::domain::credential::TokenExpiry;
 use time::{Duration, OffsetDateTime};
 
 pub fn validate_base_expiry(

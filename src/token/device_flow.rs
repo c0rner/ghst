@@ -118,7 +118,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::AccessToken;
+    use crate::domain::credential::AccessToken;
     use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
     use zeroize::Zeroizing;

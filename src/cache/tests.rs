@@ -9,8 +9,9 @@ use crate::cache::storage::{
 };
 use crate::cache::types::{
     BaseCacheEntry, CACHE_SCHEMA_VERSION, CacheEntry, RUN_CACHE_SCHEMA_VERSION, ReplaceCacheEntry,
-    RunCacheEntry, RunState, SaveCacheEntry, ScopedCacheEntry, TokenExpiry, authority_fingerprint,
+    RunCacheEntry, RunState, SaveCacheEntry, ScopedCacheEntry, authority_fingerprint,
 };
+use crate::domain::credential::TokenExpiry;
 use std::fs;
 use std::io::Write;
 use std::sync::{Arc, Barrier};
@@ -77,18 +78,6 @@ fn cache_key_is_profile_and_canonical_scope_hash() {
     assert_eq!(
         first,
         "44e9b443f6a49a44a6a5588f3be3923a3c1ec1c1f2bfd419addebcde4d598411"
-    );
-}
-
-#[test]
-fn expiry_policies_have_distinct_exact_boundaries() {
-    let now = OffsetDateTime::now_utc();
-    assert!(!TokenExpiry::new(now + Duration::seconds(30)).is_safe_to_handoff_at(now));
-    assert!(TokenExpiry::new(now + Duration::seconds(31)).is_safe_to_handoff_at(now));
-    assert!(TokenExpiry::new(now + Duration::minutes(10)).is_due_for_renewal_at(now));
-    assert!(
-        !TokenExpiry::new(now + Duration::minutes(10) + Duration::seconds(1))
-            .is_due_for_renewal_at(now)
     );
 }
 

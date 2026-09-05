@@ -1,11 +1,13 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
-use crate::cache::TokenExpiry;
-use crate::domain::profile::ResolvedTokenProfile;
+use crate::domain::credential::{AccessToken, TokenExpiry};
+use crate::domain::profile::{AppAuthority, AppCredentials, PermissionLevel};
+use crate::repository::RepositorySelection;
 
 pub struct AcquiredToken {
-    pub access_token: crate::cache::AccessToken,
+    pub access_token: AccessToken,
     pub expires_at: TokenExpiry,
     pub profile: String,
     pub repo_scope: String,
@@ -32,8 +34,18 @@ pub struct BaseTokenStatus {
     pub expires_at: TokenExpiry,
 }
 
-pub struct AcquireRequest<'a> {
-    pub profile: &'a ResolvedTokenProfile<'a>,
-    pub cache_dir: &'a Path,
-    pub repositories: &'a [String],
+pub enum AcquireRequest<'a> {
+    Base {
+        cache_dir: &'a Path,
+        profile_name: &'a str,
+        authority: AppAuthority<'a>,
+    },
+    Scoped {
+        cache_dir: &'a Path,
+        profile_name: &'a str,
+        source_name: &'a str,
+        app: AppCredentials<'a>,
+        permissions: &'a BTreeMap<String, PermissionLevel>,
+        repositories: RepositorySelection,
+    },
 }

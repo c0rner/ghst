@@ -258,10 +258,11 @@ fn attempt_remote_revocation<C: RevokeTokenClient>(
 mod tests {
     use super::*;
     use crate::cache::{
-        AccessToken, BaseCacheEntry, CACHE_SCHEMA_VERSION, CacheEntry, RUN_CACHE_SCHEMA_VERSION,
-        RunCacheEntry, RunState, ScopedCacheEntry, TokenExpiry, authority_fingerprint,
-        compute_cache_key, compute_run_cache_key, list_all_cache_entries, save_cache_entry,
+        BaseCacheEntry, CACHE_SCHEMA_VERSION, CacheEntry, RUN_CACHE_SCHEMA_VERSION, RunCacheEntry,
+        RunState, ScopedCacheEntry, authority_fingerprint, compute_cache_key,
+        compute_run_cache_key, list_all_cache_entries, save_cache_entry,
     };
+    use crate::domain::credential::{AccessToken, TokenExpiry};
     use std::cell::{Cell, RefCell};
     use time::Duration;
 

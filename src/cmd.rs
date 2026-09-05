@@ -15,9 +15,10 @@ use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::str::FromStr;
-use time::{UtcOffset, error::IndeterminateOffset};
+use time::format_description::well_known::Rfc3339;
+use time::{OffsetDateTime, UtcOffset, error::IndeterminateOffset};
 
-use crate::cache::{TokenExpiry, format_rfc3339};
+use crate::domain::credential::TokenExpiry;
 
 pub const GHST_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -34,6 +35,10 @@ fn format_human_expiry_with_offset(
         UtcOffset::UTC
     });
     format_rfc3339(expiry.value().to_offset(offset))
+}
+
+fn format_rfc3339(value: OffsetDateTime) -> String {
+    value.format(&Rfc3339).unwrap_or_default()
 }
 
 /// `GhstCli` command line interface

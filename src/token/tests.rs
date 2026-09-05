@@ -451,7 +451,7 @@ fn invalid_scoped_response_is_revoked_without_cache_entry() {
     let config: Config = CONFIG.parse().unwrap();
     let profile = config.resolve_token_profile("reader").unwrap();
     assert!(matches!(
-        acquire(&client, scoped_request(&cache_dir, &profile),),
+        acquire(&client, scoped_request(&cache_dir, &profile)),
         Err(TokenError::InvalidLifetime { .. })
     ));
     assert_eq!(&*client.revoked.borrow(), &["bad-child"]);

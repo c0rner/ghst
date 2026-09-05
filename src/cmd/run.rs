@@ -38,17 +38,15 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
         wrapper_pid,
         "minting a fresh run token"
     );
-    let pending = crate::token::run::mint(
-        &client,
-        &MintRunRequest {
-            profile: &profile,
-            cache_dir: &cache_dir,
-            repositories: &cmd.repo,
-            wrapper_pid,
-            command: &command_line,
-        },
+    let request = prepare_mint_request(
+        &profile,
+        &cache_dir,
+        &cmd.repo,
+        wrapper_pid,
+        &command_line,
         crate::git::resolve_origin_repo,
     )?;
+    let pending = crate::token::run::mint(&client, &request)?;
     #[cfg(unix)]
     let signals = match Forwarder::prepare() {
         Ok(signals) => signals,
@@ -110,6 +108,48 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
     let report = active.finish(&client, &config, &cache_dir);
     report_cleanup(child_pid, report);
     Ok(code)
+}
+
+fn prepare_mint_request<'a>(
+    profile: &'a crate::domain::profile::ResolvedTokenProfile<'a>,
+    cache_dir: &'a std::path::Path,
+    cli_repositories: &[String],
+    wrapper_pid: u32,
+    command: &'a str,
+    resolve_auto: impl FnMut() -> Result<String, crate::repository::RepositoryError>,
+) -> Result<MintRunRequest<'a>, CmdError> {
+    let crate::domain::profile::ResolvedTokenProfile::Scoped {
+        name: profile_name,
+        source_name,
+        app,
+        repository_scope,
+        permissions,
+    } = profile
+    else {
+        let name = match profile {
+            crate::domain::profile::ResolvedTokenProfile::Base { name, .. }
+            | crate::domain::profile::ResolvedTokenProfile::Scoped { name, .. } => {
+                (*name).to_owned()
+            }
+        };
+        return Err(CmdError::RunRequiresScoped(name));
+    };
+    let repositories = crate::repository::RepositorySelection::resolve(
+        cli_repositories,
+        repository_scope,
+        app.authority.account,
+        resolve_auto,
+    )?;
+    Ok(MintRunRequest {
+        cache_dir,
+        profile_name,
+        source_name,
+        app: *app,
+        permissions,
+        repositories,
+        wrapper_pid,
+        command,
+    })
 }
 
 fn render_command_line(command: &[std::ffi::OsString]) -> String {
@@ -326,5 +366,75 @@ mod tests {
                 .unwrap();
             assert_eq!(child_exit_code(status), 143);
         }
+    }
+
+    fn test_config() -> crate::config::Config {
+        r#"
+version = 1
+default_profile = "reader"
+[profile.developer]
+github_app.account = "acme"
+github_app.client_id = "id"
+github_app.client_secret = "secret"
+[profile.reader]
+source = "developer"
+repo = "acme/api"
+permissions = { contents = "read" }
+"#
+        .parse()
+        .unwrap()
+    }
+
+    #[test]
+    fn run_rejects_app_profiles_before_minting() {
+        let config = test_config();
+        let profile = config.resolve_token_profile("developer").unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let result = prepare_mint_request(&profile, temp.path(), &[], 100, "true", || {
+            panic!("auto must not be called")
+        });
+        assert!(matches!(
+            result,
+            Err(CmdError::RunRequiresScoped(name)) if name == "developer"
+        ));
+    }
+
+    #[test]
+    fn run_returns_repository_resolution_failure_before_minting() {
+        let config = test_config();
+        let profile = config.resolve_token_profile("reader").unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let result = prepare_mint_request(
+            &profile,
+            temp.path(),
+            &["invalid-repo".into()],
+            100,
+            "true",
+            || panic!("auto must not be called"),
+        );
+        assert!(matches!(
+            result,
+            Err(CmdError::Repository(
+                crate::repository::RepositoryError::InvalidScope { .. }
+            ))
+        ));
+    }
+
+    #[test]
+    fn auto_is_not_invoked_for_run_with_explicit_selection() {
+        let config = test_config();
+        let profile = config.resolve_token_profile("reader").unwrap();
+        let temp = tempfile::tempdir().unwrap();
+        let request = prepare_mint_request(
+            &profile,
+            temp.path(),
+            &["acme/other".into()],
+            100,
+            "true",
+            || panic!("auto must not be called"),
+        )
+        .unwrap();
+        assert_eq!(request.profile_name, "reader");
+        assert_eq!(request.repositories.canonical(), "acme/other");
     }
 }

@@ -1,4 +1,3 @@
-use crate::repository::RepositoryError;
 use crate::token::RemoteError;
 use std::fmt;
 
@@ -11,11 +10,8 @@ pub enum TokenError {
         source_profile: String,
         source: RemoteError,
     },
-    Repository(RepositoryError),
     NoBaseTokenCached(String),
     NoSourceBaseTokenCached(String),
-    AppScopeRejected(String),
-    RunRequiresScoped(String),
     Random(getrandom::Error),
     UnexpectedCacheKind {
         profile: String,
@@ -55,7 +51,6 @@ impl fmt::Display for TokenError {
                 f,
                 "github rejected the scoped token request for scoped profile '{profile}': {source}. The requested permissions or repository access likely exceed the GitHub App installation for source app profile '{source_profile}'; check the App installation in GitHub settings and the scoped profile's `permissions` and `repo` in profiles.toml"
             ),
-            Self::Repository(error) => write!(f, "{error}"),
             Self::NoBaseTokenCached(profile) => {
                 write!(f, "no valid base token cached for app profile '{profile}'")
             }
@@ -63,15 +58,6 @@ impl fmt::Display for TokenError {
                 write!(
                     f,
                     "no valid base token cached for source app profile '{profile}'"
-                )
-            }
-            Self::AppScopeRejected(profile) => {
-                write!(f, "app profile '{profile}' cannot be repository-scoped")
-            }
-            Self::RunRequiresScoped(profile) => {
-                write!(
-                    f,
-                    "profile '{profile}' is an app profile; run requires a scoped profile"
                 )
             }
             Self::Random(error) => write!(f, "operating-system randomness unavailable: {error}"),
@@ -115,7 +101,6 @@ impl std::error::Error for TokenError {
         match self {
             Self::Cache(error) => Some(error),
             Self::GitHub(error) => Some(error),
-            Self::Repository(error) => Some(error),
             Self::Random(error) => Some(error),
             Self::ScopedTokenForbidden { source, .. } | Self::RevocationFailed { source, .. } => {
                 Some(source)
@@ -137,12 +122,6 @@ impl From<RemoteError> for TokenError {
     }
 }
 
-impl From<RepositoryError> for TokenError {
-    fn from(error: RepositoryError) -> Self {
-        Self::Repository(error)
-    }
-}
-
 impl From<getrandom::Error> for TokenError {
     fn from(error: getrandom::Error) -> Self {
         Self::Random(error)
@@ -158,7 +137,6 @@ mod error_tests {
         for error in [
             TokenError::NoBaseTokenCached("developer".into()),
             TokenError::NoSourceBaseTokenCached("developer".into()),
-            TokenError::AppScopeRejected("developer".into()),
         ] {
             let message = error.to_string();
             assert!(!message.contains("ghst"));

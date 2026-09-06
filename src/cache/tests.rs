@@ -1,3 +1,4 @@
+use crate::cache::FsCredentialStore;
 use crate::cache::cache_epoch;
 use crate::cache::error::CacheError;
 use crate::cache::fs::{cache_file_path, create_private_tempfile, ensure_cache_dir};
@@ -5,13 +6,24 @@ use crate::cache::key::{compute_cache_key, compute_run_cache_key};
 use crate::cache::run_storage;
 use crate::cache::storage::{
     DeleteBaseOutcome, claim_abandoned_run, delete_base_if_generation, delete_cache_entry,
-    delete_run_after_cleanup, load_cache_entry, replace_cache_candidate, save_cache_entry,
+    load_cache_entry, save_cache_entry,
 };
 use crate::cache::types::{
-    BaseCacheEntry, CACHE_SCHEMA_VERSION, CacheEntry, RUN_CACHE_SCHEMA_VERSION, ReplaceCacheEntry,
-    RunCacheEntry, RunState, SaveCacheEntry, ScopedCacheEntry, authority_fingerprint,
+    BaseCacheEntry, CACHE_SCHEMA_VERSION, CacheEntry, RUN_CACHE_SCHEMA_VERSION, RunCacheEntry,
+    RunState, SaveCacheEntry, ScopedCacheEntry,
 };
 use crate::credential::TokenExpiry;
+use crate::credential::store::ReplaceStoredCredential;
+use crate::credential::store::{
+    ExpectedSource, Inspect, Inspection, IssuanceGuard, Issue, Login, Revocation, Revoke,
+    StoreError,
+};
+use crate::credential::stored::StoredCredential;
+use crate::credential::stored::authority_fingerprint;
+use crate::run::{
+    lifecycle::{RunOwner, RunPhase},
+    store::RunStore,
+};
 use std::fs;
 use std::io::Write;
 use std::sync::{Arc, Barrier};
@@ -136,18 +148,23 @@ fn renewal_compare_and_replace_returns_the_exact_displaced_entry() {
     save_cache_entry(&directory, &key, &selected).unwrap();
     let epoch = cache_epoch(&directory).unwrap();
 
-    let result = replace_cache_candidate(
-        &directory,
-        &key,
-        &selected,
-        &candidate,
-        epoch,
-        (&base_key(), &generation),
-        now,
-    )
-    .unwrap();
+    let result = FsCredentialStore::new(&directory)
+        .renew(
+            &key,
+            &selected.try_into().unwrap(),
+            &candidate.try_into().unwrap(),
+            IssuanceGuard {
+                epoch,
+                source: ExpectedSource {
+                    key: &base_key(),
+                    generation: &generation,
+                },
+            },
+            now,
+        )
+        .unwrap();
 
-    let ReplaceCacheEntry::Replaced(displaced) = result else {
+    let ReplaceStoredCredential::Replaced(displaced) = result else {
         panic!("expected replacement")
     };
     assert_eq!(displaced.access_token().as_ref(), "selected");
@@ -181,18 +198,23 @@ fn renewal_compare_and_replace_retains_a_compatible_concurrent_winner() {
     save_cache_entry(&directory, &key, &winner).unwrap();
     let candidate = scoped_entry("candidate", now + Duration::hours(1), &generation);
 
-    let result = replace_cache_candidate(
-        &directory,
-        &key,
-        &selected,
-        &candidate,
-        epoch,
-        (&base_key(), &generation),
-        now,
-    )
-    .unwrap();
+    let result = FsCredentialStore::new(&directory)
+        .renew(
+            &key,
+            &selected.try_into().unwrap(),
+            &candidate.try_into().unwrap(),
+            IssuanceGuard {
+                epoch,
+                source: ExpectedSource {
+                    key: &base_key(),
+                    generation: &generation,
+                },
+            },
+            now,
+        )
+        .unwrap();
 
-    let ReplaceCacheEntry::Retained(retained) = result else {
+    let ReplaceStoredCredential::Retained(retained) = result else {
         panic!("expected retained winner")
     };
     assert_eq!(retained.access_token().as_ref(), "winner");
@@ -228,22 +250,60 @@ fn run_lifecycle_transitions_require_exact_ownership() {
     let directory = temp.path().join("cache");
     let key = compute_run_cache_key("owned-run");
     save_cache_entry(&directory, &key, &run_entry("owned-run", RunState::Pending)).unwrap();
+    let store = FsCredentialStore::new(&directory);
     let before = fs::read(cache_file_path(&directory, &key)).unwrap();
     assert!(matches!(
-        run_storage::activate(&directory, &key, "wrong", 100, 200),
+        store.activate(
+            &key,
+            RunOwner {
+                run_id: "wrong",
+                wrapper_pid: 100
+            },
+            200
+        ),
         Err(CacheError::RunLifecycle { .. })
     ));
     assert_eq!(fs::read(cache_file_path(&directory, &key)).unwrap(), before);
-    let running = run_storage::activate(&directory, &key, "owned-run", 100, 200).unwrap();
-    assert_eq!(running.state, RunState::Running);
-    assert_eq!(running.child_pid, Some(200));
+    let running = store
+        .activate(
+            &key,
+            RunOwner {
+                run_id: "owned-run",
+                wrapper_pid: 100,
+            },
+            200,
+        )
+        .unwrap();
+    assert_eq!(running.phase, RunPhase::Running { child_pid: 200 });
+    assert_eq!(running.child_pid(), Some(200));
     assert!(matches!(
-        run_storage::finish(&directory, &key, "owned-run", 100, 201),
+        store.finish(
+            &key,
+            RunOwner {
+                run_id: "owned-run",
+                wrapper_pid: 100
+            },
+            201
+        ),
         Err(CacheError::RunLifecycle { .. })
     ));
-    let claimed = run_storage::finish(&directory, &key, "owned-run", 100, 200).unwrap();
-    assert_eq!(claimed.state, RunState::CleanupPending);
-    assert!(delete_run_after_cleanup(&directory, &key, &claimed).unwrap());
+    let claimed = store
+        .finish(
+            &key,
+            RunOwner {
+                run_id: "owned-run",
+                wrapper_pid: 100,
+            },
+            200,
+        )
+        .unwrap();
+    assert_eq!(
+        claimed.phase,
+        RunPhase::CleanupPending {
+            child_pid: Some(200)
+        }
+    );
+    assert!(store.delete_cleaned(&key, &claimed).unwrap());
     assert!(load_cache_entry(&directory, &key).unwrap().is_none());
 }
 
@@ -336,10 +396,12 @@ fn current_cache_schema_is_stable_and_round_trips() {
         let serialized = serde_json::to_value(&entry).unwrap();
         let golden: serde_json::Value = serde_json::from_str(golden_json).unwrap();
         assert_eq!(serialized, golden);
-        assert_eq!(
-            serde_json::from_value::<CacheEntry>(serialized).unwrap(),
-            entry
-        );
+        let decoded = serde_json::from_value::<CacheEntry>(serialized).unwrap();
+        assert_eq!(decoded, entry);
+        let stored: StoredCredential = decoded.try_into().unwrap();
+        assert!(!format!("{stored:?}").contains(entry.access_token().as_ref()));
+        assert!(!format!("{stored:?}").contains("cargo test"));
+        assert_eq!(CacheEntry::from(&stored), entry);
     }
 }
 
@@ -412,7 +474,7 @@ fn unknown_cache_kind_uses_the_normal_decoding_error_and_is_retained() {
 
     assert!(matches!(
         load_cache_entry(&directory, &key),
-        Err(CacheError::Json(_))
+        Err(CacheError::Json { .. })
     ));
     assert_eq!(fs::read(path).unwrap(), invalid);
 }
@@ -549,7 +611,7 @@ fn malformed_entry_is_never_overwritten() {
     );
     assert!(matches!(
         save_cache_entry(&directory, &base_key(), &replacement),
-        Err(CacheError::Json(_))
+        Err(CacheError::Json { .. })
     ));
     assert_eq!(fs::read_to_string(path).unwrap(), "{ malformed");
 }
@@ -574,7 +636,7 @@ fn malformed_current_expiry_is_not_discarded_or_overwritten() {
     file.persist(&path).unwrap();
     assert!(matches!(
         load_cache_entry(&directory, &base_key()),
-        Err(CacheError::Json(_))
+        Err(CacheError::Json { .. })
     ));
     let replacement = base_entry(
         "replacement",
@@ -583,7 +645,7 @@ fn malformed_current_expiry_is_not_discarded_or_overwritten() {
     );
     assert!(matches!(
         save_cache_entry(&directory, &base_key(), &replacement),
-        Err(CacheError::Json(_))
+        Err(CacheError::Json { .. })
     ));
     assert_eq!(fs::read_to_string(path).unwrap(), invalid);
 }
@@ -710,7 +772,7 @@ fn invalid_decoded_run_lifecycle_is_rejected_and_retained() {
         file.persist(&path).unwrap();
 
         assert!(matches!(
-            load_cache_entry(&directory, &key),
+            FsCredentialStore::new(&directory).load(&key),
             Err(CacheError::RunLifecycle {
                 source: crate::run::lifecycle::RunLifecycleError::InvalidChild
             })
@@ -726,4 +788,128 @@ fn invalid_decoded_run_lifecycle_is_rejected_and_retained() {
         );
         assert_eq!(fs::read(&path).unwrap(), bytes);
     }
+}
+
+// A revocation with retention still invalidates issuance that began before it.
+struct RetainAll;
+impl Revocation for RetainAll {
+    fn should_delete(&mut self, _entry: &Inspection) -> bool {
+        false
+    }
+    fn deleted(&mut self, _label: &str, _result: Result<bool, StoreError>) {
+        panic!("retained entries must not be deleted")
+    }
+}
+
+#[test]
+fn store_rejects_pre_revocation_issuance_renewal_and_login_without_writes() {
+    let temp = cache_dir();
+    let directory = temp.path().join("cache");
+    let store = FsCredentialStore::new(&directory);
+    let now = OffsetDateTime::now_utc();
+    let base = base_entry("base", now + Duration::hours(1), "authority");
+    save_cache_entry(&directory, &base_key(), &base).unwrap();
+    let StoredCredential::Base(base) = StoredCredential::try_from(base).unwrap() else {
+        panic!("base fixture")
+    };
+    let generation = base.generation_fingerprint();
+    let key = compute_cache_key("reader", "acme/api");
+    let selected = scoped_entry("selected", now + Duration::minutes(5), &generation);
+    save_cache_entry(&directory, &key, &selected).unwrap();
+    let selected = selected.try_into().unwrap();
+    let candidate = scoped_entry("candidate", now + Duration::hours(1), &generation)
+        .try_into()
+        .unwrap();
+    let epoch = store.epoch().unwrap();
+    let guard = IssuanceGuard {
+        epoch,
+        source: ExpectedSource {
+            key: &base_key(),
+            generation: &generation,
+        },
+    };
+    let base_before = fs::read(cache_file_path(&directory, &base_key())).unwrap();
+    let scoped_before = fs::read(cache_file_path(&directory, &key)).unwrap();
+    assert_eq!(store.revoke(None, &mut RetainAll).unwrap(), 2);
+    assert!(
+        matches!(store.commit(&key, &candidate, guard), Err(StoreError::EpochChanged { expected, actual }) if expected == epoch && actual == epoch + 1)
+    );
+    assert!(matches!(
+        store.renew(&key, &selected, &candidate, guard, now),
+        Err(StoreError::EpochChanged { .. })
+    ));
+    assert!(matches!(
+        store.commit_login(&base_key(), &base, epoch),
+        Err(StoreError::EpochChanged { .. })
+    ));
+    assert_eq!(
+        fs::read(cache_file_path(&directory, &base_key())).unwrap(),
+        base_before
+    );
+    assert_eq!(
+        fs::read(cache_file_path(&directory, &key)).unwrap(),
+        scoped_before
+    );
+}
+
+#[test]
+fn store_rejects_changed_source_and_incompatible_renewal_snapshot() {
+    let temp = cache_dir();
+    let directory = temp.path().join("cache");
+    let store = FsCredentialStore::new(&directory);
+    let now = OffsetDateTime::now_utc();
+    let base = base_entry("base", now + Duration::hours(1), "authority");
+    save_cache_entry(&directory, &base_key(), &base).unwrap();
+    let StoredCredential::Base(base) = StoredCredential::try_from(base).unwrap() else {
+        panic!("base fixture")
+    };
+    let generation = base.generation_fingerprint();
+    let key = compute_cache_key("reader", "acme/api");
+    let selected: StoredCredential =
+        scoped_entry("selected", now + Duration::minutes(5), &generation)
+            .try_into()
+            .unwrap();
+    let candidate = scoped_entry("candidate", now + Duration::hours(1), &generation)
+        .try_into()
+        .unwrap();
+    let incompatible = scoped_entry("other-policy", now + Duration::hours(1), "other-generation");
+    save_cache_entry(&directory, &key, &incompatible).unwrap();
+    let epoch = store.epoch().unwrap();
+    let guard = IssuanceGuard {
+        epoch,
+        source: ExpectedSource {
+            key: &base_key(),
+            generation: &generation,
+        },
+    };
+    let before = fs::read(cache_file_path(&directory, &key)).unwrap();
+    assert!(matches!(
+        store.renew(&key, &selected, &candidate, guard, now),
+        Err(StoreError::RenewalEntryChanged)
+    ));
+    delete_cache_entry(&directory, &base_key()).unwrap();
+    save_cache_entry(
+        &directory,
+        &base_key(),
+        &base_entry("new-base", now + Duration::hours(1), "authority"),
+    )
+    .unwrap();
+    assert!(matches!(
+        store.commit(&key, &candidate, guard),
+        Err(StoreError::BaseGenerationChanged)
+    ));
+    assert!(matches!(
+        store.renew(&key, &selected, &candidate, guard, now),
+        Err(StoreError::BaseGenerationChanged)
+    ));
+    assert_eq!(fs::read(cache_file_path(&directory, &key)).unwrap(), before);
+    assert_eq!(
+        store
+            .load(&base_key())
+            .unwrap()
+            .unwrap()
+            .access_token()
+            .as_ref(),
+        "new-base"
+    );
 }

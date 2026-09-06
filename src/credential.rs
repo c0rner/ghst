@@ -1,4 +1,7 @@
+mod digest;
 pub mod provenance;
+pub mod store;
+pub mod stored;
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;

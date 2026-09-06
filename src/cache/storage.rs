@@ -40,16 +40,26 @@ impl RevokeTransaction {
         &self.entries
     }
 
+    pub(super) fn take_inspection(&mut self, index: usize) -> CacheInspection {
+        let entry = &mut self.entries[index];
+        CacheInspection {
+            path: entry.path.clone(),
+            label: entry.label.clone(),
+            cache_key: entry.cache_key.clone(),
+            state: std::mem::replace(&mut entry.state, CacheInspectionState::Invalid),
+        }
+    }
+
     pub fn delete(&mut self, index: usize) -> Result<bool, CacheError> {
         let path = &self.entries[index].path;
         match fs::symlink_metadata(path) {
             Ok(_) => {
-                fs::remove_file(path).map_err(CacheError::Io)?;
+                fs::remove_file(path).map_err(|source| CacheError::Io { source })?;
                 self.deleted = true;
                 Ok(true)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(CacheError::Io(error)),
+            Err(error) => Err(CacheError::Io { source: error }),
         }
     }
 }
@@ -84,8 +94,8 @@ pub fn revoke_transaction<T>(
 
 fn inspect_unlocked(cache_dir: &Path) -> Result<Vec<CacheInspection>, CacheError> {
     let mut entries = Vec::new();
-    for item in fs::read_dir(cache_dir).map_err(CacheError::Io)? {
-        let item = item.map_err(CacheError::Io)?;
+    for item in fs::read_dir(cache_dir).map_err(|source| CacheError::Io { source })? {
+        let item = item.map_err(|source| CacheError::Io { source })?;
         let path = item.path();
         if path.extension() != Some(OsStr::new("json")) {
             continue;
@@ -148,7 +158,8 @@ pub fn save_cache_entry(
 ) -> Result<SaveCacheEntry, CacheError> {
     ensure_cache_dir(cache_dir)?;
     validate_entry_key(hash_key, entry)?;
-    let json_bytes = serde_json::to_vec_pretty(entry).map_err(CacheError::Json)?;
+    let json_bytes =
+        serde_json::to_vec_pretty(entry).map_err(|source| CacheError::Json { source })?;
 
     with_cache_lock(cache_dir, LockMode::Exclusive, || {
         save_unlocked(cache_dir, hash_key, entry, &json_bytes)
@@ -164,7 +175,8 @@ pub fn save_cache_candidate(
 ) -> Result<SaveCacheEntry, CacheError> {
     ensure_cache_dir(cache_dir)?;
     validate_entry_key(hash_key, entry)?;
-    let json_bytes = serde_json::to_vec_pretty(entry).map_err(CacheError::Json)?;
+    let json_bytes =
+        serde_json::to_vec_pretty(entry).map_err(|source| CacheError::Json { source })?;
     with_locked_file(cache_dir, LockMode::Exclusive, |lock| {
         let actual = read_epoch(lock)?;
         if actual != epoch {
@@ -206,7 +218,8 @@ pub fn replace_cache_candidate(
             actual: candidate.kind_name(),
         });
     }
-    let json_bytes = serde_json::to_vec_pretty(candidate).map_err(CacheError::Json)?;
+    let json_bytes =
+        serde_json::to_vec_pretty(candidate).map_err(|source| CacheError::Json { source })?;
     with_locked_file(cache_dir, LockMode::Exclusive, |lock| {
         let actual = read_epoch(lock)?;
         if actual != epoch {
@@ -271,14 +284,19 @@ fn persist_cache_file(
     temporary
         .as_file_mut()
         .write_all(json_bytes)
-        .map_err(CacheError::Io)?;
-    temporary.as_file_mut().sync_all().map_err(CacheError::Io)?;
+        .map_err(|source| CacheError::Io { source })?;
+    temporary
+        .as_file_mut()
+        .sync_all()
+        .map_err(|source| CacheError::Io { source })?;
     temporary
         .persist(cache_file)
-        .map_err(|error| CacheError::Io(error.error))?;
+        .map_err(|error| CacheError::Io {
+            source: error.error,
+        })?;
     sync_cache_dir(cache_dir)?;
 
-    let metadata = fs::symlink_metadata(cache_file).map_err(CacheError::Io)?;
+    let metadata = fs::symlink_metadata(cache_file).map_err(|source| CacheError::Io { source })?;
     validate_cache_file(cache_file, &metadata)
 }
 
@@ -308,13 +326,13 @@ pub fn claim_abandoned_run(
     expected: &RunCacheEntry,
 ) -> Result<RunCacheEntry, CacheError> {
     update_run(cache_dir, cache_key, |entry| {
-        if entry != expected {
+        if !expected.matches_stored(entry) {
             return Err(CacheError::InvalidRunTransition(
                 "abandoned run changed while checking liveness",
             ));
         }
-        let phase = entry.lifecycle()?.claim_abandoned()?;
-        entry.set_phase(phase);
+        let phase = entry.lifecycle().claim_abandoned()?;
+        entry.phase = phase;
         Ok(())
     })
 }
@@ -338,7 +356,7 @@ pub fn delete_run_after_cleanup(
             CacheEntry::Run(entry)
                 if entry == *expected && entry.state == RunState::CleanupPending =>
             {
-                fs::remove_file(path).map_err(CacheError::Io)?;
+                fs::remove_file(path).map_err(|source| CacheError::Io { source })?;
                 sync_cache_dir(cache_dir)?;
                 Ok(true)
             }
@@ -371,7 +389,7 @@ pub fn delete_entry_if_unchanged(
         if &entry != expected {
             return Ok(false);
         }
-        fs::remove_file(path).map_err(CacheError::Io)?;
+        fs::remove_file(path).map_err(|source| CacheError::Io { source })?;
         sync_cache_dir(cache_dir)?;
         Ok(true)
     })
@@ -394,7 +412,7 @@ pub fn delete_base_if_generation(
         validate_entry_key(cache_key, &entry)?;
         match entry {
             CacheEntry::Base(entry) if entry.generation_fingerprint() == expected_generation => {
-                fs::remove_file(path).map_err(CacheError::Io)?;
+                fs::remove_file(path).map_err(|source| CacheError::Io { source })?;
                 sync_cache_dir(cache_dir)?;
                 Ok(DeleteBaseOutcome::Deleted)
             }
@@ -410,7 +428,7 @@ pub fn delete_base_if_generation(
 pub(super) fn update_run(
     cache_dir: &Path,
     cache_key: &str,
-    operation: impl FnOnce(&mut RunCacheEntry) -> Result<(), CacheError>,
+    operation: impl FnOnce(&mut crate::credential::stored::StoredRun) -> Result<(), CacheError>,
 ) -> Result<RunCacheEntry, CacheError> {
     ensure_cache_dir(cache_dir)?;
     validate_cache_key(cache_key)?;
@@ -420,7 +438,7 @@ pub(super) fn update_run(
             "run recovery entry is missing",
         ))?;
         validate_entry_key(cache_key, &entry)?;
-        let mut entry = match entry {
+        let entry = match entry {
             CacheEntry::Run(entry) => entry,
             other => {
                 return Err(CacheError::UnexpectedKind {
@@ -429,9 +447,11 @@ pub(super) fn update_run(
                 });
             }
         };
+        let mut entry: crate::credential::stored::StoredRun = entry.try_into()?;
         operation(&mut entry)?;
-        let entry = CacheEntry::Run(entry);
-        let bytes = serde_json::to_vec_pretty(&entry).map_err(CacheError::Json)?;
+        let entry = CacheEntry::Run(entry.into());
+        let bytes =
+            serde_json::to_vec_pretty(&entry).map_err(|source| CacheError::Json { source })?;
         persist_cache_file(cache_dir, &path, &bytes)?;
         let CacheEntry::Run(entry) = entry else {
             unreachable!("entry is a run")
@@ -477,11 +497,11 @@ pub fn delete_cache_entry(cache_dir: &Path, hash_key: &str) -> Result<bool, Cach
         match fs::symlink_metadata(&cache_file) {
             Ok(metadata) => {
                 validate_cache_file(&cache_file, &metadata)?;
-                fs::remove_file(&cache_file).map_err(CacheError::Io)?;
+                fs::remove_file(&cache_file).map_err(|source| CacheError::Io { source })?;
                 Ok(true)
             }
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(err) => Err(CacheError::Io(err)),
+            Err(err) => Err(CacheError::Io { source: err }),
         }
     })
 }
@@ -498,9 +518,9 @@ pub fn list_all_cache_entries(cache_dir: &Path) -> Result<CacheFileEntries, Cach
 
     with_cache_lock(cache_dir, LockMode::Exclusive, || {
         let mut entries = Vec::new();
-        let read_dir = fs::read_dir(cache_dir).map_err(CacheError::Io)?;
+        let read_dir = fs::read_dir(cache_dir).map_err(|source| CacheError::Io { source })?;
         for entry in read_dir {
-            let entry = entry.map_err(CacheError::Io)?;
+            let entry = entry.map_err(|source| CacheError::Io { source })?;
             let path = entry.path();
             if path.extension() != Some(OsStr::new("json")) {
                 continue;
@@ -533,11 +553,11 @@ fn read_cache_entry(cache_file: &Path) -> Result<Option<CacheEntry>, CacheError>
             let mut content = String::new();
             open_private_file(cache_file, false)?
                 .read_to_string(&mut content)
-                .map_err(CacheError::Io)?;
+                .map_err(|source| CacheError::Io { source })?;
             let header: CacheSchemaHeader =
                 serde_json::from_str(&content).map_err(|error| {
                     tracing::debug!(path = %cache_file.display(), error = %error, "failed to decode cache entry header");
-                    CacheError::Json(error)
+                    CacheError::Json { source: error }
                 })?;
             let expected_version = match header.kind.as_str() {
                 "base" | "scoped" => Some(crate::cache::CACHE_SCHEMA_VERSION),
@@ -556,7 +576,7 @@ fn read_cache_entry(cache_file: &Path) -> Result<Option<CacheEntry>, CacheError>
             serde_json::from_str(&content)
                 .map_err(|error| {
                     tracing::debug!(path = %cache_file.display(), error = %error, "failed to decode current cache entry");
-                    CacheError::Json(error)
+                    CacheError::Json { source: error }
                 })
                 .and_then(|entry| {
                     if let CacheEntry::Run(run) = &entry {
@@ -566,7 +586,7 @@ fn read_cache_entry(cache_file: &Path) -> Result<Option<CacheEntry>, CacheError>
                 })
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(CacheError::Io(err)),
+        Err(err) => Err(CacheError::Io { source: err }),
     }
 }
 

@@ -10,14 +10,14 @@ pub fn activate(
     child_pid: u32,
 ) -> Result<RunCacheEntry, CacheError> {
     super::storage::update_run(cache_dir, cache_key, |entry| {
-        let phase = entry.lifecycle()?.activate(
+        let phase = entry.lifecycle().activate(
             RunOwner {
                 run_id,
                 wrapper_pid,
             },
             child_pid,
         )?;
-        entry.set_phase(phase);
+        entry.phase = phase;
         Ok(())
     })
 }
@@ -30,14 +30,14 @@ pub fn abort(
     child_pid: Option<u32>,
 ) -> Result<RunCacheEntry, CacheError> {
     super::storage::update_run(cache_dir, cache_key, |entry| {
-        let phase = entry.lifecycle()?.abort(
+        let phase = entry.lifecycle().abort(
             RunOwner {
                 run_id,
                 wrapper_pid,
             },
             child_pid,
         )?;
-        entry.set_phase(phase);
+        entry.phase = phase;
         Ok(())
     })
 }
@@ -50,14 +50,14 @@ pub fn finish(
     child_pid: u32,
 ) -> Result<RunCacheEntry, CacheError> {
     super::storage::update_run(cache_dir, cache_key, |entry| {
-        let phase = entry.lifecycle()?.finish(
+        let phase = entry.lifecycle().finish(
             RunOwner {
                 run_id,
                 wrapper_pid,
             },
             child_pid,
         )?;
-        entry.set_phase(phase);
+        entry.phase = phase;
         Ok(())
     })
 }

@@ -1,34 +1,20 @@
-use crate::cache::{
-    CacheEntry, CacheInspectionState, RunCacheEntry, RunState, claim_abandoned_run,
-    delete_entry_if_unchanged, delete_run_after_cleanup, inspect_cache,
-};
 use crate::config::{AppProfile, Config};
+use crate::credential::store::InspectionState;
+use crate::credential::store::{Inspect, Remove, StoreError};
+use crate::credential::stored::{StoredCredential, StoredRun};
+
+use crate::run::lifecycle::RunPhase;
+use crate::run::store::RunStore;
 use crate::token::remote::{RemoteError, RevokeTokenClient};
-use std::path::Path;
 use time::OffsetDateTime;
 
 pub enum CleanupFailure {
-    InvalidEntry {
-        entry: String,
-    },
-    Configuration {
-        entry: String,
-    },
-    ClientSecretUnavailable {
-        entry: String,
-    },
-    Ownership {
-        entry: String,
-        source: crate::cache::CacheError,
-    },
-    GitHubRevocation {
-        entry: String,
-        source: RemoteError,
-    },
-    CacheDeletion {
-        entry: String,
-        source: crate::cache::CacheError,
-    },
+    InvalidEntry { entry: String },
+    Configuration { entry: String },
+    ClientSecretUnavailable { entry: String },
+    Ownership { entry: String, source: StoreError },
+    GitHubRevocation { entry: String, source: RemoteError },
+    CacheDeletion { entry: String, source: StoreError },
 }
 
 enum CleanupOutcome {
@@ -103,17 +89,19 @@ impl CleanupReport {
     }
 }
 
-pub fn cleanup_marked_run<C: RevokeTokenClient>(
+pub fn cleanup_marked_run<C: RevokeTokenClient, S: RunStore + ?Sized>(
     client: &C,
     config: &Config,
-    cache_dir: &Path,
+    store: &S,
     cache_key: &str,
-    entry: &RunCacheEntry,
+    entry: &StoredRun,
 ) -> CleanupReport {
     let mut report = CleanupReport::default();
-    let attempt = match entry.state {
-        RunState::CleanupPending => cleanup_run_entry(client, config, cache_dir, cache_key, entry),
-        RunState::Pending | RunState::Running => Err(CleanupFailure::InvalidEntry {
+    let attempt = match entry.phase {
+        RunPhase::CleanupPending { .. } => {
+            cleanup_run_entry(client, config, store, cache_key, entry)
+        }
+        RunPhase::Pending | RunPhase::Running { .. } => Err(CleanupFailure::InvalidEntry {
             entry: cache_key.to_owned(),
         }),
     };
@@ -121,15 +109,18 @@ pub fn cleanup_marked_run<C: RevokeTokenClient>(
     report
 }
 
-pub fn prune<C: RevokeTokenClient>(
+pub fn prune<C: RevokeTokenClient, S: Inspect + Remove + RunStore + ?Sized>(
     client: &C,
     config: &Config,
-    cache_dir: &Path,
+    store: &S,
     now: OffsetDateTime,
-) -> Result<CleanupReport, crate::cache::CacheError> {
+) -> Result<CleanupReport, StoreError> {
     let mut report = CleanupReport::default();
-    let inspections = inspect_cache(cache_dir)?;
-    tracing::debug!(cache_dir = %cache_dir.display(), entries = inspections.len(), "inspecting cache entries for pruning");
+    let inspections = store.inspect()?;
+    tracing::debug!(
+        entries = inspections.len(),
+        "inspecting cache entries for pruning"
+    );
     for inspection in inspections {
         let label = inspection.label;
         let attempt = match (inspection.cache_key, inspection.state) {
@@ -140,20 +131,18 @@ pub fn prune<C: RevokeTokenClient>(
                 );
                 Err(CleanupFailure::InvalidEntry { entry: label })
             }
-            (Some(_), CacheInspectionState::Invalid) => {
+            (Some(_), InspectionState::Invalid) => {
                 tracing::debug!(
                     entry = label,
                     "retaining invalid cache entry for manual inspection"
                 );
                 Err(CleanupFailure::InvalidEntry { entry: label })
             }
-            (Some(cache_key), CacheInspectionState::Current(entry))
-                if expiry(&entry).value() <= now =>
-            {
-                delete_expired_entry(cache_dir, &cache_key, &label, &entry)
+            (Some(cache_key), InspectionState::Current(entry)) if expiry(&entry).value() <= now => {
+                delete_expired_entry(store, &cache_key, &label, &entry)
             }
-            (Some(cache_key), CacheInspectionState::Current(entry)) => {
-                cleanup_unexpired_entry(client, config, cache_dir, &cache_key, &label, *entry)
+            (Some(cache_key), InspectionState::Current(entry)) => {
+                cleanup_unexpired_entry(client, config, store, &cache_key, &label, *entry)
             }
         };
         report.record(attempt);
@@ -161,18 +150,18 @@ pub fn prune<C: RevokeTokenClient>(
     Ok(report)
 }
 
-fn delete_expired_entry(
-    cache_dir: &Path,
+fn delete_expired_entry<S: Remove + ?Sized>(
+    store: &S,
     cache_key: &str,
     label: &str,
-    entry: &CacheEntry,
+    entry: &StoredCredential,
 ) -> CleanupAttempt {
     tracing::debug!(
         entry = label,
         kind = entry.kind_name(),
         "deleting expired cache entry"
     );
-    match delete_entry_if_unchanged(cache_dir, cache_key, entry) {
+    match store.delete_unchanged(cache_key, entry) {
         Ok(true) => {
             tracing::debug!(entry = label, "deleted expired cache entry");
             Ok(CleanupOutcome::ExpiredDeleted)
@@ -196,42 +185,44 @@ fn delete_expired_entry(
     }
 }
 
-fn cleanup_unexpired_entry<C: RevokeTokenClient>(
+fn cleanup_unexpired_entry<C: RevokeTokenClient, S: RunStore + ?Sized>(
     client: &C,
     config: &Config,
-    cache_dir: &Path,
+    store: &S,
     cache_key: &str,
     label: &str,
-    entry: CacheEntry,
+    entry: StoredCredential,
 ) -> CleanupAttempt {
     match entry {
-        CacheEntry::Base(_) | CacheEntry::Scoped(_) => Ok(CleanupOutcome::NoAction),
-        CacheEntry::Run(entry) => {
-            cleanup_pruned_run(client, config, cache_dir, cache_key, label, &entry)
+        StoredCredential::Base(_) | StoredCredential::Scoped(_) => Ok(CleanupOutcome::NoAction),
+        StoredCredential::Run(entry) => {
+            cleanup_pruned_run(client, config, store, cache_key, label, &entry)
         }
     }
 }
 
-fn cleanup_pruned_run<C: RevokeTokenClient>(
+fn cleanup_pruned_run<C: RevokeTokenClient, S: RunStore + ?Sized>(
     client: &C,
     config: &Config,
-    cache_dir: &Path,
+    store: &S,
     cache_key: &str,
     label: &str,
-    entry: &RunCacheEntry,
+    entry: &StoredRun,
 ) -> CleanupAttempt {
-    match entry.state {
-        RunState::CleanupPending => cleanup_run_entry(client, config, cache_dir, cache_key, entry),
-        RunState::Pending | RunState::Running
-            if pid_is_alive(entry.wrapper_pid) || entry.child_pid.is_some_and(pid_is_alive) =>
+    match entry.phase {
+        RunPhase::CleanupPending { .. } => {
+            cleanup_run_entry(client, config, store, cache_key, entry)
+        }
+        RunPhase::Pending | RunPhase::Running { .. }
+            if pid_is_alive(entry.wrapper_pid) || entry.child_pid().is_some_and(pid_is_alive) =>
         {
-            tracing::debug!(entry = label, wrapper_pid = entry.wrapper_pid, child_pid = ?entry.child_pid, "skipping active run during pruning");
+            tracing::debug!(entry = label, wrapper_pid = entry.wrapper_pid, child_pid = ?entry.child_pid(), "skipping active run during pruning");
             Ok(CleanupOutcome::ActiveRunSkipped)
         }
-        RunState::Pending | RunState::Running => {
+        RunPhase::Pending | RunPhase::Running { .. } => {
             tracing::debug!(entry = label, "claiming abandoned run for cleanup");
-            match claim_abandoned_run(cache_dir, cache_key, entry) {
-                Ok(claimed) => cleanup_run_entry(client, config, cache_dir, cache_key, &claimed),
+            match store.claim_abandoned(cache_key, entry) {
+                Ok(claimed) => cleanup_run_entry(client, config, store, cache_key, &claimed),
                 Err(source) => {
                     tracing::debug!(entry = label, error = %source, "failed to claim abandoned run for cleanup");
                     Err(CleanupFailure::Ownership {
@@ -244,12 +235,12 @@ fn cleanup_pruned_run<C: RevokeTokenClient>(
     }
 }
 
-fn cleanup_run_entry<C: RevokeTokenClient>(
+fn cleanup_run_entry<C: RevokeTokenClient, S: RunStore + ?Sized>(
     client: &C,
     config: &Config,
-    cache_dir: &Path,
+    store: &S,
     cache_key: &str,
-    entry: &RunCacheEntry,
+    entry: &StoredRun,
 ) -> CleanupAttempt {
     let label = cache_key.to_owned();
     let Some(app) = validated_app(config, entry) else {
@@ -285,7 +276,7 @@ fn cleanup_run_entry<C: RevokeTokenClient>(
             });
         }
     }
-    match delete_run_after_cleanup(cache_dir, cache_key, entry) {
+    match store.delete_cleaned(cache_key, entry) {
         Ok(_) => {
             tracing::debug!(cache_key, "deleted run recovery entry after remote cleanup");
             Ok(CleanupOutcome::RunRevoked)
@@ -300,7 +291,7 @@ fn cleanup_run_entry<C: RevokeTokenClient>(
     }
 }
 
-fn validated_app<'a>(config: &'a Config, entry: &RunCacheEntry) -> Option<&'a AppProfile> {
+fn validated_app<'a>(config: &'a Config, entry: &StoredRun) -> Option<&'a AppProfile> {
     match super::provenance::for_source(
         config,
         &entry.source_profile,
@@ -312,11 +303,11 @@ fn validated_app<'a>(config: &'a Config, entry: &RunCacheEntry) -> Option<&'a Ap
     }
 }
 
-const fn expiry(entry: &CacheEntry) -> crate::credential::TokenExpiry {
+const fn expiry(entry: &StoredCredential) -> crate::credential::TokenExpiry {
     match entry {
-        CacheEntry::Base(entry) => entry.expires_at,
-        CacheEntry::Scoped(entry) => entry.expires_at,
-        CacheEntry::Run(entry) => entry.expires_at,
+        StoredCredential::Base(entry) => entry.expires_at,
+        StoredCredential::Scoped(entry) => entry.expires_at,
+        StoredCredential::Run(entry) => entry.expires_at,
     }
 }
 
@@ -342,6 +333,7 @@ fn pid_is_alive(_pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::{CacheEntry, RunCacheEntry};
     use crate::cache::{
         RUN_CACHE_SCHEMA_VERSION, RunState, authority_fingerprint, compute_run_cache_key,
         load_cache_entry, save_cache_entry,
@@ -445,7 +437,13 @@ permissions = { contents = "read" }
             .unwrap();
         }
         let client = client();
-        let report = prune(&client, &config(), &cache_dir, now).unwrap();
+        let report = prune(
+            &client,
+            &config(),
+            &crate::cache::FsCredentialStore::new(&cache_dir),
+            now,
+        )
+        .unwrap();
         assert_eq!(report.active_runs_skipped, 1);
         assert_eq!(report.revoked_runs, 1);
         assert!(report.is_complete());
@@ -481,7 +479,13 @@ permissions = { contents = "read" }
         )
         .unwrap();
         let client = client();
-        let report = prune(&client, &config(), &cache_dir, now).unwrap();
+        let report = prune(
+            &client,
+            &config(),
+            &crate::cache::FsCredentialStore::new(&cache_dir),
+            now,
+        )
+        .unwrap();
         assert_eq!(report.expired_deletions, 1);
         assert!(client.revoked.borrow().is_empty());
         assert!(load_cache_entry(&cache_dir, &key).unwrap().is_none());
@@ -507,7 +511,13 @@ permissions = { contents = "read" }
         save_cache_entry(&cache_dir, &key, &cached).unwrap();
 
         let client = client();
-        let report = prune(&client, &config(), &cache_dir, now).unwrap();
+        let report = prune(
+            &client,
+            &config(),
+            &crate::cache::FsCredentialStore::new(&cache_dir),
+            now,
+        )
+        .unwrap();
 
         assert!(client.revoked.borrow().is_empty());
         assert_eq!(report.retained_entries, 1);
@@ -545,7 +555,13 @@ permissions = { contents = "read" }
         let client = client();
         client.fail.set(true);
 
-        let report = prune(&client, &config(), &cache_dir, now).unwrap();
+        let report = prune(
+            &client,
+            &config(),
+            &crate::cache::FsCredentialStore::new(&cache_dir),
+            now,
+        )
+        .unwrap();
 
         assert_eq!(report.retained_entries, 1);
         assert!(matches!(

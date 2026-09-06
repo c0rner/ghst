@@ -10,7 +10,7 @@ pub fn run_prune(args: &GhstCli, _cmd: &PruneCmd) -> Result<(), CmdError> {
     let report = crate::token::cleanup::prune(
         &GitHubClient::new(),
         &config,
-        &cache_dir,
+        &crate::cache::FsCredentialStore::new(&cache_dir),
         time::OffsetDateTime::now_utc(),
     )?;
     tracing::debug!(

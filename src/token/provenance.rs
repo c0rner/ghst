@@ -1,5 +1,6 @@
-use crate::cache::{CacheEntry, authority_fingerprint};
 use crate::config::{AppProfile, Config, GitHubAppConfig, ProfileConfig};
+use crate::credential::stored::{StoredCredential, authority_fingerprint};
+
 use crate::profile::AppAuthority;
 
 pub(super) enum ConfiguredAuthority<'a> {
@@ -16,15 +17,20 @@ pub(super) fn matches_authority(authority: &AppAuthority<'_>, cached_fingerprint
     authority_fingerprint(authority.client_id, authority.account) == cached_fingerprint
 }
 
-pub(super) fn for_entry<'a>(config: &'a Config, entry: &CacheEntry) -> ConfiguredAuthority<'a> {
+pub(super) fn for_entry<'a>(
+    config: &'a Config,
+    entry: &StoredCredential,
+) -> ConfiguredAuthority<'a> {
     match entry {
-        CacheEntry::Base(entry) => for_source(config, &entry.profile, &entry.authority_fingerprint),
-        CacheEntry::Scoped(entry) => for_source(
+        StoredCredential::Base(entry) => {
+            for_source(config, &entry.profile, &entry.authority_fingerprint)
+        }
+        StoredCredential::Scoped(entry) => for_source(
             config,
             &entry.source_profile,
             &entry.source_authority_fingerprint,
         ),
-        CacheEntry::Run(entry) => for_source(
+        StoredCredential::Run(entry) => for_source(
             config,
             &entry.source_profile,
             &entry.source_authority_fingerprint,

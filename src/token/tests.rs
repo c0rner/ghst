@@ -149,12 +149,12 @@ fn failing_scoped_client(status: u16) -> MockClient {
 }
 
 fn base_request<'a>(
-    cache_dir: &'a Path,
+    cache_dir: &'a crate::cache::FsCredentialStore<'a>,
     profile: &'a ResolvedTokenProfile<'a>,
-) -> AcquireRequest<'a> {
+) -> AcquireRequest<'a, crate::cache::FsCredentialStore<'a>> {
     match profile {
         ResolvedTokenProfile::Base { name, app } => AcquireRequest::Base {
-            cache_dir,
+            store: cache_dir,
             profile_name: name,
             authority: app.authority,
         },
@@ -163,9 +163,9 @@ fn base_request<'a>(
 }
 
 fn scoped_request<'a>(
-    cache_dir: &'a Path,
+    cache_dir: &'a crate::cache::FsCredentialStore<'a>,
     profile: &'a ResolvedTokenProfile<'a>,
-) -> AcquireRequest<'a> {
+) -> AcquireRequest<'a, crate::cache::FsCredentialStore<'a>> {
     match profile {
         ResolvedTokenProfile::Scoped {
             name,
@@ -174,7 +174,7 @@ fn scoped_request<'a>(
             repository_scope,
             permissions,
         } => AcquireRequest::Scoped {
-            cache_dir,
+            store: cache_dir,
             profile_name: name,
             source_name,
             app: *app,
@@ -245,10 +245,11 @@ fn response_receipt_time_rejects_latency_crossing_the_handoff_margin() {
     let profile = config.resolve_token_profile("reader").unwrap();
     let mut times = [now, now, now + Duration::seconds(15)].into_iter();
 
-    let result =
-        super::acquire::acquire_with_clock(&client, scoped_request(&cache_dir, &profile), || {
-            times.next().unwrap()
-        });
+    let result = super::acquire::acquire_with_clock(
+        &client,
+        scoped_request(&crate::cache::FsCredentialStore::new(&cache_dir), &profile),
+        || times.next().unwrap(),
+    );
 
     assert!(matches!(result, Err(TokenError::InvalidLifetime { .. })));
     assert_eq!(&*client.revoked.borrow(), &["too-late"]);
@@ -266,18 +267,26 @@ fn base_authority_and_kind_are_validated() {
         panic!("expected base profile");
     };
     assert!(
-        load_current_base_entry(&cache_dir, "developer", &app.authority)
-            .unwrap()
-            .is_some()
+        load_current_base_entry(
+            &crate::cache::FsCredentialStore::new(&cache_dir),
+            "developer",
+            &app.authority
+        )
+        .unwrap()
+        .is_some()
     );
     let mismatched = AppAuthority {
         account: "other",
         client_id: "id",
     };
     assert!(
-        load_current_base_entry(&cache_dir, "developer", &mismatched)
-            .unwrap()
-            .is_none()
+        load_current_base_entry(
+            &crate::cache::FsCredentialStore::new(&cache_dir),
+            "developer",
+            &mismatched
+        )
+        .unwrap()
+        .is_none()
     );
 }
 
@@ -293,7 +302,11 @@ fn base_acquisition_returns_cached_token() {
         access_token: "unused".into(),
         expires_at: None,
     });
-    let acquired = acquire(&client, base_request(&cache_dir, &profile)).unwrap();
+    let acquired = acquire(
+        &client,
+        base_request(&crate::cache::FsCredentialStore::new(&cache_dir), &profile),
+    )
+    .unwrap();
     assert_eq!(acquired.access_token.as_ref(), "base-token");
     assert_eq!(acquired.repo_scope, "all");
 }
@@ -320,7 +333,7 @@ fn invalid_base_response_is_revoked_and_not_persisted() {
             &client,
             &app,
             "developer",
-            &cache_dir,
+            &crate::cache::FsCredentialStore::new(&cache_dir),
             response,
             OffsetDateTime::now_utc(),
             cache_epoch(&cache_dir).unwrap(),
@@ -354,7 +367,11 @@ fn scoped_acquisition_sends_exact_narrowing_request() {
         .parse()
         .unwrap();
     let profile = config.resolve_token_profile("reader").unwrap();
-    let acquired = acquire(&client, scoped_request(&cache_dir, &profile)).unwrap();
+    let acquired = acquire(
+        &client,
+        scoped_request(&crate::cache::FsCredentialStore::new(&cache_dir), &profile),
+    )
+    .unwrap();
     assert_eq!(acquired.access_token.as_ref(), "child-token");
     assert_eq!(acquired.expires_at, exact_expiry);
     assert_eq!(acquired.repo_scope, "acme/api,acme/web");
@@ -391,7 +408,7 @@ fn permanent_scoped_rejection_evicts_the_rejected_base() {
         cache_base(&cache_dir, now, "rejected-base");
         let result = acquire(
             &failing_scoped_client(status),
-            scoped_request(&cache_dir, &profile),
+            scoped_request(&crate::cache::FsCredentialStore::new(&cache_dir), &profile),
         );
 
         assert!(
@@ -416,7 +433,7 @@ fn scoped_policy_and_transient_rejections_retain_the_base() {
         cache_base(&cache_dir, now, "retained-base");
         let result = acquire(
             &failing_scoped_client(status),
-            scoped_request(&cache_dir, &profile),
+            scoped_request(&crate::cache::FsCredentialStore::new(&cache_dir), &profile),
         );
 
         match status {
@@ -454,7 +471,10 @@ fn invalid_scoped_response_is_revoked_without_cache_entry() {
     let config: Config = CONFIG.parse().unwrap();
     let profile = config.resolve_token_profile("reader").unwrap();
     assert!(matches!(
-        acquire(&client, scoped_request(&cache_dir, &profile)),
+        acquire(
+            &client,
+            scoped_request(&crate::cache::FsCredentialStore::new(&cache_dir), &profile)
+        ),
         Err(TokenError::InvalidLifetime { .. })
     ));
     assert_eq!(&*client.revoked.borrow(), &["bad-child"]);
@@ -515,7 +535,10 @@ fn permanent_rejection_preserves_a_concurrent_base_replacement() {
     let config: Config = CONFIG.parse().unwrap();
     let profile = config.resolve_token_profile("reader").unwrap();
 
-    let result = acquire(&client, scoped_request(&cache_dir, &profile));
+    let result = acquire(
+        &client,
+        scoped_request(&crate::cache::FsCredentialStore::new(&cache_dir), &profile),
+    );
 
     assert!(
         matches!(result, Err(TokenError::BaseGenerationChanged(profile)) if profile == "developer")
@@ -575,7 +598,7 @@ fn base_generation_change_revokes_candidate_and_requests_retry() {
     assert!(matches!(
         acquire(
             &client,
-            scoped_request(&cache_dir, &profile),
+            scoped_request(&crate::cache::FsCredentialStore::new(&cache_dir), &profile),
         ),
         Err(TokenError::BaseGenerationChanged(profile)) if profile == "developer"
     ));
@@ -596,7 +619,11 @@ fn cached_scoped_token_remains_usable_after_base_expiry() {
             TokenExpiry::new(OffsetDateTime::now_utc() + Duration::hours(6)).to_string(),
         ),
     });
-    acquire(&first_client, scoped_request(&cache_dir, &profile)).unwrap();
+    acquire(
+        &first_client,
+        scoped_request(&crate::cache::FsCredentialStore::new(&cache_dir), &profile),
+    )
+    .unwrap();
 
     let base_key = base_cache_key("developer");
     let CacheEntry::Base(mut base) = load_cache_entry(&cache_dir, &base_key).unwrap().unwrap()
@@ -613,7 +640,11 @@ fn cached_scoped_token_remains_usable_after_base_expiry() {
         revoked: RefCell::new(Vec::new()),
         revoke_fails: false,
     };
-    let acquired = acquire(&unused_client, scoped_request(&cache_dir, &profile)).unwrap();
+    let acquired = acquire(
+        &unused_client,
+        scoped_request(&crate::cache::FsCredentialStore::new(&cache_dir), &profile),
+    )
+    .unwrap();
     assert_eq!(acquired.access_token.as_ref(), "child-token");
     assert!(unused_client.request.borrow().is_none());
 }
@@ -634,11 +665,12 @@ fn renewable_scoped_token_is_replaced_and_displaced_token_is_revoked() {
     let profile = config.resolve_token_profile("reader").unwrap();
     let mut times = [now, now, now].into_iter();
 
-    let acquired =
-        super::acquire::acquire_with_clock(&client, scoped_request(&cache_dir, &profile), || {
-            times.next().unwrap()
-        })
-        .unwrap();
+    let acquired = super::acquire::acquire_with_clock(
+        &client,
+        scoped_request(&crate::cache::FsCredentialStore::new(&cache_dir), &profile),
+        || times.next().unwrap(),
+    )
+    .unwrap();
 
     assert_eq!(acquired.access_token.as_ref(), "renewed-child");
     assert_eq!(&*client.revoked.borrow(), &["renewable-child"]);
@@ -670,11 +702,12 @@ fn renewable_scoped_token_falls_back_when_base_is_not_usable() {
     let profile = config.resolve_token_profile("reader").unwrap();
     let mut times = [now, now].into_iter();
 
-    let acquired =
-        super::acquire::acquire_with_clock(&client, scoped_request(&cache_dir, &profile), || {
-            times.next().unwrap()
-        })
-        .unwrap();
+    let acquired = super::acquire::acquire_with_clock(
+        &client,
+        scoped_request(&crate::cache::FsCredentialStore::new(&cache_dir), &profile),
+        || times.next().unwrap(),
+    )
+    .unwrap();
 
     assert_eq!(acquired.access_token.as_ref(), "renewable-child");
     assert!(client.request.borrow().is_none());
@@ -700,10 +733,11 @@ fn fallback_child_inside_handoff_margin_is_rejected_when_base_cannot_mint() {
     let profile = config.resolve_token_profile("reader").unwrap();
     let mut times = [now, now + Duration::seconds(2)].into_iter();
 
-    let result =
-        super::acquire::acquire_with_clock(&client, scoped_request(&cache_dir, &profile), || {
-            times.next().unwrap()
-        });
+    let result = super::acquire::acquire_with_clock(
+        &client,
+        scoped_request(&crate::cache::FsCredentialStore::new(&cache_dir), &profile),
+        || times.next().unwrap(),
+    );
 
     assert!(matches!(
         result,
@@ -732,11 +766,12 @@ fn fallback_child_on_valid_side_of_handoff_margin_is_returned_when_base_cannot_m
     let profile = config.resolve_token_profile("reader").unwrap();
     let mut times = [now, now + Duration::seconds(2)].into_iter();
 
-    let acquired =
-        super::acquire::acquire_with_clock(&client, scoped_request(&cache_dir, &profile), || {
-            times.next().unwrap()
-        })
-        .unwrap();
+    let acquired = super::acquire::acquire_with_clock(
+        &client,
+        scoped_request(&crate::cache::FsCredentialStore::new(&cache_dir), &profile),
+        || times.next().unwrap(),
+    )
+    .unwrap();
 
     assert_eq!(acquired.access_token.as_ref(), "renewable-child");
     assert!(client.request.borrow().is_none());
@@ -762,10 +797,11 @@ fn token_inside_handoff_margin_is_never_returned() {
     let profile = config.resolve_token_profile("reader").unwrap();
     let mut times = [now, now].into_iter();
 
-    let result =
-        super::acquire::acquire_with_clock(&client, scoped_request(&cache_dir, &profile), || {
-            times.next().unwrap()
-        });
+    let result = super::acquire::acquire_with_clock(
+        &client,
+        scoped_request(&crate::cache::FsCredentialStore::new(&cache_dir), &profile),
+        || times.next().unwrap(),
+    );
 
     assert!(matches!(
         result,
@@ -786,10 +822,11 @@ fn cached_child_is_not_returned_when_base_provenance_is_missing() {
     let config: Config = CONFIG.parse().unwrap();
     let profile = config.resolve_token_profile("reader").unwrap();
 
-    let result =
-        super::acquire::acquire_with_clock(&client, scoped_request(&cache_dir, &profile), || {
-            panic!("clock is not sampled before base provenance is established")
-        });
+    let result = super::acquire::acquire_with_clock(
+        &client,
+        scoped_request(&crate::cache::FsCredentialStore::new(&cache_dir), &profile),
+        || panic!("clock is not sampled before base provenance is established"),
+    );
 
     assert!(matches!(
         result,
@@ -816,7 +853,7 @@ fn failed_displaced_revocation_leaves_the_renewed_token_persisted() {
 
     let result = super::acquire::acquire_with_clock(
         &failing_client,
-        scoped_request(&cache_dir, &profile),
+        scoped_request(&crate::cache::FsCredentialStore::new(&cache_dir), &profile),
         || times.next().unwrap(),
     );
 

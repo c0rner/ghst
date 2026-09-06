@@ -1,26 +1,8 @@
-use crate::cache::digest::encode_hex;
 use crate::cache::error::CacheError;
-use sha2::{Digest, Sha256};
 
 pub const MIN_CACHE_ID_LENGTH: usize = 7;
 
-/// Compute SHA-256 hex cache key for `profile_name + "|" + canonical_repo_scope`.
-pub fn compute_cache_key(profile_name: &str, canonical_repo_scope: &str) -> String {
-    let input = format!("{profile_name}|{canonical_repo_scope}");
-    let digest = Sha256::digest(input.as_bytes());
-    encode_hex(&digest)
-}
-
-/// Compute a domain-separated SHA-256 cache key for a one-off run identifier.
-pub fn compute_run_cache_key(run_id: &str) -> String {
-    let mut hasher = Sha256::new();
-    for part in ["ghst-cache-key-v1", "run", run_id] {
-        hasher.update(part.len().to_string().as_bytes());
-        hasher.update(b":");
-        hasher.update(part.as_bytes());
-    }
-    encode_hex(&hasher.finalize())
-}
+pub use crate::credential::stored::{compute_cache_key, compute_run_cache_key};
 
 /// Return the shortest cache-key prefix that is unique among `cache_keys`, or
 /// the full key when no distinguishing prefix exists.

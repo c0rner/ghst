@@ -1,27 +1,15 @@
-use crate::cache::{CacheInspectionState, revoke_transaction};
 use crate::config::Config;
+use crate::credential::store::InspectionState;
+use crate::credential::store::StoreError;
 use crate::token::remote::{RemoteError, RevokeTokenClient};
-use std::path::Path;
 use time::OffsetDateTime;
 
 pub enum RevokeFailure {
-    MissingAppCredentials {
-        entry: String,
-    },
-    ClientSecretUnavailable {
-        entry: String,
-    },
-    AuthorityMismatch {
-        entry: String,
-    },
-    GitHubRevocation {
-        entry: String,
-        source: RemoteError,
-    },
-    CacheDeletion {
-        entry: String,
-        source: crate::cache::CacheError,
-    },
+    MissingAppCredentials { entry: String },
+    ClientSecretUnavailable { entry: String },
+    AuthorityMismatch { entry: String },
+    GitHubRevocation { entry: String, source: RemoteError },
+    CacheDeletion { entry: String, source: StoreError },
 }
 
 impl std::fmt::Debug for RevokeFailure {
@@ -68,23 +56,23 @@ pub enum RevokeOneOutcome {
     Ambiguous,
 }
 
-pub fn revoke_all<C: RevokeTokenClient>(
+pub fn revoke_all<C: RevokeTokenClient, S: crate::credential::store::Revoke + ?Sized>(
     client: &C,
     config: &Config,
-    cache_dir: &Path,
+    store: &S,
     now: OffsetDateTime,
-) -> Result<RevokeReport, crate::cache::CacheError> {
-    revoke_selected(client, config, cache_dir, None, now).map(|(_, report)| report)
+) -> Result<RevokeReport, StoreError> {
+    revoke_selected(client, config, store, None, now).map(|(_, report)| report)
 }
 
-pub fn revoke_one<C: RevokeTokenClient>(
+pub fn revoke_one<C: RevokeTokenClient, S: crate::credential::store::Revoke + ?Sized>(
     client: &C,
     config: &Config,
-    cache_dir: &Path,
+    store: &S,
     cache_id: &str,
     now: OffsetDateTime,
-) -> Result<RevokeOneOutcome, crate::cache::CacheError> {
-    revoke_selected(client, config, cache_dir, Some(cache_id), now).map(|(matches, report)| {
+) -> Result<RevokeOneOutcome, StoreError> {
+    revoke_selected(client, config, store, Some(cache_id), now).map(|(matches, report)| {
         match matches {
             0 => RevokeOneOutcome::NotFound,
             1 => RevokeOneOutcome::Revoked(report),
@@ -93,90 +81,78 @@ pub fn revoke_one<C: RevokeTokenClient>(
     })
 }
 
-fn revoke_selected<C: RevokeTokenClient>(
+fn revoke_selected<C: RevokeTokenClient, S: crate::credential::store::Revoke + ?Sized>(
     client: &C,
     config: &Config,
-    cache_dir: &Path,
+    store: &S,
     selected_cache_id: Option<&str>,
     now: OffsetDateTime,
-) -> Result<(usize, RevokeReport), crate::cache::CacheError> {
-    revoke_transaction(cache_dir, |transaction| {
-        let mut report = RevokeReport::default();
-        let selected_indices: Vec<_> = transaction
-            .entries()
-            .iter()
-            .enumerate()
-            .filter_map(|(index, inspection)| {
-                selected_cache_id
-                    .is_none_or(|selected| {
-                        inspection.cache_key.as_deref().is_some_and(|cache_key| {
-                            cache_key
-                                .get(..selected.len())
-                                .is_some_and(|prefix| prefix.eq_ignore_ascii_case(selected))
-                        })
-                    })
-                    .then_some(index)
-            })
-            .collect();
-        let matches = selected_indices.len();
-        if selected_cache_id.is_some() && matches != 1 {
-            return (matches, report);
+) -> Result<(usize, RevokeReport), StoreError> {
+    let mut policy = RevokePolicy {
+        client,
+        config,
+        now,
+        report: RevokeReport::default(),
+        remotely_inactive: false,
+    };
+    let matches = store.revoke(selected_cache_id, &mut policy)?;
+    Ok((matches, policy.report))
+}
+
+struct RevokePolicy<'a, C> {
+    client: &'a C,
+    config: &'a Config,
+    now: OffsetDateTime,
+    report: RevokeReport,
+    remotely_inactive: bool,
+}
+impl<C: RevokeTokenClient> crate::credential::store::Revocation for RevokePolicy<'_, C> {
+    fn should_delete(&mut self, inspection: &crate::credential::store::Inspection) -> bool {
+        match attempt_remote_revocation(
+            self.client,
+            self.config,
+            &inspection.state,
+            &inspection.label,
+            self.now,
+            &mut self.report,
+        ) {
+            Some(remote) => {
+                self.remotely_inactive = remote;
+                true
+            }
+            None => false,
         }
-        tracing::debug!(cache_dir = %cache_dir.display(), entries = transaction.entries().len(), "started cache-wide credential revocation transaction");
-        for index in selected_indices {
-            let label = transaction.entries()[index].label.clone();
-            tracing::debug!(entry = label, "processing cached credential for revocation");
-            let Some(revocation) = attempt_remote_revocation(
-                client,
-                config,
-                &transaction.entries()[index].state,
-                &label,
-                now,
-                &mut report,
-            ) else {
-                continue;
-            };
-            match transaction.delete(index) {
-                Ok(true) if revocation => {
-                    report.remotely_inactive += 1;
-                    tracing::debug!(
-                        entry = label,
-                        "deleted remotely inactive credential from local cache"
-                    );
-                }
-                Ok(true) => {
-                    report.local_only += 1;
-                    tracing::debug!(entry = label, "deleted credential from local cache only");
-                }
-                Ok(false) => report.failures.push(RevokeFailure::CacheDeletion {
-                    entry: label,
-                    source: crate::cache::CacheError::Io(std::io::Error::new(
+    }
+    fn deleted(&mut self, label: &str, result: Result<bool, StoreError>) {
+        match result {
+            Ok(true) if self.remotely_inactive => self.report.remotely_inactive += 1,
+            Ok(true) => self.report.local_only += 1,
+            Ok(false) => self.report.failures.push(RevokeFailure::CacheDeletion {
+                entry: label.to_owned(),
+                source: StoreError::Io {
+                    source: std::io::Error::new(
                         std::io::ErrorKind::NotFound,
                         "cache entry disappeared",
-                    )),
-                }),
-                Err(source) => {
-                    tracing::debug!(entry = label, error = %source, "failed to delete credential from local cache");
-                    report.failures.push(RevokeFailure::CacheDeletion {
-                        entry: label,
-                        source,
-                    });
-                }
-            }
+                    ),
+                },
+            }),
+            Err(source) => self.report.failures.push(RevokeFailure::CacheDeletion {
+                entry: label.to_owned(),
+                source,
+            }),
         }
-        (matches, report)
-    })
+    }
 }
 
 fn attempt_remote_revocation<C: RevokeTokenClient>(
     client: &C,
     config: &Config,
-    state: &CacheInspectionState,
+    state: &InspectionState,
     label: &str,
     now: OffsetDateTime,
     report: &mut RevokeReport,
 ) -> Option<bool> {
-    let CacheInspectionState::Current(entry) = state else {
+    let InspectionState::Current(entry) = state else {
         tracing::debug!(
             entry = label,
             "cache entry is invalid; deleting locally without remote revocation"
@@ -264,6 +240,7 @@ mod tests {
     };
     use crate::credential::{AccessToken, TokenExpiry};
     use std::cell::{Cell, RefCell};
+    use std::path::Path;
     use time::Duration;
 
     struct MockClient(Cell<usize>);
@@ -343,7 +320,7 @@ mod tests {
         let report = revoke_all(
             &client,
             &config(false),
-            &cache_dir,
+            &crate::cache::FsCredentialStore::new(&cache_dir),
             OffsetDateTime::now_utc(),
         )
         .unwrap();
@@ -363,7 +340,7 @@ mod tests {
             let report = revoke_all(
                 &client,
                 &config(true),
-                &cache_dir,
+                &crate::cache::FsCredentialStore::new(&cache_dir),
                 OffsetDateTime::now_utc(),
             )
             .unwrap();
@@ -405,7 +382,7 @@ mod tests {
         let report = match revoke_one(
             &client,
             &config(true),
-            &cache_dir,
+            &crate::cache::FsCredentialStore::new(&cache_dir),
             &scoped_key[..crate::cache::MIN_CACHE_ID_LENGTH],
             now,
         )
@@ -423,7 +400,14 @@ mod tests {
         assert_eq!(entries[0].0, crate::token::base_cache_key("developer"));
 
         assert!(matches!(
-            revoke_one(&client, &config(true), &cache_dir, &scoped_key, now).unwrap(),
+            revoke_one(
+                &client,
+                &config(true),
+                &crate::cache::FsCredentialStore::new(&cache_dir),
+                &scoped_key,
+                now
+            )
+            .unwrap(),
             RevokeOneOutcome::NotFound
         ));
     }
@@ -440,7 +424,15 @@ mod tests {
             fails: true,
         };
 
-        let report = match revoke_one(&client, &config(true), &cache_dir, &base_key, now).unwrap() {
+        let report = match revoke_one(
+            &client,
+            &config(true),
+            &crate::cache::FsCredentialStore::new(&cache_dir),
+            &base_key,
+            now,
+        )
+        .unwrap()
+        {
             RevokeOneOutcome::Revoked(report) => report,
             other => panic!("unexpected outcome: {other:?}"),
         };
@@ -468,7 +460,14 @@ mod tests {
             fails: false,
         };
 
-        let outcome = revoke_one(&client, &config(true), &cache_dir, "0123456", now).unwrap();
+        let outcome = revoke_one(
+            &client,
+            &config(true),
+            &crate::cache::FsCredentialStore::new(&cache_dir),
+            "0123456",
+            now,
+        )
+        .unwrap();
 
         assert!(matches!(outcome, RevokeOneOutcome::Ambiguous));
         assert!(client.revoked.borrow().is_empty());
@@ -487,7 +486,13 @@ mod tests {
             let cache_dir = temp.path().join("cache");
             save_cache_entry(&cache_dir, &key, &entry).unwrap();
             let client = MockClient(Cell::new(0));
-            let report = revoke_all(&client, &changed, &cache_dir, now).unwrap();
+            let report = revoke_all(
+                &client,
+                &changed,
+                &crate::cache::FsCredentialStore::new(&cache_dir),
+                now,
+            )
+            .unwrap();
             assert_eq!(client.0.get(), 0);
             assert_eq!(report.remotely_inactive, 0);
             assert_eq!(report.local_only, 1);

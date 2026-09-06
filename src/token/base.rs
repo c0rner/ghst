@@ -1,28 +1,28 @@
+use crate::credential::store::Inspect;
+use crate::credential::store::SaveStoredCredential;
+use crate::credential::stored::{
+    StoredBase, StoredCredential, authority_fingerprint, compute_cache_key,
+};
 pub mod client;
 
 use super::{
     BasePersistence, BaseTokenStatus, TokenError, revoke_with_context, validate_base_expiry,
 };
-use crate::cache::{
-    BaseCacheEntry, CACHE_SCHEMA_VERSION, CacheEntry, SaveCacheEntry, authority_fingerprint,
-    compute_cache_key, load_cache_entry, save_cache_candidate,
-};
 use crate::profile::{AppAuthority, AppRegistration};
 use crate::token::base::client::{BaseTokenClient, IssuedBaseToken};
-use std::path::Path;
 use time::OffsetDateTime;
 
 pub fn base_cache_key(profile_name: &str) -> String {
     compute_cache_key(profile_name, "all")
 }
 
-pub fn load_valid_base_entry(
-    cache_dir: &Path,
+pub fn load_valid_base_entry<S: Inspect + ?Sized>(
+    store: &S,
     profile_name: &str,
     authority: &AppAuthority<'_>,
     now: OffsetDateTime,
-) -> Result<Option<BaseCacheEntry>, TokenError> {
-    let entry = load_current_base_entry(cache_dir, profile_name, authority)?;
+) -> Result<Option<StoredBase>, TokenError> {
+    let entry = load_current_base_entry(store, profile_name, authority)?;
     match entry {
         Some(entry) if entry.expires_at.is_safe_to_handoff_at(now) => {
             tracing::debug!(
@@ -44,23 +44,22 @@ pub fn load_valid_base_entry(
     }
 }
 
-pub fn load_valid_base_status(
-    cache_dir: &Path,
+pub fn load_valid_base_status<S: Inspect + ?Sized>(
+    store: &S,
     profile_name: &str,
     authority: &AppAuthority<'_>,
     now: OffsetDateTime,
 ) -> Result<Option<BaseTokenStatus>, TokenError> {
-    load_valid_base_entry(cache_dir, profile_name, authority, now)
-        .map(|entry| entry.map(base_status))
+    load_valid_base_entry(store, profile_name, authority, now).map(|entry| entry.map(base_status))
 }
 
-pub fn load_current_base_entry(
-    cache_dir: &Path,
+pub fn load_current_base_entry<S: Inspect + ?Sized>(
+    store: &S,
     profile_name: &str,
     authority: &AppAuthority<'_>,
-) -> Result<Option<BaseCacheEntry>, TokenError> {
+) -> Result<Option<StoredBase>, TokenError> {
     let key = base_cache_key(profile_name);
-    let Some(entry) = load_cache_entry(cache_dir, &key)? else {
+    let Some(entry) = store.load(&key)? else {
         tracing::debug!(
             profile = profile_name,
             cache_key = key,
@@ -75,7 +74,7 @@ pub fn load_current_base_entry(
         });
     }
     match entry {
-        CacheEntry::Base(entry) => {
+        StoredCredential::Base(entry) => {
             if !super::provenance::matches_authority(authority, &entry.authority_fingerprint) {
                 tracing::debug!(
                     profile = profile_name,
@@ -93,7 +92,7 @@ pub fn load_current_base_entry(
             );
             Ok(Some(entry))
         }
-        other @ (CacheEntry::Scoped(_) | CacheEntry::Run(_)) => {
+        other @ (StoredCredential::Scoped(_) | StoredCredential::Run(_)) => {
             Err(TokenError::UnexpectedCacheKind {
                 profile: profile_name.to_owned(),
                 expected: "base",
@@ -103,11 +102,11 @@ pub fn load_current_base_entry(
     }
 }
 
-pub fn persist_base_response<C: BaseTokenClient>(
+pub fn persist_base_response<C: BaseTokenClient, S: crate::credential::store::Login + ?Sized>(
     client: &C,
     app: &AppRegistration<'_>,
     profile_name: &str,
-    cache_dir: &Path,
+    store: &S,
     response: IssuedBaseToken,
     now: OffsetDateTime,
     epoch: u64,
@@ -136,8 +135,7 @@ pub fn persist_base_response<C: BaseTokenClient>(
             ));
         }
     };
-    let candidate = CacheEntry::Base(BaseCacheEntry {
-        version: CACHE_SCHEMA_VERSION,
+    let candidate = StoredCredential::Base(StoredBase {
         profile: profile_name.to_owned(),
         authority_fingerprint: authority_fingerprint(
             app.authority.client_id,
@@ -147,13 +145,10 @@ pub fn persist_base_response<C: BaseTokenClient>(
         expires_at: expiry,
         access_token,
     });
-    let result = match save_cache_candidate(
-        cache_dir,
-        &base_cache_key(profile_name),
-        &candidate,
-        epoch,
-        None,
-    ) {
+    let StoredCredential::Base(base) = &candidate else {
+        unreachable!("candidate is base")
+    };
+    let result = match store.commit_login(&base_cache_key(profile_name), base, epoch) {
         Ok(result) => result,
         Err(error) => {
             tracing::debug!(profile = profile_name, error = %error, "failed to persist issued base token");
@@ -166,15 +161,17 @@ pub fn persist_base_response<C: BaseTokenClient>(
         }
     };
     match result {
-        SaveCacheEntry::Saved => match candidate {
-            CacheEntry::Base(entry) => {
+        SaveStoredCredential::Saved => match candidate {
+            StoredCredential::Base(entry) => {
                 tracing::debug!(profile = profile_name, "persisted issued base token");
                 Ok(BasePersistence::Saved(base_status(entry)))
             }
-            CacheEntry::Scoped(_) | CacheEntry::Run(_) => unreachable!("candidate is base"),
+            StoredCredential::Scoped(_) | StoredCredential::Run(_) => {
+                unreachable!("candidate is base")
+            }
         },
-        SaveCacheEntry::Retained(entry) => match *entry {
-            CacheEntry::Base(entry) => {
+        SaveStoredCredential::Retained(entry) => match *entry {
+            StoredCredential::Base(entry) => {
                 tracing::debug!(
                     profile = profile_name,
                     "a compatible concurrent base token won the cache race; revoking unused candidate"
@@ -194,7 +191,7 @@ pub fn persist_base_response<C: BaseTokenClient>(
                     Ok(BasePersistence::Retained(base_status(entry)))
                 }
             }
-            entry @ (CacheEntry::Scoped(_) | CacheEntry::Run(_)) => {
+            entry @ (StoredCredential::Scoped(_) | StoredCredential::Run(_)) => {
                 Err(TokenError::UnexpectedCacheKind {
                     profile: profile_name.to_owned(),
                     expected: "base",
@@ -205,7 +202,7 @@ pub fn persist_base_response<C: BaseTokenClient>(
     }
 }
 
-fn base_status(entry: BaseCacheEntry) -> BaseTokenStatus {
+fn base_status(entry: StoredBase) -> BaseTokenStatus {
     BaseTokenStatus {
         github_user: entry.github_user,
         expires_at: entry.expires_at,

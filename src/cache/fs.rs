@@ -24,11 +24,12 @@ pub(super) fn ensure_cache_dir(cache_dir: &Path) -> Result<(), CacheError> {
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
             create_private_cache_dir(cache_dir)?;
-            let metadata = fs::symlink_metadata(cache_dir).map_err(CacheError::Io)?;
+            let metadata =
+                fs::symlink_metadata(cache_dir).map_err(|source| CacheError::Io { source })?;
             validate_cache_dir(cache_dir, &metadata)?;
             validate_cache_dir_openable(cache_dir)
         }
-        Err(err) => Err(CacheError::Io(err)),
+        Err(err) => Err(CacheError::Io { source: err }),
     }
 }
 
@@ -44,7 +45,7 @@ pub(super) fn cache_dir_exists(cache_dir: &Path) -> Result<bool, CacheError> {
             Ok(true)
         }
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(err) => Err(CacheError::Io(err)),
+        Err(err) => Err(CacheError::Io { source: err }),
     }
 }
 
@@ -73,7 +74,9 @@ pub(super) fn create_private_tempfile(
         builder.permissions(fs::Permissions::from_mode(0o600));
     }
 
-    builder.tempfile_in(cache_dir).map_err(CacheError::Io)
+    builder
+        .tempfile_in(cache_dir)
+        .map_err(|source| CacheError::Io { source })
 }
 
 pub(super) fn open_private_file(path: &Path, create: bool) -> Result<File, CacheError> {
@@ -89,7 +92,9 @@ pub(super) fn open_private_file(path: &Path, create: bool) -> Result<File, Cache
             .custom_flags(open_flags(rustix::fs::OFlags::NOFOLLOW)?);
     }
 
-    options.open(path).map_err(CacheError::Io)
+    options
+        .open(path)
+        .map_err(|source| CacheError::Io { source })
 }
 
 pub(super) fn validate_cache_file(path: &Path, metadata: &fs::Metadata) -> Result<(), CacheError> {
@@ -119,7 +124,7 @@ pub(super) fn sync_cache_dir(cache_dir: &Path) -> Result<(), CacheError> {
     #[cfg(unix)]
     open_validated_cache_dir(cache_dir)?
         .sync_all()
-        .map_err(CacheError::Io)
+        .map_err(|source| CacheError::Io { source })
 }
 
 fn create_private_cache_dir(cache_dir: &Path) -> Result<(), CacheError> {
@@ -133,7 +138,7 @@ fn create_private_cache_dir(cache_dir: &Path) -> Result<(), CacheError> {
         match builder.create(cache_dir) {
             Ok(()) => Ok(()),
             Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-            Err(err) => Err(CacheError::Io(err)),
+            Err(err) => Err(CacheError::Io { source: err }),
         }
     }
 
@@ -148,11 +153,13 @@ fn open_cache_lock_file(cache_dir: &Path) -> Result<File, CacheError> {
     match fs::symlink_metadata(&lock_path) {
         Ok(metadata) => validate_cache_file(&lock_path, &metadata)?,
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
-        Err(err) => return Err(CacheError::Io(err)),
+        Err(err) => return Err(CacheError::Io { source: err }),
     }
 
     let file = open_private_file(&lock_path, true)?;
-    let metadata = file.metadata().map_err(CacheError::Io)?;
+    let metadata = file
+        .metadata()
+        .map_err(|source| CacheError::Io { source })?;
     validate_cache_file(&lock_path, &metadata)?;
     Ok(file)
 }
@@ -169,16 +176,22 @@ pub(super) fn with_locked_file<T>(
     ensure_cache_dir(cache_dir)?;
     let mut file = open_cache_lock_file(cache_dir)?;
     match mode {
-        LockMode::Shared => fs2::FileExt::lock_shared(&file).map_err(CacheError::Io)?,
-        LockMode::Exclusive => fs2::FileExt::lock_exclusive(&file).map_err(CacheError::Io)?,
+        LockMode::Shared => {
+            fs2::FileExt::lock_shared(&file).map_err(|source| CacheError::Io { source })?;
+        }
+        LockMode::Exclusive => {
+            fs2::FileExt::lock_exclusive(&file).map_err(|source| CacheError::Io { source })?;
+        }
     }
     operation(&mut file)
 }
 
 pub(super) fn read_epoch(file: &mut File) -> Result<u64, CacheError> {
-    file.seek(SeekFrom::Start(0)).map_err(CacheError::Io)?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|source| CacheError::Io { source })?;
     let mut value = String::new();
-    file.read_to_string(&mut value).map_err(CacheError::Io)?;
+    file.read_to_string(&mut value)
+        .map_err(|source| CacheError::Io { source })?;
     if value.is_empty() {
         return Ok(0);
     }
@@ -189,10 +202,13 @@ pub(super) fn increment_epoch(file: &mut File) -> Result<u64, CacheError> {
     let epoch = read_epoch(file)?
         .checked_add(1)
         .ok_or(CacheError::EpochExhausted)?;
-    file.set_len(0).map_err(CacheError::Io)?;
-    file.seek(SeekFrom::Start(0)).map_err(CacheError::Io)?;
-    writeln!(file, "{epoch}").map_err(CacheError::Io)?;
-    file.sync_all().map_err(CacheError::Io)?;
+    file.set_len(0)
+        .map_err(|source| CacheError::Io { source })?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(|source| CacheError::Io { source })?;
+    writeln!(file, "{epoch}").map_err(|source| CacheError::Io { source })?;
+    file.sync_all()
+        .map_err(|source| CacheError::Io { source })?;
     Ok(epoch)
 }
 
@@ -241,8 +257,12 @@ fn open_validated_cache_dir(cache_dir: &Path) -> Result<File, CacheError> {
     options.read(true).custom_flags(open_flags(
         rustix::fs::OFlags::DIRECTORY | rustix::fs::OFlags::NOFOLLOW,
     )?);
-    let directory = options.open(cache_dir).map_err(CacheError::Io)?;
-    let metadata = directory.metadata().map_err(CacheError::Io)?;
+    let directory = options
+        .open(cache_dir)
+        .map_err(|source| CacheError::Io { source })?;
+    let metadata = directory
+        .metadata()
+        .map_err(|source| CacheError::Io { source })?;
     validate_cache_dir(cache_dir, &metadata)?;
     Ok(directory)
 }

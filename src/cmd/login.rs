@@ -1,6 +1,6 @@
 use crate::browser::{display_auth_instructions, open_auth_url};
-use crate::cache::cache_epoch;
 use crate::cmd::{CmdError, GhstCli, LoginCmd, format_human_expiry, resolve_profile_name};
+use crate::credential::store::Issue;
 use crate::github::GitHubClient;
 use crate::profile::ResolvedTokenProfile;
 use crate::token::{BasePersistence, DeviceFlow};
@@ -22,12 +22,13 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
     };
 
     let cache_dir = crate::config::cache_dir()?;
+    let store = crate::cache::FsCredentialStore::new(&cache_dir);
     debug!(
         profile = profile_name,
         "checking for a reusable cached base token"
     );
     if let Some(status) = crate::token::load_valid_base_status(
-        &cache_dir,
+        &store,
         &profile_name,
         &app.authority,
         OffsetDateTime::now_utc(),
@@ -44,7 +45,7 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
 
     let client = GitHubClient::new();
     let mut flow = DeviceFlow::new(&client, std::thread::sleep, &profile_name);
-    let epoch = cache_epoch(&cache_dir)?;
+    let epoch = store.epoch()?;
     info!(profile = profile_name, "initiating OAuth Device Flow");
     let device = flow.request_authorization(app.authority.client_id)?;
     display_auth_instructions(
@@ -74,7 +75,7 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
         &client,
         &app,
         &profile_name,
-        &cache_dir,
+        &store,
         response,
         OffsetDateTime::now_utc(),
         epoch,

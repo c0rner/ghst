@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::Path;
 
 use crate::credential::{AccessToken, TokenExpiry};
 use crate::profile::{AppAuthority, AppCredentials, PermissionLevel};
@@ -34,14 +33,14 @@ pub struct BaseTokenStatus {
     pub expires_at: TokenExpiry,
 }
 
-pub enum AcquireRequest<'a> {
+pub enum AcquireRequest<'a, S: ?Sized> {
     Base {
-        cache_dir: &'a Path,
+        store: &'a S,
         profile_name: &'a str,
         authority: AppAuthority<'a>,
     },
     Scoped {
-        cache_dir: &'a Path,
+        store: &'a S,
         profile_name: &'a str,
         source_name: &'a str,
         app: AppCredentials<'a>,

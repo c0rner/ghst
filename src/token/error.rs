@@ -3,7 +3,7 @@ use std::fmt;
 
 #[derive(Debug)]
 pub enum TokenError {
-    Cache(crate::cache::CacheError),
+    Cache(crate::credential::store::StoreError),
     GitHub(RemoteError),
     ScopedTokenForbidden {
         profile: String,
@@ -110,8 +110,8 @@ impl std::error::Error for TokenError {
     }
 }
 
-impl From<crate::cache::CacheError> for TokenError {
-    fn from(error: crate::cache::CacheError) -> Self {
+impl From<crate::credential::store::StoreError> for TokenError {
+    fn from(error: crate::credential::store::StoreError) -> Self {
         Self::Cache(error)
     }
 }

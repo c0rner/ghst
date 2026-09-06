@@ -28,7 +28,8 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
     let config = crate::config::load(args.config.as_deref())?;
     let profile_name = resolve_profile_name(cmd.profile.as_deref(), &config)?;
     let profile = config.resolve_token_profile(&profile_name)?;
-    let cache_dir = crate::config::cache_dir()?;
+    let cache_path = crate::config::cache_dir()?;
+    let cache_dir = crate::cache::FsCredentialStore::new(&cache_path);
     let client = GitHubClient::new();
     let wrapper_pid = std::process::id();
     let command_line = render_command_line(&cmd.command);
@@ -112,12 +113,12 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
 
 fn prepare_mint_request<'a>(
     profile: &'a crate::profile::ResolvedTokenProfile<'a>,
-    cache_dir: &'a std::path::Path,
+    cache_dir: &'a crate::cache::FsCredentialStore<'a>,
     cli_repositories: &[String],
     wrapper_pid: u32,
     command: &'a str,
     resolve_auto: impl FnMut() -> Result<String, crate::repository::RepositoryError>,
-) -> Result<MintRunRequest<'a>, CmdError> {
+) -> Result<MintRunRequest<'a, crate::cache::FsCredentialStore<'a>>, CmdError> {
     let crate::profile::ResolvedTokenProfile::Scoped {
         name: profile_name,
         source_name,
@@ -139,7 +140,7 @@ fn prepare_mint_request<'a>(
         resolve_auto,
     )?;
     Ok(MintRunRequest {
-        cache_dir,
+        store: cache_dir,
         profile_name,
         source_name,
         app: *app,
@@ -209,7 +210,7 @@ fn spawn_command(cmd: &RunCmd, token: &str) -> std::io::Result<std::process::Chi
 fn cleanup_before_handoff(
     client: &GitHubClient,
     config: &crate::config::Config,
-    cache_dir: &std::path::Path,
+    cache_dir: &crate::cache::FsCredentialStore<'_>,
     pending: PendingRun,
     child_pid: Option<u32>,
 ) {
@@ -388,7 +389,8 @@ permissions = { contents = "read" }
         let config = test_config();
         let profile = config.resolve_token_profile("developer").unwrap();
         let temp = tempfile::tempdir().unwrap();
-        let result = prepare_mint_request(&profile, temp.path(), &[], 100, "true", || {
+        let store = crate::cache::FsCredentialStore::new(temp.path());
+        let result = prepare_mint_request(&profile, &store, &[], 100, "true", || {
             panic!("auto must not be called")
         });
         assert!(matches!(
@@ -402,9 +404,10 @@ permissions = { contents = "read" }
         let config = test_config();
         let profile = config.resolve_token_profile("reader").unwrap();
         let temp = tempfile::tempdir().unwrap();
+        let store = crate::cache::FsCredentialStore::new(temp.path());
         let result = prepare_mint_request(
             &profile,
-            temp.path(),
+            &store,
             &["invalid-repo".into()],
             100,
             "true",
@@ -423,9 +426,10 @@ permissions = { contents = "read" }
         let config = test_config();
         let profile = config.resolve_token_profile("reader").unwrap();
         let temp = tempfile::tempdir().unwrap();
+        let store = crate::cache::FsCredentialStore::new(temp.path());
         let request = prepare_mint_request(
             &profile,
-            temp.path(),
+            &store,
             &["acme/other".into()],
             100,
             "true",

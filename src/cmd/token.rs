@@ -5,7 +5,6 @@ use crate::repository::RepositoryError;
 use crate::token::scoped::client::ScopedTokenClient;
 use crate::token::{AcquireRequest, AcquiredToken};
 use std::io::{self, Write};
-use std::path::Path;
 
 /// Handles execution of the `ghst token` subcommand.
 pub fn run_token(args: &GhstCli, cmd: &TokenCmd) -> Result<(), CmdError> {
@@ -24,7 +23,7 @@ pub fn run_token(args: &GhstCli, cmd: &TokenCmd) -> Result<(), CmdError> {
     execute_token(
         &TokenContext {
             profile: &profile,
-            cache_dir: &cache_dir,
+            cache_dir: &crate::cache::FsCredentialStore::new(&cache_dir),
             client: &client,
         },
         cmd,
@@ -35,23 +34,23 @@ pub fn run_token(args: &GhstCli, cmd: &TokenCmd) -> Result<(), CmdError> {
 
 struct TokenContext<'a, C> {
     profile: &'a crate::profile::ResolvedTokenProfile<'a>,
-    cache_dir: &'a Path,
+    cache_dir: &'a crate::cache::FsCredentialStore<'a>,
     client: &'a C,
 }
 
 fn prepare_acquire_request<'a>(
     profile: &'a crate::profile::ResolvedTokenProfile<'a>,
-    cache_dir: &'a Path,
+    cache_dir: &'a crate::cache::FsCredentialStore<'a>,
     cli_repositories: &[String],
     resolve_auto: impl FnMut() -> Result<String, RepositoryError>,
-) -> Result<AcquireRequest<'a>, CmdError> {
+) -> Result<AcquireRequest<'a, crate::cache::FsCredentialStore<'a>>, CmdError> {
     match profile {
         crate::profile::ResolvedTokenProfile::Base { name, app } => {
             if !cli_repositories.is_empty() {
                 return Err(CmdError::AppScopeRejected((*name).to_owned()));
             }
             Ok(AcquireRequest::Base {
-                cache_dir,
+                store: cache_dir,
                 profile_name: name,
                 authority: app.authority,
             })
@@ -70,7 +69,7 @@ fn prepare_acquire_request<'a>(
                 resolve_auto,
             )?;
             Ok(AcquireRequest::Scoped {
-                cache_dir,
+                store: cache_dir,
                 profile_name: name,
                 source_name,
                 app: *app,
@@ -237,7 +236,8 @@ permissions = { contents = "read" }
         let config = test_config();
         let profile = config.resolve_token_profile("developer").unwrap();
         let temp = tempfile::tempdir().unwrap();
-        let result = prepare_acquire_request(&profile, temp.path(), &["acme/api".into()], || {
+        let store = crate::cache::FsCredentialStore::new(temp.path());
+        let result = prepare_acquire_request(&profile, &store, &["acme/api".into()], || {
             panic!("auto must not be called")
         });
         assert!(matches!(
@@ -251,10 +251,10 @@ permissions = { contents = "read" }
         let config = test_config();
         let profile = config.resolve_token_profile("reader").unwrap();
         let temp = tempfile::tempdir().unwrap();
-        let result =
-            prepare_acquire_request(&profile, temp.path(), &["invalid-scope".into()], || {
-                panic!("auto must not be called")
-            });
+        let store = crate::cache::FsCredentialStore::new(temp.path());
+        let result = prepare_acquire_request(&profile, &store, &["invalid-scope".into()], || {
+            panic!("auto must not be called")
+        });
         assert!(matches!(
             result,
             Err(CmdError::Repository(RepositoryError::InvalidScope { .. }))
@@ -265,21 +265,21 @@ permissions = { contents = "read" }
     fn auto_is_not_invoked_for_app_profile_or_explicit_selection() {
         let config = test_config();
         let temp = tempfile::tempdir().unwrap();
+        let store = crate::cache::FsCredentialStore::new(temp.path());
 
         // App profile without repo does not call auto
         let dev = config.resolve_token_profile("developer").unwrap();
         let base_req =
-            prepare_acquire_request(&dev, temp.path(), &[], || panic!("auto must not be called"))
+            prepare_acquire_request(&dev, &store, &[], || panic!("auto must not be called"))
                 .unwrap();
         assert!(matches!(base_req, AcquireRequest::Base { .. }));
 
         // Scoped profile with explicit repo does not call auto
         let reader = config.resolve_token_profile("reader").unwrap();
-        let scoped_req =
-            prepare_acquire_request(&reader, temp.path(), &["acme/other".into()], || {
-                panic!("auto must not be called")
-            })
-            .unwrap();
+        let scoped_req = prepare_acquire_request(&reader, &store, &["acme/other".into()], || {
+            panic!("auto must not be called")
+        })
+        .unwrap();
         assert!(matches!(
             scoped_req,
             AcquireRequest::Scoped { repositories, .. } if repositories.canonical() == "acme/other"

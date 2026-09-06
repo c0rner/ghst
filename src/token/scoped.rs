@@ -1,14 +1,15 @@
+use crate::credential::store::DeleteBaseOutcome;
+use crate::credential::store::{Inspect, Remove, StoreError};
+use crate::credential::stored::StoredBase;
 pub mod client;
 
 use std::collections::BTreeMap;
-use std::path::Path;
 use time::OffsetDateTime;
 
 use super::{
     TokenError, base_cache_key, load_current_base_entry, revoke_with_context,
     validate_scoped_expiry,
 };
-use crate::cache::{BaseCacheEntry, CacheError, DeleteBaseOutcome, delete_base_if_generation};
 use crate::credential::{AccessToken, TokenExpiry};
 use crate::profile::{AppCredentials, PermissionLevel};
 use crate::repository::RepositorySelection;
@@ -19,7 +20,7 @@ pub struct PreparedScopedToken<'a> {
     pub source_name: &'a str,
     pub app: AppCredentials<'a>,
     pub permissions: &'a BTreeMap<String, PermissionLevel>,
-    pub base: BaseCacheEntry,
+    pub base: StoredBase,
     pub scope: String,
     pub repositories: Option<Vec<String>>,
 }
@@ -30,8 +31,8 @@ pub struct ValidatedScopedToken {
     pub received_at: OffsetDateTime,
 }
 
-pub fn prepare<'a>(
-    cache_dir: &Path,
+pub fn prepare<'a, S: Inspect + ?Sized>(
+    store: &S,
     profile_name: &'a str,
     source_name: &'a str,
     app: AppCredentials<'a>,
@@ -49,7 +50,7 @@ pub fn prepare<'a>(
         permissions = ?permissions,
         "resolved scoped token policy"
     );
-    let base = load_current_base_entry(cache_dir, source_name, &app.authority)?
+    let base = load_current_base_entry(store, source_name, &app.authority)?
         .ok_or_else(|| TokenError::NoSourceBaseTokenCached(source_name.to_owned()))?;
     Ok(PreparedScopedToken {
         profile_name,
@@ -62,10 +63,10 @@ pub fn prepare<'a>(
     })
 }
 
-pub fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
+pub fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime, S: Remove + ?Sized>(
     client: &C,
     prepared: &PreparedScopedToken<'_>,
-    cache_dir: &Path,
+    store: &S,
     request_time: OffsetDateTime,
     now: &mut N,
 ) -> Result<ValidatedScopedToken, TokenError> {
@@ -98,7 +99,7 @@ pub fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
         Ok(response) => response,
         Err(crate::token::remote::RemoteError::Http {
             status: 401 | 404, ..
-        }) => return Err(permanent_rejection_error(prepared, cache_dir)?),
+        }) => return Err(permanent_rejection_error(prepared, store)?),
         Err(source @ crate::token::remote::RemoteError::Http { status: 403, .. }) => {
             tracing::debug!(
                 source_profile = prepared.source_name,
@@ -144,14 +145,13 @@ pub fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     }
 }
 
-fn permanent_rejection_error(
+fn permanent_rejection_error<S: Remove + ?Sized>(
     prepared: &PreparedScopedToken<'_>,
-    cache_dir: &Path,
-) -> Result<TokenError, CacheError> {
+    store: &S,
+) -> Result<TokenError, StoreError> {
     let source_profile = prepared.source_name;
     let generation = prepared.base.generation_fingerprint();
-    let outcome =
-        delete_base_if_generation(cache_dir, &base_cache_key(source_profile), &generation)?;
+    let outcome = store.delete_base_generation(&base_cache_key(source_profile), &generation)?;
     match outcome {
         DeleteBaseOutcome::Deleted => tracing::warn!(
             source_profile,

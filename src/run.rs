@@ -1,14 +1,14 @@
+use crate::credential::store::SaveStoredCredential;
+use crate::credential::store::{ExpectedSource, Inspect, IssuanceGuard, Issue, Remove, StoreError};
+use crate::credential::stored::{StoredCredential, StoredRun, compute_run_cache_key};
+use crate::run::store::RunStore;
 pub mod lifecycle;
+pub mod store;
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-use std::path::Path;
 use time::OffsetDateTime;
 
-use crate::cache::{
-    CacheEntry, CacheError, RUN_CACHE_SCHEMA_VERSION, RunCacheEntry, RunState, SaveCacheEntry,
-    cache_epoch, compute_run_cache_key, save_cache_candidate,
-};
 use crate::config::Config;
 use crate::credential::AccessToken;
 use crate::profile::{AppCredentials, PermissionLevel};
@@ -17,8 +17,8 @@ use crate::token::remote::RevokeTokenClient;
 use crate::token::scoped::client::ScopedTokenClient;
 use crate::token::{TokenError, base_cache_key, revoke_with_context};
 
-pub struct MintRunRequest<'a> {
-    pub cache_dir: &'a Path,
+pub struct MintRunRequest<'a, S: ?Sized> {
+    pub store: &'a S,
     pub profile_name: &'a str,
     pub source_name: &'a str,
     pub app: AppCredentials<'a>,
@@ -45,7 +45,7 @@ pub struct ActiveRun {
 }
 
 pub struct ActivateRunError {
-    source: CacheError,
+    source: StoreError,
     pending: Box<PendingRun>,
 }
 
@@ -84,7 +84,7 @@ impl std::error::Error for ActivateRunError {
 }
 
 impl ActivateRunError {
-    pub fn into_parts(self) -> (CacheError, PendingRun) {
+    pub fn into_parts(self) -> (StoreError, PendingRun) {
         (self.source, *self.pending)
     }
 }
@@ -94,12 +94,17 @@ impl PendingRun {
         self.access_token.as_ref()
     }
 
-    pub fn activate(self, cache_dir: &Path, child_pid: u32) -> Result<ActiveRun, ActivateRunError> {
-        match crate::cache::run_storage::activate(
-            cache_dir,
+    pub fn activate<S: RunStore + ?Sized>(
+        self,
+        store: &S,
+        child_pid: u32,
+    ) -> Result<ActiveRun, ActivateRunError> {
+        match store.activate(
             &self.identity.cache_key,
-            &self.identity.run_id,
-            self.identity.wrapper_pid,
+            lifecycle::RunOwner {
+                run_id: &self.identity.run_id,
+                wrapper_pid: self.identity.wrapper_pid,
+            },
             child_pid,
         ) {
             Ok(_) => Ok(ActiveRun {
@@ -113,24 +118,25 @@ impl PendingRun {
         }
     }
 
-    pub fn abort<C: RevokeTokenClient>(
+    pub fn abort<C: RevokeTokenClient, S: RunStore + ?Sized>(
         self,
         client: &C,
         config: &Config,
-        cache_dir: &Path,
+        store: &S,
         child_pid: Option<u32>,
-    ) -> Result<crate::token::cleanup::CleanupReport, CacheError> {
-        let entry = crate::cache::run_storage::abort(
-            cache_dir,
+    ) -> Result<crate::token::cleanup::CleanupReport, StoreError> {
+        let entry = store.abort(
             &self.identity.cache_key,
-            &self.identity.run_id,
-            self.identity.wrapper_pid,
+            lifecycle::RunOwner {
+                run_id: &self.identity.run_id,
+                wrapper_pid: self.identity.wrapper_pid,
+            },
             child_pid,
         )?;
         Ok(crate::token::cleanup::cleanup_marked_run(
             client,
             config,
-            cache_dir,
+            store,
             &self.identity.cache_key,
             &entry,
         ))
@@ -138,43 +144,48 @@ impl PendingRun {
 }
 
 impl ActiveRun {
-    pub fn finish<C: RevokeTokenClient>(
+    pub fn finish<C: RevokeTokenClient, S: RunStore + ?Sized>(
         self,
         client: &C,
         config: &Config,
-        cache_dir: &Path,
-    ) -> Result<crate::token::cleanup::CleanupReport, CacheError> {
-        let entry = crate::cache::run_storage::finish(
-            cache_dir,
+        store: &S,
+    ) -> Result<crate::token::cleanup::CleanupReport, StoreError> {
+        let entry = store.finish(
             &self.identity.cache_key,
-            &self.identity.run_id,
-            self.identity.wrapper_pid,
+            lifecycle::RunOwner {
+                run_id: &self.identity.run_id,
+                wrapper_pid: self.identity.wrapper_pid,
+            },
             self.child_pid,
         )?;
         Ok(crate::token::cleanup::cleanup_marked_run(
             client,
             config,
-            cache_dir,
+            store,
             &self.identity.cache_key,
             &entry,
         ))
     }
 }
 
-pub fn mint<C: ScopedTokenClient>(
+pub fn mint<C: ScopedTokenClient, S: Inspect + Issue + Remove + ?Sized>(
     client: &C,
-    request: &MintRunRequest<'_>,
+    request: &MintRunRequest<'_, S>,
 ) -> Result<PendingRun, TokenError> {
     mint_with_clock(client, request, OffsetDateTime::now_utc)
 }
 
-fn mint_with_clock<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
+fn mint_with_clock<
+    C: ScopedTokenClient,
+    N: FnMut() -> OffsetDateTime,
+    S: Inspect + Issue + Remove + ?Sized,
+>(
     client: &C,
-    request: &MintRunRequest<'_>,
+    request: &MintRunRequest<'_, S>,
     mut now: N,
 ) -> Result<PendingRun, TokenError> {
     let prepared = crate::token::scoped::prepare(
-        request.cache_dir,
+        request.store,
         request.profile_name,
         request.source_name,
         request.app,
@@ -190,22 +201,20 @@ fn mint_with_clock<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     );
     let run_id = generate_run_id()?;
     let cache_key = compute_run_cache_key(&run_id);
-    let epoch = cache_epoch(request.cache_dir)?;
+    let epoch = request.store.epoch()?;
     let generation = prepared.base.generation_fingerprint();
     let request_time = now();
     let issued =
-        crate::token::scoped::issue(client, &prepared, request.cache_dir, request_time, &mut now)?;
+        crate::token::scoped::issue(client, &prepared, request.store, request_time, &mut now)?;
     tracing::debug!(profile = prepared.profile_name, expires_at = %issued.expires_at, "received valid run token from GitHub");
-    let candidate = CacheEntry::Run(RunCacheEntry {
-        version: RUN_CACHE_SCHEMA_VERSION,
+    let candidate = StoredCredential::Run(StoredRun {
         run_id: run_id.clone(),
-        state: RunState::Pending,
+        phase: lifecycle::RunPhase::Pending,
         wrapper_pid: request.wrapper_pid,
-        child_pid: None,
         command: request.command.to_owned(),
         profile: prepared.profile_name.to_owned(),
         source_profile: prepared.source_name.to_owned(),
-        source_authority_fingerprint: crate::cache::authority_fingerprint(
+        source_authority_fingerprint: crate::credential::stored::authority_fingerprint(
             prepared.app.authority.client_id,
             prepared.app.authority.account,
         ),
@@ -214,16 +223,20 @@ fn mint_with_clock<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
         expires_at: issued.expires_at,
         access_token: issued.access_token,
     });
-    let saved = save_cache_candidate(
-        request.cache_dir,
+    let saved = request.store.commit(
         &cache_key,
         &candidate,
-        epoch,
-        Some((&base_cache_key(prepared.source_name), &generation)),
+        IssuanceGuard {
+            epoch,
+            source: ExpectedSource {
+                key: &base_cache_key(prepared.source_name),
+                generation: &generation,
+            },
+        },
     );
     match saved {
-        Ok(SaveCacheEntry::Saved) => {
-            let CacheEntry::Run(entry) = candidate else {
+        Ok(SaveStoredCredential::Saved) => {
+            let StoredCredential::Run(entry) = candidate else {
                 unreachable!("run candidate changed kind")
             };
             tracing::debug!(
@@ -241,7 +254,7 @@ fn mint_with_clock<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
                 access_token: entry.access_token,
             })
         }
-        Ok(SaveCacheEntry::Retained(_)) => unreachable!("run entries are never reusable"),
+        Ok(SaveStoredCredential::Retained(_)) => unreachable!("run entries are never reusable"),
         Err(source_error) => {
             tracing::debug!(profile = prepared.profile_name, error = %source_error, "failed to persist pending run recovery entry; revoking candidate");
             Err(revoke_with_context(
@@ -271,11 +284,13 @@ mod tests {
         BaseCacheEntry, CACHE_SCHEMA_VERSION, ScopedCacheEntry, authority_fingerprint,
         compute_cache_key, compute_run_cache_key, policy_fingerprint, save_cache_entry,
     };
+    use crate::cache::{CacheEntry, CacheError, RUN_CACHE_SCHEMA_VERSION, RunCacheEntry, RunState};
     use crate::credential::TokenExpiry;
     use crate::token::remote::{RemoteError, RevokeTokenClient};
     use crate::token::scoped::client::{IssuedScopedToken, ScopedTokenRequest};
     use std::cell::{Cell, RefCell};
     use std::collections::BTreeMap;
+    use std::path::Path;
     use std::path::PathBuf;
     use time::Duration;
 
@@ -476,7 +491,7 @@ permissions = { contents = "read" }
         };
         let scoped_permissions = BTreeMap::from([("contents".into(), PermissionLevel::Read)]);
         let request = MintRunRequest {
-            cache_dir: &cache_dir,
+            store: &crate::cache::FsCredentialStore::new(&cache_dir),
             profile_name: "reader",
             source_name: "developer",
             app,
@@ -506,7 +521,9 @@ permissions = { contents = "read" }
         let pending = pending_run(&cache_dir, "activate");
         let cache_key = pending.identity.cache_key.clone();
 
-        let active = pending.activate(&cache_dir, 200).unwrap();
+        let active = pending
+            .activate(&crate::cache::FsCredentialStore::new(&cache_dir), 200)
+            .unwrap();
 
         assert_eq!(active.child_pid, 200);
         assert!(matches!(
@@ -527,7 +544,14 @@ permissions = { contents = "read" }
         let cache_key = pending.identity.cache_key.clone();
         let client = LifecycleClient::observing(&cache_dir, &cache_key);
 
-        let report = pending.abort(&client, &config(), &cache_dir, None).unwrap();
+        let report = pending
+            .abort(
+                &client,
+                &config(),
+                &crate::cache::FsCredentialStore::new(&cache_dir),
+                None,
+            )
+            .unwrap();
 
         assert!(report.is_complete());
         assert_eq!(
@@ -552,7 +576,12 @@ permissions = { contents = "read" }
         client.fail.set(true);
 
         let report = pending
-            .abort(&client, &config(), &cache_dir, Some(201))
+            .abort(
+                &client,
+                &config(),
+                &crate::cache::FsCredentialStore::new(&cache_dir),
+                Some(201),
+            )
             .unwrap();
 
         assert!(!report.is_complete());
@@ -576,10 +605,18 @@ permissions = { contents = "read" }
         let cache_dir = temp.path().join("cache");
         let pending = pending_run(&cache_dir, "finish");
         let cache_key = pending.identity.cache_key.clone();
-        let active = pending.activate(&cache_dir, 202).unwrap();
+        let active = pending
+            .activate(&crate::cache::FsCredentialStore::new(&cache_dir), 202)
+            .unwrap();
         let client = LifecycleClient::observing(&cache_dir, &cache_key);
 
-        let report = active.finish(&client, &config(), &cache_dir).unwrap();
+        let report = active
+            .finish(
+                &client,
+                &config(),
+                &crate::cache::FsCredentialStore::new(&cache_dir),
+            )
+            .unwrap();
 
         assert!(report.is_complete());
         assert_eq!(
@@ -601,7 +638,8 @@ permissions = { contents = "read" }
         let mut pending = pending_run(&cache_dir, "owned");
         pending.identity.run_id = "wrong-owner".into();
 
-        let Err(error) = pending.activate(&cache_dir, 203) else {
+        let Err(error) = pending.activate(&crate::cache::FsCredentialStore::new(&cache_dir), 203)
+        else {
             panic!("mismatched owner unexpectedly activated")
         };
         let debug = format!("{error:?}");
@@ -618,11 +656,19 @@ permissions = { contents = "read" }
         let cache_dir = temp.path().join("cache");
         let pending = pending_run(&cache_dir, "retry");
         let cache_key = pending.identity.cache_key.clone();
-        let active = pending.activate(&cache_dir, 204).unwrap();
+        let active = pending
+            .activate(&crate::cache::FsCredentialStore::new(&cache_dir), 204)
+            .unwrap();
         let client = LifecycleClient::observing(&cache_dir, &cache_key);
         client.fail.set(true);
 
-        let report = active.finish(&client, &config(), &cache_dir).unwrap();
+        let report = active
+            .finish(
+                &client,
+                &config(),
+                &crate::cache::FsCredentialStore::new(&cache_dir),
+            )
+            .unwrap();
 
         assert!(!report.is_complete());
         assert!(matches!(
@@ -634,9 +680,13 @@ permissions = { contents = "read" }
         ));
 
         client.fail.set(false);
-        let report =
-            crate::token::cleanup::prune(&client, &config(), &cache_dir, OffsetDateTime::now_utc())
-                .unwrap();
+        let report = crate::token::cleanup::prune(
+            &client,
+            &config(),
+            &crate::cache::FsCredentialStore::new(&cache_dir),
+            OffsetDateTime::now_utc(),
+        )
+        .unwrap();
         assert!(report.is_complete());
         assert!(
             crate::cache::load_cache_entry(&cache_dir, &cache_key)

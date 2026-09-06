@@ -1,10 +1,7 @@
-use crate::cache::digest::encode_hex;
 use crate::credential::provenance::ScopedProvenance;
 use crate::credential::{AccessToken, TokenExpiry};
 use crate::run::lifecycle::{RunLifecycle, RunLifecycleError, RunOwner, RunPhase};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
 use std::fmt;
 use time::OffsetDateTime;
 
@@ -44,6 +41,7 @@ impl CacheEntry {
         }
     }
 
+    #[cfg(test)]
     pub const fn access_token(&self) -> &AccessToken {
         match self {
             Self::Base(entry) => &entry.access_token,
@@ -110,7 +108,7 @@ pub struct BaseCacheEntry {
 
 impl BaseCacheEntry {
     pub fn generation_fingerprint(&self) -> String {
-        fingerprint(&[self.access_token.as_ref()])
+        model::generation_fingerprint(&self.access_token)
     }
 }
 
@@ -197,14 +195,6 @@ impl RunCacheEntry {
             phase,
         ))
     }
-
-    pub const fn set_phase(&mut self, phase: RunPhase) {
-        (self.state, self.child_pid) = match phase {
-            RunPhase::Pending => (RunState::Pending, None),
-            RunPhase::Running { child_pid } => (RunState::Running, Some(child_pid)),
-            RunPhase::CleanupPending { child_pid } => (RunState::CleanupPending, child_pid),
-        };
-    }
 }
 
 impl fmt::Debug for RunCacheEntry {
@@ -264,30 +254,194 @@ pub enum ReplaceCacheEntry {
     Retained(Box<CacheEntry>),
 }
 
-pub fn authority_fingerprint(client_id: &str, account: &str) -> String {
-    fingerprint(&[client_id, account])
-}
-
-pub fn policy_fingerprint<V: fmt::Display>(
-    account: &str,
-    repo_scope: &str,
-    permissions: &BTreeMap<String, V>,
-) -> String {
-    let permission_string = permissions
-        .iter()
-        .map(|(name, level)| format!("{name}={level}"))
-        .collect::<Vec<_>>()
-        .join("\n");
-    fingerprint(&[account, repo_scope, &permission_string])
-}
-
-fn fingerprint(parts: &[&str]) -> String {
-    let mut hasher = Sha256::new();
-    for part in parts {
-        hasher.update(part.len().to_string().as_bytes());
-        hasher.update(b":");
-        hasher.update(part.as_bytes());
+use crate::credential::stored as model;
+impl TryFrom<BaseCacheEntry> for model::StoredBase {
+    type Error = crate::cache::CacheError;
+    fn try_from(value: BaseCacheEntry) -> Result<Self, Self::Error> {
+        if value.version != CACHE_SCHEMA_VERSION {
+            return Err(Self::Error::UnsupportedSchema {
+                kind: "base".into(),
+                version: Some(value.version),
+                expected: CACHE_SCHEMA_VERSION,
+            });
+        }
+        Ok(Self {
+            profile: value.profile,
+            authority_fingerprint: value.authority_fingerprint,
+            github_user: value.github_user,
+            expires_at: value.expires_at,
+            access_token: value.access_token,
+        })
     }
-    let digest = hasher.finalize();
-    encode_hex(&digest)
+}
+impl From<&model::StoredBase> for BaseCacheEntry {
+    fn from(value: &model::StoredBase) -> Self {
+        Self {
+            version: CACHE_SCHEMA_VERSION,
+            profile: value.profile.clone(),
+            authority_fingerprint: value.authority_fingerprint.clone(),
+            github_user: value.github_user.clone(),
+            expires_at: value.expires_at,
+            access_token: AccessToken::from(value.access_token.as_ref()),
+        }
+    }
+}
+impl TryFrom<ScopedCacheEntry> for model::StoredScoped {
+    type Error = crate::cache::CacheError;
+    fn try_from(value: ScopedCacheEntry) -> Result<Self, Self::Error> {
+        if value.version != CACHE_SCHEMA_VERSION {
+            return Err(Self::Error::UnsupportedSchema {
+                kind: "scoped".into(),
+                version: Some(value.version),
+                expected: CACHE_SCHEMA_VERSION,
+            });
+        }
+        Ok(Self {
+            profile: value.profile,
+            source_profile: value.source_profile,
+            source_authority_fingerprint: value.source_authority_fingerprint,
+            parent_generation: value.parent_generation,
+            policy_fingerprint: value.policy_fingerprint,
+            github_user: value.github_user,
+            repo_scope: value.repo_scope,
+            expires_at: value.expires_at,
+            access_token: value.access_token,
+        })
+    }
+}
+impl From<&model::StoredScoped> for ScopedCacheEntry {
+    fn from(value: &model::StoredScoped) -> Self {
+        Self {
+            version: CACHE_SCHEMA_VERSION,
+            profile: value.profile.clone(),
+            source_profile: value.source_profile.clone(),
+            source_authority_fingerprint: value.source_authority_fingerprint.clone(),
+            parent_generation: value.parent_generation.clone(),
+            policy_fingerprint: value.policy_fingerprint.clone(),
+            github_user: value.github_user.clone(),
+            repo_scope: value.repo_scope.clone(),
+            expires_at: value.expires_at,
+            access_token: AccessToken::from(value.access_token.as_ref()),
+        }
+    }
+}
+impl TryFrom<RunCacheEntry> for model::StoredRun {
+    type Error = crate::cache::CacheError;
+    fn try_from(value: RunCacheEntry) -> Result<Self, Self::Error> {
+        if value.version != RUN_CACHE_SCHEMA_VERSION {
+            return Err(Self::Error::UnsupportedSchema {
+                kind: "run".into(),
+                version: Some(value.version),
+                expected: RUN_CACHE_SCHEMA_VERSION,
+            });
+        }
+        let phase = match (value.state, value.child_pid) {
+            (RunState::Pending, None) => RunPhase::Pending,
+            (RunState::Running, Some(child_pid)) => RunPhase::Running { child_pid },
+            (RunState::CleanupPending, child_pid) => RunPhase::CleanupPending { child_pid },
+            _ => return Err(RunLifecycleError::InvalidChild.into()),
+        };
+        Ok(Self {
+            run_id: value.run_id,
+            wrapper_pid: value.wrapper_pid,
+            command: value.command,
+            profile: value.profile,
+            source_profile: value.source_profile,
+            source_authority_fingerprint: value.source_authority_fingerprint,
+            github_user: value.github_user,
+            repo_scope: value.repo_scope,
+            expires_at: value.expires_at,
+            access_token: value.access_token,
+            phase,
+        })
+    }
+}
+impl From<&model::StoredRun> for RunCacheEntry {
+    fn from(value: &model::StoredRun) -> Self {
+        Self {
+            version: RUN_CACHE_SCHEMA_VERSION,
+            run_id: value.run_id.clone(),
+            state: match value.phase {
+                RunPhase::Pending => RunState::Pending,
+                RunPhase::Running { .. } => RunState::Running,
+                RunPhase::CleanupPending { .. } => RunState::CleanupPending,
+            },
+            wrapper_pid: value.wrapper_pid,
+            child_pid: value.child_pid(),
+            command: value.command.clone(),
+            profile: value.profile.clone(),
+            source_profile: value.source_profile.clone(),
+            source_authority_fingerprint: value.source_authority_fingerprint.clone(),
+            github_user: value.github_user.clone(),
+            repo_scope: value.repo_scope.clone(),
+            expires_at: value.expires_at,
+            access_token: AccessToken::from(value.access_token.as_ref()),
+        }
+    }
+}
+impl TryFrom<CacheEntry> for model::StoredCredential {
+    type Error = crate::cache::CacheError;
+    fn try_from(value: CacheEntry) -> Result<Self, Self::Error> {
+        match value {
+            CacheEntry::Base(v) => Ok(Self::Base(v.try_into()?)),
+            CacheEntry::Scoped(v) => Ok(Self::Scoped(v.try_into()?)),
+            CacheEntry::Run(v) => Ok(Self::Run(v.try_into()?)),
+        }
+    }
+}
+impl From<&model::StoredCredential> for CacheEntry {
+    fn from(value: &model::StoredCredential) -> Self {
+        match value {
+            model::StoredCredential::Base(v) => Self::Base(v.into()),
+            model::StoredCredential::Scoped(v) => Self::Scoped(v.into()),
+            model::StoredCredential::Run(v) => Self::Run(v.into()),
+        }
+    }
+}
+
+impl From<model::StoredRun> for RunCacheEntry {
+    fn from(value: model::StoredRun) -> Self {
+        let child_pid = value.child_pid();
+        Self {
+            version: RUN_CACHE_SCHEMA_VERSION,
+            state: match value.phase {
+                RunPhase::Pending => RunState::Pending,
+                RunPhase::Running { .. } => RunState::Running,
+                RunPhase::CleanupPending { .. } => RunState::CleanupPending,
+            },
+            child_pid,
+            run_id: value.run_id,
+            wrapper_pid: value.wrapper_pid,
+            command: value.command,
+            profile: value.profile,
+            source_profile: value.source_profile,
+            source_authority_fingerprint: value.source_authority_fingerprint,
+            github_user: value.github_user,
+            repo_scope: value.repo_scope,
+            expires_at: value.expires_at,
+            access_token: value.access_token,
+        }
+    }
+}
+impl RunCacheEntry {
+    pub(super) fn matches_stored(&self, value: &model::StoredRun) -> bool {
+        self.lifecycle().is_ok()
+            && self.child_pid == value.child_pid()
+            && matches!(
+                (self.state, value.phase),
+                (RunState::Pending, RunPhase::Pending)
+                    | (RunState::Running, RunPhase::Running { .. })
+                    | (RunState::CleanupPending, RunPhase::CleanupPending { .. })
+            )
+            && self.run_id == value.run_id
+            && self.wrapper_pid == value.wrapper_pid
+            && self.command == value.command
+            && self.profile == value.profile
+            && self.source_profile == value.source_profile
+            && self.source_authority_fingerprint == value.source_authority_fingerprint
+            && self.github_user == value.github_user
+            && self.repo_scope == value.repo_scope
+            && self.expires_at == value.expires_at
+            && self.access_token == value.access_token
+    }
 }

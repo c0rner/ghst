@@ -12,11 +12,22 @@ pub fn run_revoke(args: &GhstCli, cmd: &RevokeCmd) -> Result<(), CmdError> {
     let report = match selection {
         RevokeSelection::All => {
             tracing::debug!(cache_dir = %cache_dir.display(), "revoking all cached credentials");
-            crate::token::revoke::revoke_all(&client, &config, &cache_dir, now)?
+            crate::token::revoke::revoke_all(
+                &client,
+                &config,
+                &crate::cache::FsCredentialStore::new(&cache_dir),
+                now,
+            )?
         }
         RevokeSelection::One(id) => {
             tracing::debug!(cache_dir = %cache_dir.display(), cache_id = id, "revoking cached credential");
-            match crate::token::revoke::revoke_one(&client, &config, &cache_dir, id, now)? {
+            match crate::token::revoke::revoke_one(
+                &client,
+                &config,
+                &crate::cache::FsCredentialStore::new(&cache_dir),
+                id,
+                now,
+            )? {
                 RevokeOneOutcome::Revoked(report) => report,
                 RevokeOneOutcome::NotFound => {
                     return Err(CmdError::RevokeTargetNotFound(id.to_owned()));

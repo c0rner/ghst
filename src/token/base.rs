@@ -1,3 +1,5 @@
+pub mod client;
+
 use super::{
     BasePersistence, BaseTokenStatus, TokenError, revoke_with_context, validate_base_expiry,
 };
@@ -5,8 +7,8 @@ use crate::cache::{
     BaseCacheEntry, CACHE_SCHEMA_VERSION, CacheEntry, SaveCacheEntry, authority_fingerprint,
     compute_cache_key, load_cache_entry, save_cache_candidate,
 };
-use crate::domain::profile::{AppAuthority, AppRegistration};
-use crate::ports::base::{BaseTokenClient, IssuedBaseToken};
+use crate::profile::{AppAuthority, AppRegistration};
+use crate::token::base::client::{BaseTokenClient, IssuedBaseToken};
 use std::path::Path;
 use time::OffsetDateTime;
 

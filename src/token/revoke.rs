@@ -1,6 +1,6 @@
 use crate::cache::{CacheInspectionState, revoke_transaction};
 use crate::config::Config;
-use crate::ports::remote::{RemoteError, RevokeTokenClient};
+use crate::token::remote::{RemoteError, RevokeTokenClient};
 use std::path::Path;
 use time::OffsetDateTime;
 
@@ -262,7 +262,7 @@ mod tests {
         RunState, ScopedCacheEntry, authority_fingerprint, compute_cache_key,
         compute_run_cache_key, list_all_cache_entries, save_cache_entry,
     };
-    use crate::domain::credential::{AccessToken, TokenExpiry};
+    use crate::credential::{AccessToken, TokenExpiry};
     use std::cell::{Cell, RefCell};
     use time::Duration;
 

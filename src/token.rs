@@ -1,12 +1,12 @@
 mod acquire;
-mod base;
+pub mod base;
 pub mod cleanup;
-mod device_flow;
+pub mod device_flow;
 mod error;
 mod provenance;
+pub mod remote;
 pub mod revoke;
-pub mod run;
-mod scoped;
+pub mod scoped;
 mod types;
 mod validation;
 
@@ -20,13 +20,13 @@ pub use error::TokenError;
 pub use types::{AcquireRequest, AcquiredToken, BasePersistence, BaseTokenStatus};
 pub use validation::{validate_base_expiry, validate_scoped_expiry};
 
-use crate::domain::profile::AppRegistration;
-use crate::ports::remote::RevokeTokenClient;
+use crate::profile::AppRegistration;
+use crate::token::remote::RevokeTokenClient;
 
-fn revoke_with_context<C: RevokeTokenClient + ?Sized>(
+pub fn revoke_with_context<C: RevokeTokenClient + ?Sized>(
     client: &C,
     app: &AppRegistration<'_>,
-    token: &crate::domain::credential::AccessToken,
+    token: &crate::credential::AccessToken,
     context: TokenError,
 ) -> TokenError {
     let Some(secret) = app.client_secret else {

@@ -1,5 +1,5 @@
 use super::{CacheError, RunCacheEntry};
-use crate::domain::run::RunOwner;
+use crate::run::lifecycle::RunOwner;
 use std::path::Path;
 
 pub fn activate(

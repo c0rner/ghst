@@ -1,5 +1,5 @@
-use super::remote::{RemoteError, RevokeTokenClient};
-use crate::domain::credential::AccessToken;
+use crate::credential::AccessToken;
+use crate::token::remote::{RemoteError, RevokeTokenClient};
 use std::fmt;
 
 pub trait BaseTokenClient: RevokeTokenClient {

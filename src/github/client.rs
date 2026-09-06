@@ -2,10 +2,10 @@ use crate::github::types::{
     AccessTokenResponse, DeviceCodeResponse, ScopedTokenRequest as ScopedTokenBody,
     ScopedTokenResponse, UserResponse,
 };
-use crate::ports::base::{BaseTokenClient, GitHubUser, IssuedBaseToken};
-use crate::ports::device::{DeviceAuthorization, DeviceFlowClient, DeviceFlowPoll};
-use crate::ports::remote::{RemoteError, RevokeTokenClient};
-use crate::ports::scoped::{IssuedScopedToken, ScopedTokenClient, ScopedTokenRequest};
+use crate::token::base::client::{BaseTokenClient, GitHubUser, IssuedBaseToken};
+use crate::token::device_flow::client::{DeviceAuthorization, DeviceFlowClient, DeviceFlowPoll};
+use crate::token::remote::{RemoteError, RevokeTokenClient};
+use crate::token::scoped::client::{IssuedScopedToken, ScopedTokenClient, ScopedTokenRequest};
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD;
 use serde::de::DeserializeOwned;
@@ -476,7 +476,7 @@ mod tests {
 
     #[test]
     fn scoped_token_request_serialization_is_exact() {
-        use crate::domain::profile::PermissionLevel;
+        use crate::profile::PermissionLevel;
 
         let repositories = vec!["api".into(), "web".into()];
         let permissions = BTreeMap::from([

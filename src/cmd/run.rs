@@ -1,6 +1,6 @@
 use crate::cmd::{CmdError, GhstCli, RunCmd, resolve_profile_name};
 use crate::github::GitHubClient;
-use crate::token::run::{MintRunRequest, PendingRun};
+use crate::run::{MintRunRequest, PendingRun};
 use std::process::{Command, ExitStatus};
 
 pub enum RunOutcome {
@@ -46,7 +46,7 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
         &command_line,
         crate::git::resolve_origin_repo,
     )?;
-    let pending = crate::token::run::mint(&client, &request)?;
+    let pending = crate::run::mint(&client, &request)?;
     #[cfg(unix)]
     let signals = match Forwarder::prepare() {
         Ok(signals) => signals,
@@ -111,14 +111,14 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
 }
 
 fn prepare_mint_request<'a>(
-    profile: &'a crate::domain::profile::ResolvedTokenProfile<'a>,
+    profile: &'a crate::profile::ResolvedTokenProfile<'a>,
     cache_dir: &'a std::path::Path,
     cli_repositories: &[String],
     wrapper_pid: u32,
     command: &'a str,
     resolve_auto: impl FnMut() -> Result<String, crate::repository::RepositoryError>,
 ) -> Result<MintRunRequest<'a>, CmdError> {
-    let crate::domain::profile::ResolvedTokenProfile::Scoped {
+    let crate::profile::ResolvedTokenProfile::Scoped {
         name: profile_name,
         source_name,
         app,
@@ -127,10 +127,8 @@ fn prepare_mint_request<'a>(
     } = profile
     else {
         let name = match profile {
-            crate::domain::profile::ResolvedTokenProfile::Base { name, .. }
-            | crate::domain::profile::ResolvedTokenProfile::Scoped { name, .. } => {
-                (*name).to_owned()
-            }
+            crate::profile::ResolvedTokenProfile::Base { name, .. }
+            | crate::profile::ResolvedTokenProfile::Scoped { name, .. } => (*name).to_owned(),
         };
         return Err(CmdError::RunRequiresScoped(name));
     };

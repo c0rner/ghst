@@ -4,11 +4,11 @@ use crate::cache::{
     compute_cache_key, delete_cache_entry, load_cache_entry, save_cache_entry,
 };
 use crate::config::Config;
-use crate::domain::credential::TokenExpiry;
-use crate::domain::profile::{AppAuthority, ResolvedTokenProfile};
-use crate::ports::base::{BaseTokenClient, GitHubUser, IssuedBaseToken};
-use crate::ports::remote::{RemoteError, RevokeTokenClient};
-use crate::ports::scoped::{IssuedScopedToken, ScopedTokenClient, ScopedTokenRequest};
+use crate::credential::TokenExpiry;
+use crate::profile::{AppAuthority, ResolvedTokenProfile};
+use crate::token::base::client::{BaseTokenClient, GitHubUser, IssuedBaseToken};
+use crate::token::remote::{RemoteError, RevokeTokenClient};
+use crate::token::scoped::client::{IssuedScopedToken, ScopedTokenClient, ScopedTokenRequest};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::Path;

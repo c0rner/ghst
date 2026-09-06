@@ -563,7 +563,7 @@ pub fn cache_dir() -> Result<PathBuf, ConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::profile::{PermissionLevel, RepoScope, ResolvedTokenProfile};
+    use crate::profile::{PermissionLevel, RepoScope, ResolvedTokenProfile};
 
     const VALID_CONFIG: &str = r#"
 version = 1

@@ -1,8 +1,8 @@
 use crate::browser::{display_auth_instructions, open_auth_url};
 use crate::cache::cache_epoch;
 use crate::cmd::{CmdError, GhstCli, LoginCmd, format_human_expiry, resolve_profile_name};
-use crate::domain::profile::ResolvedTokenProfile;
 use crate::github::GitHubClient;
+use crate::profile::ResolvedTokenProfile;
 use crate::token::{BasePersistence, DeviceFlow};
 use time::OffsetDateTime;
 use tracing::{debug, info};

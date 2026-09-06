@@ -1,4 +1,4 @@
-use crate::ports::remote::RemoteError;
+use crate::token::remote::RemoteError;
 use std::fmt;
 
 #[derive(Debug)]

@@ -2,11 +2,12 @@ mod browser;
 mod cache;
 mod cmd;
 mod config;
-mod domain;
+mod credential;
 mod git;
 mod github;
-mod ports;
+mod profile;
 mod repository;
+mod run;
 mod token;
 
 use cmd::{GhstCli, SubCommand};

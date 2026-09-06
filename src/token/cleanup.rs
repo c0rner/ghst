@@ -3,7 +3,7 @@ use crate::cache::{
     delete_entry_if_unchanged, delete_run_after_cleanup, inspect_cache,
 };
 use crate::config::{AppProfile, Config};
-use crate::ports::remote::{RemoteError, RevokeTokenClient};
+use crate::token::remote::{RemoteError, RevokeTokenClient};
 use std::path::Path;
 use time::OffsetDateTime;
 
@@ -103,7 +103,7 @@ impl CleanupReport {
     }
 }
 
-pub(super) fn cleanup_marked_run<C: RevokeTokenClient>(
+pub fn cleanup_marked_run<C: RevokeTokenClient>(
     client: &C,
     config: &Config,
     cache_dir: &Path,
@@ -312,7 +312,7 @@ fn validated_app<'a>(config: &'a Config, entry: &RunCacheEntry) -> Option<&'a Ap
     }
 }
 
-const fn expiry(entry: &CacheEntry) -> crate::domain::credential::TokenExpiry {
+const fn expiry(entry: &CacheEntry) -> crate::credential::TokenExpiry {
     match entry {
         CacheEntry::Base(entry) => entry.expires_at,
         CacheEntry::Scoped(entry) => entry.expires_at,
@@ -346,7 +346,7 @@ mod tests {
         RUN_CACHE_SCHEMA_VERSION, RunState, authority_fingerprint, compute_run_cache_key,
         load_cache_entry, save_cache_entry,
     };
-    use crate::domain::credential::TokenExpiry;
+    use crate::credential::TokenExpiry;
     use std::cell::{Cell, RefCell};
     use time::Duration;
 

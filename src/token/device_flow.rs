@@ -1,6 +1,8 @@
-use crate::ports::base::IssuedBaseToken;
-use crate::ports::device::{DeviceAuthorization, DeviceFlowClient, DeviceFlowPoll};
-use crate::ports::remote::RemoteError;
+pub mod client;
+
+use crate::token::base::client::IssuedBaseToken;
+use crate::token::device_flow::client::{DeviceAuthorization, DeviceFlowClient, DeviceFlowPoll};
+use crate::token::remote::RemoteError;
 use std::fmt;
 use std::time::Duration;
 use tracing::{debug, warn};
@@ -118,7 +120,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::credential::AccessToken;
+    use crate::credential::AccessToken;
     use std::cell::{Cell, RefCell};
     use std::collections::VecDeque;
     use zeroize::Zeroizing;

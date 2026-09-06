@@ -1,5 +1,5 @@
-use super::base::IssuedBaseToken;
-use super::remote::RemoteError;
+use crate::token::base::client::IssuedBaseToken;
+use crate::token::remote::RemoteError;
 use std::{fmt, time::Duration};
 use zeroize::Zeroizing;
 

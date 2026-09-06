@@ -1,6 +1,6 @@
 use crate::cache::{CacheEntry, authority_fingerprint};
 use crate::config::{AppProfile, Config, GitHubAppConfig, ProfileConfig};
-use crate::domain::profile::AppAuthority;
+use crate::profile::AppAuthority;
 
 pub(super) enum ConfiguredAuthority<'a> {
     Match(&'a AppProfile),

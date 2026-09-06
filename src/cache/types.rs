@@ -1,7 +1,7 @@
 use crate::cache::digest::encode_hex;
-use crate::domain::credential::{AccessToken, TokenExpiry};
-use crate::domain::provenance::ScopedProvenance;
-use crate::domain::run::{RunLifecycle, RunLifecycleError, RunOwner, RunPhase};
+use crate::credential::provenance::ScopedProvenance;
+use crate::credential::{AccessToken, TokenExpiry};
+use crate::run::lifecycle::{RunLifecycle, RunLifecycleError, RunOwner, RunPhase};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;

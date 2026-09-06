@@ -144,7 +144,7 @@ mod tests {
         CacheEntry, RUN_CACHE_SCHEMA_VERSION, RunCacheEntry, RunState, authority_fingerprint,
         compute_run_cache_key, save_cache_entry,
     };
-    use crate::domain::credential::{AccessToken, TokenExpiry};
+    use crate::credential::{AccessToken, TokenExpiry};
     use time::Duration;
 
     #[test]

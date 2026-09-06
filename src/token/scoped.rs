@@ -1,3 +1,5 @@
+pub mod client;
+
 use std::collections::BTreeMap;
 use std::path::Path;
 use time::OffsetDateTime;
@@ -7,12 +9,12 @@ use super::{
     validate_scoped_expiry,
 };
 use crate::cache::{BaseCacheEntry, CacheError, DeleteBaseOutcome, delete_base_if_generation};
-use crate::domain::credential::{AccessToken, TokenExpiry};
-use crate::domain::profile::{AppCredentials, PermissionLevel};
-use crate::ports::scoped::{IssuedScopedToken, ScopedTokenClient, ScopedTokenRequest};
+use crate::credential::{AccessToken, TokenExpiry};
+use crate::profile::{AppCredentials, PermissionLevel};
 use crate::repository::RepositorySelection;
+use crate::token::scoped::client::{IssuedScopedToken, ScopedTokenClient, ScopedTokenRequest};
 
-pub(super) struct PreparedScopedToken<'a> {
+pub struct PreparedScopedToken<'a> {
     pub profile_name: &'a str,
     pub source_name: &'a str,
     pub app: AppCredentials<'a>,
@@ -22,13 +24,13 @@ pub(super) struct PreparedScopedToken<'a> {
     pub repositories: Option<Vec<String>>,
 }
 
-pub(super) struct ValidatedScopedToken {
+pub struct ValidatedScopedToken {
     pub access_token: AccessToken,
     pub expires_at: TokenExpiry,
     pub received_at: OffsetDateTime,
 }
 
-pub(super) fn prepare<'a>(
+pub fn prepare<'a>(
     cache_dir: &Path,
     profile_name: &'a str,
     source_name: &'a str,
@@ -60,7 +62,7 @@ pub(super) fn prepare<'a>(
     })
 }
 
-pub(super) fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
+pub fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     client: &C,
     prepared: &PreparedScopedToken<'_>,
     cache_dir: &Path,
@@ -94,10 +96,10 @@ pub(super) fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     });
     let response = match response {
         Ok(response) => response,
-        Err(crate::ports::remote::RemoteError::Http {
+        Err(crate::token::remote::RemoteError::Http {
             status: 401 | 404, ..
         }) => return Err(permanent_rejection_error(prepared, cache_dir)?),
-        Err(source @ crate::ports::remote::RemoteError::Http { status: 403, .. }) => {
+        Err(source @ crate::token::remote::RemoteError::Http { status: 403, .. }) => {
             tracing::debug!(
                 source_profile = prepared.source_name,
                 account = prepared.app.authority.account,

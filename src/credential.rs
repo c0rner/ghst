@@ -1,3 +1,5 @@
+pub mod provenance;
+
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::fmt;
 use time::format_description::well_known::Rfc3339;

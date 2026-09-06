@@ -20,7 +20,7 @@ pub enum CacheError {
     },
     RunCollision(String),
     RunLifecycle {
-        source: crate::domain::run::RunLifecycleError,
+        source: crate::run::lifecycle::RunLifecycleError,
     },
     InvalidRunTransition(&'static str),
     MalformedEpoch,
@@ -125,8 +125,8 @@ impl std::error::Error for CacheError {
     }
 }
 
-impl From<crate::domain::run::RunLifecycleError> for CacheError {
-    fn from(source: crate::domain::run::RunLifecycleError) -> Self {
+impl From<crate::run::lifecycle::RunLifecycleError> for CacheError {
+    fn from(source: crate::run::lifecycle::RunLifecycleError) -> Self {
         Self::RunLifecycle { source }
     }
 }

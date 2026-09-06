@@ -1,5 +1,5 @@
-use super::remote::{RemoteError, RevokeTokenClient};
-use crate::domain::{credential::AccessToken, profile::PermissionLevel};
+use crate::token::remote::{RemoteError, RevokeTokenClient};
+use crate::{credential::AccessToken, profile::PermissionLevel};
 use std::{collections::BTreeMap, fmt};
 
 pub trait ScopedTokenClient: RevokeTokenClient {

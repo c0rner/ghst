@@ -4,7 +4,7 @@ use std::fmt;
 use serde::Deserialize;
 
 use crate::config::error::ConfigError;
-use crate::domain::profile::{
+use crate::profile::{
     AppAuthority, AppCredentials, AppRegistration, PermissionLevel, RepoScope, ResolvedTokenProfile,
 };
 

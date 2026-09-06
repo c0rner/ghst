@@ -1,19 +1,21 @@
+pub mod lifecycle;
+
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::path::Path;
 use time::OffsetDateTime;
 
-use super::{TokenError, base_cache_key, revoke_with_context};
 use crate::cache::{
     CacheEntry, CacheError, RUN_CACHE_SCHEMA_VERSION, RunCacheEntry, RunState, SaveCacheEntry,
     cache_epoch, compute_run_cache_key, save_cache_candidate,
 };
 use crate::config::Config;
-use crate::domain::credential::AccessToken;
-use crate::domain::profile::{AppCredentials, PermissionLevel};
-use crate::ports::remote::RevokeTokenClient;
-use crate::ports::scoped::ScopedTokenClient;
+use crate::credential::AccessToken;
+use crate::profile::{AppCredentials, PermissionLevel};
 use crate::repository::RepositorySelection;
+use crate::token::remote::RevokeTokenClient;
+use crate::token::scoped::client::ScopedTokenClient;
+use crate::token::{TokenError, base_cache_key, revoke_with_context};
 
 pub struct MintRunRequest<'a> {
     pub cache_dir: &'a Path,
@@ -117,7 +119,7 @@ impl PendingRun {
         config: &Config,
         cache_dir: &Path,
         child_pid: Option<u32>,
-    ) -> Result<super::cleanup::CleanupReport, CacheError> {
+    ) -> Result<crate::token::cleanup::CleanupReport, CacheError> {
         let entry = crate::cache::run_storage::abort(
             cache_dir,
             &self.identity.cache_key,
@@ -125,7 +127,7 @@ impl PendingRun {
             self.identity.wrapper_pid,
             child_pid,
         )?;
-        Ok(super::cleanup::cleanup_marked_run(
+        Ok(crate::token::cleanup::cleanup_marked_run(
             client,
             config,
             cache_dir,
@@ -141,7 +143,7 @@ impl ActiveRun {
         client: &C,
         config: &Config,
         cache_dir: &Path,
-    ) -> Result<super::cleanup::CleanupReport, CacheError> {
+    ) -> Result<crate::token::cleanup::CleanupReport, CacheError> {
         let entry = crate::cache::run_storage::finish(
             cache_dir,
             &self.identity.cache_key,
@@ -149,7 +151,7 @@ impl ActiveRun {
             self.identity.wrapper_pid,
             self.child_pid,
         )?;
-        Ok(super::cleanup::cleanup_marked_run(
+        Ok(crate::token::cleanup::cleanup_marked_run(
             client,
             config,
             cache_dir,
@@ -171,7 +173,7 @@ fn mint_with_clock<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     request: &MintRunRequest<'_>,
     mut now: N,
 ) -> Result<PendingRun, TokenError> {
-    let prepared = super::scoped::prepare(
+    let prepared = crate::token::scoped::prepare(
         request.cache_dir,
         request.profile_name,
         request.source_name,
@@ -192,7 +194,7 @@ fn mint_with_clock<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     let generation = prepared.base.generation_fingerprint();
     let request_time = now();
     let issued =
-        super::scoped::issue(client, &prepared, request.cache_dir, request_time, &mut now)?;
+        crate::token::scoped::issue(client, &prepared, request.cache_dir, request_time, &mut now)?;
     tracing::debug!(profile = prepared.profile_name, expires_at = %issued.expires_at, "received valid run token from GitHub");
     let candidate = CacheEntry::Run(RunCacheEntry {
         version: RUN_CACHE_SCHEMA_VERSION,
@@ -269,9 +271,9 @@ mod tests {
         BaseCacheEntry, CACHE_SCHEMA_VERSION, ScopedCacheEntry, authority_fingerprint,
         compute_cache_key, compute_run_cache_key, policy_fingerprint, save_cache_entry,
     };
-    use crate::domain::credential::TokenExpiry;
-    use crate::ports::remote::{RemoteError, RevokeTokenClient};
-    use crate::ports::scoped::{IssuedScopedToken, ScopedTokenRequest};
+    use crate::credential::TokenExpiry;
+    use crate::token::remote::{RemoteError, RevokeTokenClient};
+    use crate::token::scoped::client::{IssuedScopedToken, ScopedTokenRequest};
     use std::cell::{Cell, RefCell};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
@@ -466,7 +468,7 @@ permissions = { contents = "read" }
         .unwrap();
         let client = MockClient(Cell::new(0));
         let app = AppCredentials {
-            authority: crate::domain::profile::AppAuthority {
+            authority: crate::profile::AppAuthority {
                 account: "acme",
                 client_id: "id",
             },
@@ -481,7 +483,7 @@ permissions = { contents = "read" }
             permissions: &scoped_permissions,
             repositories: RepositorySelection::resolve(
                 &["acme/api".into()],
-                &crate::domain::profile::RepoScope::All,
+                &crate::profile::RepoScope::All,
                 "acme",
                 || panic!("auto is not used"),
             )
@@ -633,7 +635,7 @@ permissions = { contents = "read" }
 
         client.fail.set(false);
         let report =
-            super::super::cleanup::prune(&client, &config(), &cache_dir, OffsetDateTime::now_utc())
+            crate::token::cleanup::prune(&client, &config(), &cache_dir, OffsetDateTime::now_utc())
                 .unwrap();
         assert!(report.is_complete());
         assert!(

@@ -1,4 +1,4 @@
-use crate::domain::provenance::ScopedProvenance;
+use crate::credential::provenance::ScopedProvenance;
 use std::path::Path;
 use time::OffsetDateTime;
 
@@ -11,8 +11,8 @@ use crate::cache::{
     cache_epoch, compute_cache_key, load_cache_entry, policy_fingerprint, replace_cache_candidate,
     save_cache_candidate,
 };
-use crate::domain::profile::AppAuthority;
-use crate::ports::scoped::ScopedTokenClient;
+use crate::profile::AppAuthority;
+use crate::token::scoped::client::ScopedTokenClient;
 
 pub fn acquire<C: ScopedTokenClient>(
     client: &C,

@@ -11,7 +11,7 @@ use crate::cache::types::{
     BaseCacheEntry, CACHE_SCHEMA_VERSION, CacheEntry, RUN_CACHE_SCHEMA_VERSION, ReplaceCacheEntry,
     RunCacheEntry, RunState, SaveCacheEntry, ScopedCacheEntry, authority_fingerprint,
 };
-use crate::domain::credential::TokenExpiry;
+use crate::credential::TokenExpiry;
 use std::fs;
 use std::io::Write;
 use std::sync::{Arc, Barrier};
@@ -712,7 +712,7 @@ fn invalid_decoded_run_lifecycle_is_rejected_and_retained() {
         assert!(matches!(
             load_cache_entry(&directory, &key),
             Err(CacheError::RunLifecycle {
-                source: crate::domain::run::RunLifecycleError::InvalidChild
+                source: crate::run::lifecycle::RunLifecycleError::InvalidChild
             })
         ));
         assert!(run_storage::activate(&directory, &key, "invalid-lifecycle", 100, 200).is_err());

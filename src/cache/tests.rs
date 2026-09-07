@@ -334,7 +334,10 @@ fn current_cache_schema_is_stable_and_round_trips() {
         let decoded: CacheEntryDto = serde_json::from_value(serialized).unwrap();
         assert_eq!(Record::try_from(decoded).unwrap(), entry);
     }
+}
 
+#[test]
+fn dto_conversion_rejects_unsupported_versions_with_valid_fields() {
     // Unsupported schema versions with otherwise valid fields are rejected at the DTO conversion boundary.
     let invalid_version_cases = [
         (

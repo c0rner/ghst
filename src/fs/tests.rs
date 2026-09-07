@@ -547,3 +547,51 @@ fn sync_dir_and_sync_private_dir_propagate_io_errors() {
         })
     ));
 }
+
+#[cfg(unix)]
+#[test]
+fn create_private_dir_enforces_private_directory_invariants() {
+    let temp = tempfile::tempdir().unwrap();
+
+    // Creates new private directory with mode 0700
+    let new_dir = temp.path().join("new_dir");
+    create_private_dir(&new_dir).unwrap();
+    assert_eq!(
+        fs::metadata(&new_dir).unwrap().permissions().mode() & 0o7777,
+        0o700
+    );
+
+    // Existing private directory is accepted idempotently
+    assert!(create_private_dir(&new_dir).is_ok());
+
+    // Symlink pointing to directory is rejected
+    let link_dir = temp.path().join("link_dir");
+    symlink(&new_dir, &link_dir).unwrap();
+    assert!(matches!(
+        create_private_dir(&link_dir),
+        Err(FsError::InsecurePath {
+            reason: "symbolic links are not permitted",
+            ..
+        })
+    ));
+
+    // Existing directory with insecure permissions is rejected
+    let insecure_dir = temp.path().join("insecure_dir");
+    create_private_dir(&insecure_dir).unwrap();
+    fs::set_permissions(&insecure_dir, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(matches!(
+        create_private_dir(&insecure_dir),
+        Err(FsError::InsecurePath {
+            reason: "unexpected permissions",
+            ..
+        })
+    ));
+
+    // Existing regular file fails with I/O error
+    let file_path = temp.path().join("file.txt");
+    fs::write(&file_path, b"").unwrap();
+    assert!(matches!(
+        create_private_dir(&file_path),
+        Err(FsError::Io { .. })
+    ));
+}

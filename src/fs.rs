@@ -239,16 +239,25 @@ pub fn create_private_dir(dir_path: &Path) -> Result<(), FsError> {
     builder.mode(0o700);
     builder.recursive(true);
     match builder.create(dir_path) {
-        Ok(()) => Ok(()),
+        Ok(()) => validate_private_dir(dir_path),
         Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-            if dir_path.is_dir() {
-                Ok(())
-            } else {
-                Err(FsError::Io {
+            let metadata = std::fs::symlink_metadata(dir_path).map_err(|source| FsError::Io {
+                path: dir_path.to_path_buf(),
+                source,
+            })?;
+            if metadata.file_type().is_symlink() {
+                return Err(FsError::InsecurePath {
+                    path: dir_path.to_path_buf(),
+                    reason: "symbolic links are not permitted",
+                });
+            }
+            if !metadata.is_dir() {
+                return Err(FsError::Io {
                     path: dir_path.to_path_buf(),
                     source: err,
-                })
+                });
             }
+            validate_private_dir(dir_path)
         }
         Err(source) => Err(FsError::Io {
             path: dir_path.to_path_buf(),

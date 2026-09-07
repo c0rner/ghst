@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 use zeroize::Zeroizing;
 
-use crate::domain::credential::AccessToken;
+use crate::credential::AccessToken;
 use crate::domain::profile::PermissionLevel;
 
 /// Response from `POST /login/device/code`

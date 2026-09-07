@@ -1,6 +1,7 @@
-use crate::cache::{CacheEntry, CacheInspectionState, abbreviate_cache_key, inspect_cache};
+use crate::cache::{CacheInspectionState, Record, abbreviate_cache_key, inspect_cache};
 use crate::cmd::{CmdError, GhstCli, StatusCmd, format_human_expiry};
 use crate::config::Config;
+use crate::run::RunState;
 use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::path::Path;
@@ -104,11 +105,7 @@ fn write_entry(
     match &inspection.state {
         CacheInspectionState::Invalid => writeln!(writer, "    Lifetime:    Invalid"),
         CacheInspectionState::Current(entry) => {
-            let expiry = match entry.as_ref() {
-                CacheEntry::Base(value) => value.expires_at,
-                CacheEntry::Scoped(value) => value.expires_at,
-                CacheEntry::Run(value) => value.expires_at,
-            };
+            let expiry = entry.expires_at();
             let state = if expiry.value() <= now {
                 "Expired"
             } else if expiry.is_safe_to_handoff_at(now) {
@@ -118,17 +115,17 @@ fn write_entry(
             };
             writeln!(writer, "    Lifetime:    {state}")?;
             writeln!(writer, "    Repo Scope:  {}", entry.repo_scope())?;
-            if let CacheEntry::Run(entry) = entry.as_ref() {
+            if let Record::Run(entry) = entry.as_ref() {
                 let state = match entry.state {
-                    crate::cache::RunState::Pending => "Pending".to_owned(),
-                    crate::cache::RunState::Running => entry.child_pid.map_or_else(
+                    RunState::Pending => "Pending".to_owned(),
+                    RunState::Running => entry.child_pid.map_or_else(
                         || "Running".to_owned(),
                         |child_pid| format!("Running (PID {child_pid})"),
                     ),
-                    crate::cache::RunState::CleanupPending => "Cleanup pending".to_owned(),
+                    RunState::CleanupPending => "Cleanup pending".to_owned(),
                 };
                 writeln!(writer, "    Run State:   {state}")?;
-                if matches!(entry.state, crate::cache::RunState::Running) {
+                if matches!(entry.state, RunState::Running) {
                     writeln!(writer, "    Command:     {}", entry.command)?;
                 }
             }
@@ -140,11 +137,9 @@ fn write_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::{
-        CacheEntry, RUN_CACHE_SCHEMA_VERSION, RunCacheEntry, RunState, authority_fingerprint,
-        compute_run_cache_key, save_cache_entry,
-    };
-    use crate::domain::credential::{AccessToken, TokenExpiry};
+    use crate::cache::{Record, compute_run_cache_key, save_cache_entry};
+    use crate::credential::{AccessToken, TokenExpiry, authority_fingerprint};
+    use crate::run::{RunRecord, RunState};
     use time::Duration;
 
     #[test]
@@ -170,8 +165,7 @@ permissions = { contents = "read" }
         save_cache_entry(
             &cache_dir,
             &compute_run_cache_key(run_id),
-            &CacheEntry::Run(RunCacheEntry {
-                version: RUN_CACHE_SCHEMA_VERSION,
+            &Record::Run(RunRecord {
                 run_id: run_id.into(),
                 state: RunState::Running,
                 wrapper_pid: 123_456,
@@ -190,8 +184,7 @@ permissions = { contents = "read" }
         save_cache_entry(
             &cache_dir,
             &compute_run_cache_key("second-status-run"),
-            &CacheEntry::Run(RunCacheEntry {
-                version: RUN_CACHE_SCHEMA_VERSION,
+            &Record::Run(RunRecord {
                 run_id: "second-status-run".into(),
                 state: RunState::CleanupPending,
                 wrapper_pid: 223_456,

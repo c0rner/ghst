@@ -7,12 +7,13 @@ use crate::cache::storage::{
     delete_run_after_cleanup, load_cache_entry, replace_cache_candidate, save_cache_entry,
 };
 use crate::cache::types::{
-    BaseCacheEntry, CACHE_SCHEMA_VERSION, CacheEntry, RUN_CACHE_SCHEMA_VERSION, ReplaceCacheEntry,
-    RunCacheEntry, RunState, SaveCacheEntry, ScopedCacheEntry, authority_fingerprint,
+    BaseCacheEntryDto, CacheEntryDto, Record, RecordWriteView, ReplaceCacheEntry, RunCacheEntryDto,
+    SaveCacheEntry, ScopedCacheEntryDto,
 };
 use crate::cache::{cache_file_path, ensure_cache_dir};
-use crate::domain::credential::TokenExpiry;
+use crate::credential::{BaseCredential, ScopedCredential, TokenExpiry, authority_fingerprint};
 use crate::fs::create_private_tempfile;
+use crate::run::{RunRecord, RunState};
 use std::fs;
 use std::io::Write;
 use std::sync::{Arc, Barrier};
@@ -23,9 +24,8 @@ fn base_key() -> String {
     compute_cache_key("developer", "all")
 }
 
-fn base_entry(token: &str, expiry: OffsetDateTime, authority: &str) -> CacheEntry {
-    CacheEntry::Base(BaseCacheEntry {
-        version: CACHE_SCHEMA_VERSION,
+fn base_entry(token: &str, expiry: OffsetDateTime, authority: &str) -> Record {
+    Record::Base(BaseCredential {
         profile: "developer".into(),
         authority_fingerprint: authority.into(),
         github_user: "octocat".into(),
@@ -38,9 +38,8 @@ fn cache_dir() -> tempfile::TempDir {
     tempfile::tempdir().unwrap()
 }
 
-fn run_entry(run_id: &str, state: RunState) -> CacheEntry {
-    CacheEntry::Run(RunCacheEntry {
-        version: RUN_CACHE_SCHEMA_VERSION,
+fn run_entry(run_id: &str, state: RunState) -> Record {
+    Record::Run(RunRecord {
         run_id: run_id.into(),
         state,
         wrapper_pid: 100,
@@ -56,9 +55,8 @@ fn run_entry(run_id: &str, state: RunState) -> CacheEntry {
     })
 }
 
-fn scoped_entry(token: &str, expiry: OffsetDateTime, parent_generation: &str) -> CacheEntry {
-    CacheEntry::Scoped(ScopedCacheEntry {
-        version: CACHE_SCHEMA_VERSION,
+fn scoped_entry(token: &str, expiry: OffsetDateTime, parent_generation: &str) -> Record {
+    Record::Scoped(ScopedCredential {
         profile: "reader".into(),
         source_profile: "developer".into(),
         source_authority_fingerprint: "authority".into(),
@@ -88,7 +86,7 @@ fn base_generation_deletion_is_atomic_compare_and_delete() {
     let directory = temp.path().join("cache");
     let now = OffsetDateTime::now_utc();
     let rejected = base_entry("rejected", now + Duration::hours(1), "authority");
-    let CacheEntry::Base(rejected_data) = &rejected else {
+    let Record::Base(rejected_data) = &rejected else {
         panic!("expected base")
     };
     let rejected_generation = rejected_data.generation_fingerprint();
@@ -126,7 +124,7 @@ fn renewal_compare_and_replace_returns_the_exact_displaced_entry() {
     let directory = temp.path().join("cache");
     let now = OffsetDateTime::now_utc();
     let base = base_entry("base", now + Duration::hours(1), "authority");
-    let CacheEntry::Base(base_data) = &base else {
+    let Record::Base(base_data) = &base else {
         panic!("expected base")
     };
     let generation = base_data.generation_fingerprint();
@@ -168,7 +166,7 @@ fn renewal_compare_and_replace_retains_a_compatible_concurrent_winner() {
     let directory = temp.path().join("cache");
     let now = OffsetDateTime::now_utc();
     let base = base_entry("base", now + Duration::hours(1), "authority");
-    let CacheEntry::Base(base_data) = &base else {
+    let Record::Base(base_data) = &base else {
         panic!("expected base")
     };
     let generation = base_data.generation_fingerprint();
@@ -252,7 +250,7 @@ fn abandoned_transition_rejects_a_stale_snapshot() {
     let directory = temp.path().join("cache");
     let key = compute_run_cache_key("abandoned");
     save_cache_entry(&directory, &key, &run_entry("abandoned", RunState::Pending)).unwrap();
-    let CacheEntry::Run(snapshot) = load_cache_entry(&directory, &key).unwrap().unwrap() else {
+    let Record::Run(snapshot) = load_cache_entry(&directory, &key).unwrap().unwrap() else {
         panic!("expected run entry")
     };
     run_storage::activate(&directory, &key, "abandoned", 100, 200).unwrap();
@@ -272,18 +270,18 @@ fn secrets_are_redacted_and_zeroizing_type_serializes() {
     let debug = format!("{entry:?}");
     assert!(!debug.contains("ghu_secret_123456"));
     assert!(debug.contains("[REDACTED]"));
-    let json = serde_json::to_string(&entry).unwrap();
+    let json = serde_json::to_string(&RecordWriteView::from(&entry)).unwrap();
     assert!(json.contains("ghu_secret_123456"));
-    let restored: CacheEntry = serde_json::from_str(&json).unwrap();
-    assert!(restored.is_current());
+    let dto: CacheEntryDto = serde_json::from_str(&json).unwrap();
+    let restored: Record = Record::try_from(dto).unwrap();
+    assert_eq!(restored, entry);
 }
 
 #[test]
 fn current_cache_schema_is_stable_and_round_trips() {
     let cases = [
         (
-            CacheEntry::Base(BaseCacheEntry {
-                version: CACHE_SCHEMA_VERSION,
+            Record::Base(BaseCredential {
                 profile: "developer".into(),
                 authority_fingerprint: "authority".into(),
                 github_user: "octocat".into(),
@@ -293,8 +291,7 @@ fn current_cache_schema_is_stable_and_round_trips() {
             r#"{"kind":"base","version":5,"profile":"developer","authority_fingerprint":"authority","github_user":"octocat","expires_at":"2026-08-09T11:00:00Z","access_token":"base-token"}"#,
         ),
         (
-            CacheEntry::Scoped(ScopedCacheEntry {
-                version: CACHE_SCHEMA_VERSION,
+            Record::Scoped(ScopedCredential {
                 profile: "reader".into(),
                 source_profile: "developer".into(),
                 source_authority_fingerprint: "authority".into(),
@@ -308,8 +305,7 @@ fn current_cache_schema_is_stable_and_round_trips() {
             r#"{"kind":"scoped","version":5,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","parent_generation":"generation","policy_fingerprint":"policy","github_user":"octocat","repo_scope":"acme/api","expires_at":"2026-08-09T11:00:00Z","access_token":"scoped-token"}"#,
         ),
         (
-            CacheEntry::Run(RunCacheEntry {
-                version: RUN_CACHE_SCHEMA_VERSION,
+            Record::Run(RunRecord {
                 run_id: "run-1".into(),
                 state: RunState::Running,
                 wrapper_pid: 100,
@@ -329,17 +325,108 @@ fn current_cache_schema_is_stable_and_round_trips() {
 
     // Intentional structural changes require a schema-version bump and matching golden update.
     for (entry, golden_json) in cases {
-        if matches!(&entry, CacheEntry::Run(_)) {
+        if matches!(&entry, Record::Run(_)) {
             assert!(!format!("{entry:?}").contains("cargo test"));
         }
-        let serialized = serde_json::to_value(&entry).unwrap();
+        let serialized = serde_json::to_value(RecordWriteView::from(&entry)).unwrap();
         let golden: serde_json::Value = serde_json::from_str(golden_json).unwrap();
         assert_eq!(serialized, golden);
-        assert_eq!(
-            serde_json::from_value::<CacheEntry>(serialized).unwrap(),
-            entry
-        );
+        let decoded: CacheEntryDto = serde_json::from_value(serialized).unwrap();
+        assert_eq!(Record::try_from(decoded).unwrap(), entry);
     }
+
+    // Unsupported schema versions with otherwise valid fields are rejected at the DTO conversion boundary.
+    let invalid_version_cases = [
+        (
+            r#"{"kind":"base","version":4,"profile":"developer","authority_fingerprint":"authority","github_user":"octocat","expires_at":"2026-08-09T11:00:00Z","access_token":"base-token"}"#,
+            "base",
+            4,
+            5,
+        ),
+        (
+            r#"{"kind":"base","version":6,"profile":"developer","authority_fingerprint":"authority","github_user":"octocat","expires_at":"2026-08-09T11:00:00Z","access_token":"base-token"}"#,
+            "base",
+            6,
+            5,
+        ),
+        (
+            r#"{"kind":"scoped","version":4,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","parent_generation":"generation","policy_fingerprint":"policy","github_user":"octocat","repo_scope":"acme/api","expires_at":"2026-08-09T11:00:00Z","access_token":"scoped-token"}"#,
+            "scoped",
+            4,
+            5,
+        ),
+        (
+            r#"{"kind":"scoped","version":6,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","parent_generation":"generation","policy_fingerprint":"policy","github_user":"octocat","repo_scope":"acme/api","expires_at":"2026-08-09T11:00:00Z","access_token":"scoped-token"}"#,
+            "scoped",
+            6,
+            5,
+        ),
+        (
+            r#"{"kind":"run","version":2,"run_id":"run-1","state":"running","wrapper_pid":100,"child_pid":101,"command":"cargo test","profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","github_user":"octocat","repo_scope":"acme/api","expires_at":"2026-08-09T11:00:00Z","access_token":"run-token"}"#,
+            "run",
+            2,
+            3,
+        ),
+        (
+            r#"{"kind":"run","version":4,"run_id":"run-1","state":"running","wrapper_pid":100,"child_pid":101,"command":"cargo test","profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","github_user":"octocat","repo_scope":"acme/api","expires_at":"2026-08-09T11:00:00Z","access_token":"run-token"}"#,
+            "run",
+            4,
+            3,
+        ),
+    ];
+
+    for (json, expected_kind, actual_version, expected_version) in invalid_version_cases {
+        let decoded: CacheEntryDto = serde_json::from_str(json).unwrap();
+        let err = Record::try_from(decoded).unwrap_err();
+        assert!(matches!(
+            err,
+            CacheError::UnsupportedSchema {
+                ref kind,
+                version: Some(v),
+                expected,
+            } if kind == expected_kind && v == actual_version && expected == expected_version
+        ));
+    }
+
+    // Direct DTO conversion also enforces schema version validation.
+    let base_dto: BaseCacheEntryDto = serde_json::from_str(
+        r#"{"version":4,"profile":"developer","authority_fingerprint":"authority","github_user":"octocat","expires_at":"2026-08-09T11:00:00Z","access_token":"base-token"}"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        BaseCredential::try_from(base_dto),
+        Err(CacheError::UnsupportedSchema {
+            version: Some(4),
+            expected: 5,
+            ..
+        })
+    ));
+
+    let scoped_dto: ScopedCacheEntryDto = serde_json::from_str(
+        r#"{"version":4,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","parent_generation":"generation","policy_fingerprint":"policy","github_user":"octocat","repo_scope":"acme/api","expires_at":"2026-08-09T11:00:00Z","access_token":"scoped-token"}"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        ScopedCredential::try_from(scoped_dto),
+        Err(CacheError::UnsupportedSchema {
+            version: Some(4),
+            expected: 5,
+            ..
+        })
+    ));
+
+    let run_dto: RunCacheEntryDto = serde_json::from_str(
+        r#"{"version":2,"run_id":"run-1","state":"running","wrapper_pid":100,"child_pid":101,"command":"cargo test","profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","github_user":"octocat","repo_scope":"acme/api","expires_at":"2026-08-09T11:00:00Z","access_token":"run-token"}"#,
+    )
+    .unwrap();
+    assert!(matches!(
+        RunRecord::try_from(run_dto),
+        Err(CacheError::UnsupportedSchema {
+            version: Some(2),
+            expected: 3,
+            ..
+        })
+    ));
 }
 
 #[test]
@@ -605,10 +692,10 @@ fn compatible_entry_is_retained_and_wrong_kind_fails_closed() {
     let retained = save_cache_entry(&directory, &base_key(), &candidate).unwrap();
     match retained {
         SaveCacheEntry::Retained(entry) => match *entry {
-            CacheEntry::Base(BaseCacheEntry { access_token, .. }) => {
+            Record::Base(BaseCredential { access_token, .. }) => {
                 assert_eq!(access_token.as_ref(), "existing");
             }
-            CacheEntry::Scoped(_) | CacheEntry::Run(_) => {
+            Record::Scoped(_) | Record::Run(_) => {
                 panic!("expected retained base entry")
             }
         },
@@ -616,8 +703,7 @@ fn compatible_entry_is_retained_and_wrong_kind_fails_closed() {
     }
 
     let other = temp.path().join("other");
-    let scoped = CacheEntry::Scoped(ScopedCacheEntry {
-        version: CACHE_SCHEMA_VERSION,
+    let scoped = Record::Scoped(ScopedCredential {
         profile: "developer".into(),
         source_profile: "developer".into(),
         source_authority_fingerprint: "authority".into(),

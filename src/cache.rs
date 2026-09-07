@@ -25,8 +25,4 @@ pub use storage::{
 };
 #[cfg(test)]
 pub use storage::{delete_cache_entry, list_all_cache_entries, save_cache_entry};
-pub use types::{
-    BaseCacheEntry, CACHE_SCHEMA_VERSION, CacheEntry, RUN_CACHE_SCHEMA_VERSION, ReplaceCacheEntry,
-    RunCacheEntry, RunState, SaveCacheEntry, ScopedCacheEntry, authority_fingerprint,
-    policy_fingerprint,
-};
+pub use types::{Record, ReplaceCacheEntry, SaveCacheEntry};

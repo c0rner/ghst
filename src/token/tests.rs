@@ -1,10 +1,11 @@
 use super::*;
 use crate::cache::{
-    BaseCacheEntry, CACHE_SCHEMA_VERSION, CacheEntry, authority_fingerprint, cache_epoch,
-    compute_cache_key, delete_cache_entry, load_cache_entry, save_cache_entry,
+    Record, cache_epoch, compute_cache_key, delete_cache_entry, load_cache_entry, save_cache_entry,
 };
 use crate::config::Config;
-use crate::domain::credential::TokenExpiry;
+use crate::credential::{
+    BaseCredential, ScopedCredential, TokenExpiry, authority_fingerprint, policy_fingerprint,
+};
 use crate::domain::profile::{AppAuthority, ResolvedTokenProfile};
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -87,8 +88,7 @@ fn client(response: IssuedScopedToken) -> MockClient {
 }
 
 fn cache_base(cache_dir: &Path, now: OffsetDateTime, token: &str) {
-    let entry = CacheEntry::Base(BaseCacheEntry {
-        version: CACHE_SCHEMA_VERSION,
+    let entry = Record::Base(BaseCredential {
         profile: "developer".into(),
         authority_fingerprint: authority_fingerprint("id", "acme"),
         github_user: "octocat".into(),
@@ -100,7 +100,7 @@ fn cache_base(cache_dir: &Path, now: OffsetDateTime, token: &str) {
 
 fn cache_scoped(cache_dir: &Path, expiry: OffsetDateTime, token: &str) -> String {
     let base_key = base_cache_key("developer");
-    let CacheEntry::Base(base) = load_cache_entry(cache_dir, &base_key).unwrap().unwrap() else {
+    let Record::Base(base) = load_cache_entry(cache_dir, &base_key).unwrap().unwrap() else {
         panic!("expected base")
     };
     let permissions = BTreeMap::from([
@@ -108,13 +108,12 @@ fn cache_scoped(cache_dir: &Path, expiry: OffsetDateTime, token: &str) -> String
         ("pull_requests".to_owned(), "write".to_owned()),
     ]);
     let cache_key = compute_cache_key("reader", "acme/api");
-    let entry = CacheEntry::Scoped(crate::cache::ScopedCacheEntry {
-        version: CACHE_SCHEMA_VERSION,
+    let entry = Record::Scoped(ScopedCredential {
         profile: "reader".into(),
         source_profile: "developer".into(),
         source_authority_fingerprint: authority_fingerprint("id", "acme"),
         parent_generation: base.generation_fingerprint(),
-        policy_fingerprint: crate::cache::policy_fingerprint("acme", "acme/api", &permissions),
+        policy_fingerprint: policy_fingerprint("acme", "acme/api", &permissions),
         github_user: "octocat".into(),
         repo_scope: "acme/api".into(),
         expires_at: TokenExpiry::new(expiry),
@@ -366,7 +365,7 @@ fn scoped_acquisition_sends_exact_narrowing_request() {
             "permissions": {"contents": "read", "pull_requests": "write"},
         })
     );
-    let CacheEntry::Scoped(cached) = load_cache_entry(
+    let Record::Scoped(cached) = load_cache_entry(
         &cache_dir,
         &compute_cache_key("reader", "acme/api,acme/web"),
     )
@@ -596,13 +595,12 @@ fn cached_scoped_token_remains_usable_after_base_expiry() {
     acquire(&first_client, scoped_request(&cache_dir, &profile)).unwrap();
 
     let base_key = base_cache_key("developer");
-    let CacheEntry::Base(mut base) = load_cache_entry(&cache_dir, &base_key).unwrap().unwrap()
-    else {
+    let Record::Base(mut base) = load_cache_entry(&cache_dir, &base_key).unwrap().unwrap() else {
         panic!("expected base");
     };
     delete_cache_entry(&cache_dir, &base_key).unwrap();
     base.expires_at = TokenExpiry::new(now - Duration::minutes(1));
-    save_cache_entry(&cache_dir, &base_key, &CacheEntry::Base(base)).unwrap();
+    save_cache_entry(&cache_dir, &base_key, &Record::Base(base)).unwrap();
 
     let unused_client = MockClient {
         scoped: RefCell::new(None),
@@ -639,8 +637,7 @@ fn renewable_scoped_token_is_replaced_and_displaced_token_is_revoked() {
 
     assert_eq!(acquired.access_token.as_ref(), "renewed-child");
     assert_eq!(&*client.revoked.borrow(), &["renewable-child"]);
-    let CacheEntry::Scoped(cached) = load_cache_entry(&cache_dir, &cache_key).unwrap().unwrap()
-    else {
+    let Record::Scoped(cached) = load_cache_entry(&cache_dir, &cache_key).unwrap().unwrap() else {
         panic!("expected scoped entry")
     };
     assert_eq!(cached.access_token.as_ref(), "renewed-child");
@@ -655,13 +652,12 @@ fn renewable_scoped_token_falls_back_when_base_is_not_usable() {
     cache_base(&cache_dir, now, "base-token");
     cache_scoped(&cache_dir, now + Duration::minutes(5), "renewable-child");
     let base_key = base_cache_key("developer");
-    let CacheEntry::Base(mut base) = load_cache_entry(&cache_dir, &base_key).unwrap().unwrap()
-    else {
+    let Record::Base(mut base) = load_cache_entry(&cache_dir, &base_key).unwrap().unwrap() else {
         panic!("expected base")
     };
     delete_cache_entry(&cache_dir, &base_key).unwrap();
     base.expires_at = TokenExpiry::new(now + Duration::seconds(30));
-    save_cache_entry(&cache_dir, &base_key, &CacheEntry::Base(base)).unwrap();
+    save_cache_entry(&cache_dir, &base_key, &Record::Base(base)).unwrap();
     let client = no_response_client();
     let config: Config = CONFIG.parse().unwrap();
     let profile = config.resolve_token_profile("reader").unwrap();
@@ -685,13 +681,12 @@ fn fallback_child_inside_handoff_margin_is_rejected_when_base_cannot_mint() {
     cache_base(&cache_dir, now, "base-token");
     cache_scoped(&cache_dir, now + Duration::seconds(31), "renewable-child");
     let base_key = base_cache_key("developer");
-    let CacheEntry::Base(mut base) = load_cache_entry(&cache_dir, &base_key).unwrap().unwrap()
-    else {
+    let Record::Base(mut base) = load_cache_entry(&cache_dir, &base_key).unwrap().unwrap() else {
         panic!("expected base")
     };
     delete_cache_entry(&cache_dir, &base_key).unwrap();
     base.expires_at = TokenExpiry::new(now + Duration::seconds(30));
-    save_cache_entry(&cache_dir, &base_key, &CacheEntry::Base(base)).unwrap();
+    save_cache_entry(&cache_dir, &base_key, &Record::Base(base)).unwrap();
     let client = no_response_client();
     let config: Config = CONFIG.parse().unwrap();
     let profile = config.resolve_token_profile("reader").unwrap();
@@ -717,13 +712,12 @@ fn fallback_child_on_valid_side_of_handoff_margin_is_returned_when_base_cannot_m
     cache_base(&cache_dir, now, "base-token");
     cache_scoped(&cache_dir, now + Duration::seconds(33), "renewable-child");
     let base_key = base_cache_key("developer");
-    let CacheEntry::Base(mut base) = load_cache_entry(&cache_dir, &base_key).unwrap().unwrap()
-    else {
+    let Record::Base(mut base) = load_cache_entry(&cache_dir, &base_key).unwrap().unwrap() else {
         panic!("expected base")
     };
     delete_cache_entry(&cache_dir, &base_key).unwrap();
     base.expires_at = TokenExpiry::new(now + Duration::seconds(30));
-    save_cache_entry(&cache_dir, &base_key, &CacheEntry::Base(base)).unwrap();
+    save_cache_entry(&cache_dir, &base_key, &Record::Base(base)).unwrap();
     let client = no_response_client();
     let config: Config = CONFIG.parse().unwrap();
     let profile = config.resolve_token_profile("reader").unwrap();
@@ -747,13 +741,12 @@ fn token_inside_handoff_margin_is_never_returned() {
     cache_base(&cache_dir, now, "base-token");
     cache_scoped(&cache_dir, now + Duration::seconds(30), "unsafe-child");
     let base_key = base_cache_key("developer");
-    let CacheEntry::Base(mut base) = load_cache_entry(&cache_dir, &base_key).unwrap().unwrap()
-    else {
+    let Record::Base(mut base) = load_cache_entry(&cache_dir, &base_key).unwrap().unwrap() else {
         panic!("expected base")
     };
     delete_cache_entry(&cache_dir, &base_key).unwrap();
     base.expires_at = TokenExpiry::new(now + Duration::seconds(30));
-    save_cache_entry(&cache_dir, &base_key, &CacheEntry::Base(base)).unwrap();
+    save_cache_entry(&cache_dir, &base_key, &Record::Base(base)).unwrap();
     let client = no_response_client();
     let config: Config = CONFIG.parse().unwrap();
     let profile = config.resolve_token_profile("reader").unwrap();
@@ -823,8 +816,7 @@ fn failed_displaced_revocation_leaves_the_renewed_token_persisted() {
             if matches!(&*context, TokenError::RenewalPersisted(profile) if profile == "reader")
     ));
     assert_eq!(&*failing_client.revoked.borrow(), &["renewable-child"]);
-    let CacheEntry::Scoped(cached) = load_cache_entry(&cache_dir, &cache_key).unwrap().unwrap()
-    else {
+    let Record::Scoped(cached) = load_cache_entry(&cache_dir, &cache_key).unwrap().unwrap() else {
         panic!("expected scoped entry")
     };
     assert_eq!(cached.access_token.as_ref(), "persisted-child");

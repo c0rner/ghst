@@ -6,8 +6,8 @@ use super::{
     IssuedScopedToken, ScopedTokenClient, ScopedTokenRequest, TokenError, base_cache_key,
     load_current_base_entry, revoke_with_context, validate_scoped_expiry,
 };
-use crate::cache::{BaseCacheEntry, CacheError, DeleteBaseOutcome, delete_base_if_generation};
-use crate::domain::credential::{AccessToken, TokenExpiry};
+use crate::cache::{CacheError, DeleteBaseOutcome, delete_base_if_generation};
+use crate::credential::{AccessToken, BaseCredential, TokenExpiry};
 use crate::domain::profile::{AppCredentials, PermissionLevel};
 use crate::repository::RepositorySelection;
 
@@ -16,7 +16,7 @@ pub(super) struct PreparedScopedToken<'a> {
     pub source_name: &'a str,
     pub app: AppCredentials<'a>,
     pub permissions: &'a BTreeMap<String, PermissionLevel>,
-    pub base: BaseCacheEntry,
+    pub base: BaseCredential,
     pub scope: String,
     pub repositories: Option<Vec<String>>,
 }

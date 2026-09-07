@@ -2,9 +2,9 @@ use super::{
     BasePersistence, BaseTokenStatus, TokenError, revoke_with_context, validate_base_expiry,
 };
 use crate::cache::{
-    BaseCacheEntry, CACHE_SCHEMA_VERSION, CacheEntry, SaveCacheEntry, authority_fingerprint,
-    compute_cache_key, load_cache_entry, save_cache_candidate,
+    Record, SaveCacheEntry, compute_cache_key, load_cache_entry, save_cache_candidate,
 };
+use crate::credential::{BaseCredential, authority_fingerprint};
 use crate::domain::profile::{AppAuthority, AppRegistration};
 use crate::token::{BaseTokenClient, IssuedBaseToken};
 use std::path::Path;
@@ -19,7 +19,7 @@ pub fn load_valid_base_entry(
     profile_name: &str,
     authority: &AppAuthority<'_>,
     now: OffsetDateTime,
-) -> Result<Option<BaseCacheEntry>, TokenError> {
+) -> Result<Option<BaseCredential>, TokenError> {
     let entry = load_current_base_entry(cache_dir, profile_name, authority)?;
     match entry {
         Some(entry) if entry.expires_at.is_safe_to_handoff_at(now) => {
@@ -56,7 +56,7 @@ pub fn load_current_base_entry(
     cache_dir: &Path,
     profile_name: &str,
     authority: &AppAuthority<'_>,
-) -> Result<Option<BaseCacheEntry>, TokenError> {
+) -> Result<Option<BaseCredential>, TokenError> {
     let key = base_cache_key(profile_name);
     let Some(entry) = load_cache_entry(cache_dir, &key)? else {
         tracing::debug!(
@@ -73,7 +73,7 @@ pub fn load_current_base_entry(
         });
     }
     match entry {
-        CacheEntry::Base(entry) => {
+        Record::Base(entry) => {
             if !super::provenance::matches_authority(authority, &entry.authority_fingerprint) {
                 tracing::debug!(
                     profile = profile_name,
@@ -91,13 +91,11 @@ pub fn load_current_base_entry(
             );
             Ok(Some(entry))
         }
-        other @ (CacheEntry::Scoped(_) | CacheEntry::Run(_)) => {
-            Err(TokenError::UnexpectedCacheKind {
-                profile: profile_name.to_owned(),
-                expected: "base",
-                actual: other.kind_name(),
-            })
-        }
+        other @ (Record::Scoped(_) | Record::Run(_)) => Err(TokenError::UnexpectedCacheKind {
+            profile: profile_name.to_owned(),
+            expected: "base",
+            actual: other.kind_name(),
+        }),
     }
 }
 
@@ -134,8 +132,7 @@ pub fn persist_base_response<C: BaseTokenClient>(
             ));
         }
     };
-    let candidate = CacheEntry::Base(BaseCacheEntry {
-        version: CACHE_SCHEMA_VERSION,
+    let candidate = Record::Base(BaseCredential {
         profile: profile_name.to_owned(),
         authority_fingerprint: authority_fingerprint(
             app.authority.client_id,
@@ -165,14 +162,14 @@ pub fn persist_base_response<C: BaseTokenClient>(
     };
     match result {
         SaveCacheEntry::Saved => match candidate {
-            CacheEntry::Base(entry) => {
+            Record::Base(entry) => {
                 tracing::debug!(profile = profile_name, "persisted issued base token");
                 Ok(BasePersistence::Saved(base_status(entry)))
             }
-            CacheEntry::Scoped(_) | CacheEntry::Run(_) => unreachable!("candidate is base"),
+            Record::Scoped(_) | Record::Run(_) => unreachable!("candidate is base"),
         },
         SaveCacheEntry::Retained(entry) => match *entry {
-            CacheEntry::Base(entry) => {
+            Record::Base(entry) => {
                 tracing::debug!(
                     profile = profile_name,
                     "a compatible concurrent base token won the cache race; revoking unused candidate"
@@ -192,18 +189,16 @@ pub fn persist_base_response<C: BaseTokenClient>(
                     Ok(BasePersistence::Retained(base_status(entry)))
                 }
             }
-            entry @ (CacheEntry::Scoped(_) | CacheEntry::Run(_)) => {
-                Err(TokenError::UnexpectedCacheKind {
-                    profile: profile_name.to_owned(),
-                    expected: "base",
-                    actual: entry.kind_name(),
-                })
-            }
+            entry @ (Record::Scoped(_) | Record::Run(_)) => Err(TokenError::UnexpectedCacheKind {
+                profile: profile_name.to_owned(),
+                expected: "base",
+                actual: entry.kind_name(),
+            }),
         },
     }
 }
 
-fn base_status(entry: BaseCacheEntry) -> BaseTokenStatus {
+fn base_status(entry: BaseCredential) -> BaseTokenStatus {
     BaseTokenStatus {
         github_user: entry.github_user,
         expires_at: entry.expires_at,

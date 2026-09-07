@@ -1,6 +1,5 @@
 use crate::cache::cache_epoch;
 use crate::cache::error::CacheError;
-use crate::cache::fs::{cache_file_path, create_private_tempfile, ensure_cache_dir};
 use crate::cache::key::{compute_cache_key, compute_run_cache_key};
 use crate::cache::run_storage;
 use crate::cache::storage::{
@@ -11,7 +10,9 @@ use crate::cache::types::{
     BaseCacheEntry, CACHE_SCHEMA_VERSION, CacheEntry, RUN_CACHE_SCHEMA_VERSION, ReplaceCacheEntry,
     RunCacheEntry, RunState, SaveCacheEntry, ScopedCacheEntry, authority_fingerprint,
 };
+use crate::cache::{cache_file_path, ensure_cache_dir};
 use crate::domain::credential::TokenExpiry;
+use crate::fs::create_private_tempfile;
 use std::fs;
 use std::io::Write;
 use std::sync::{Arc, Barrier};

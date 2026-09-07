@@ -1,8 +1,13 @@
 use crate::cache::digest::encode_hex;
 use crate::cache::error::CacheError;
 use sha2::{Digest, Sha256};
+use std::path::{Path, PathBuf};
 
 pub const MIN_CACHE_ID_LENGTH: usize = 7;
+
+pub fn cache_file_path(cache_dir: &Path, hash_key: &str) -> PathBuf {
+    cache_dir.join(format!("{hash_key}.json"))
+}
 
 /// Compute SHA-256 hex cache key for `profile_name + "|" + canonical_repo_scope`.
 pub fn compute_cache_key(profile_name: &str, canonical_repo_scope: &str) -> String {

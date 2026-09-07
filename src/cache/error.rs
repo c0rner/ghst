@@ -98,6 +98,18 @@ impl fmt::Display for CacheError {
     }
 }
 
+impl From<crate::fs::FsError> for CacheError {
+    fn from(source: crate::fs::FsError) -> Self {
+        match source {
+            crate::fs::FsError::Io { source, .. } => Self::Io(source),
+            crate::fs::FsError::InsecurePath { path, reason } => {
+                Self::InsecurePath { path, reason }
+            }
+            crate::fs::FsError::Platform(reason) => Self::Platform(reason),
+        }
+    }
+}
+
 impl std::error::Error for CacheError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {

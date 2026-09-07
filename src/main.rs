@@ -3,6 +3,7 @@ mod cache;
 mod cmd;
 mod config;
 mod domain;
+mod fs;
 mod git;
 mod github;
 mod repository;

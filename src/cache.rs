@@ -1,7 +1,7 @@
 mod digest;
 mod error;
-mod fs;
 mod key;
+mod lock;
 pub mod run_storage;
 mod storage;
 mod types;
@@ -10,10 +10,14 @@ mod types;
 mod tests;
 
 pub use error::CacheError;
-pub use fs::cache_epoch;
+#[cfg(test)]
+pub use key::cache_file_path;
 pub use key::{
     MIN_CACHE_ID_LENGTH, abbreviate_cache_key, compute_cache_key, compute_run_cache_key,
 };
+pub use lock::cache_epoch;
+#[cfg(test)]
+pub use lock::ensure_cache_dir;
 pub use storage::{
     CacheInspection, CacheInspectionState, DeleteBaseOutcome, claim_abandoned_run,
     delete_base_if_generation, delete_entry_if_unchanged, delete_run_after_cleanup, inspect_cache,

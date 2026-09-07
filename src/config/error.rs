@@ -93,6 +93,21 @@ impl fmt::Display for ConfigError {
     }
 }
 
+impl From<crate::fs::FsError> for ConfigError {
+    fn from(source: crate::fs::FsError) -> Self {
+        match source {
+            crate::fs::FsError::Io { path, source } => Self::Io { path, source },
+            crate::fs::FsError::InsecurePath { path, reason } => {
+                Self::InsecurePath { path, reason }
+            }
+            crate::fs::FsError::Platform(reason) => Self::InsecurePath {
+                path: PathBuf::new(),
+                reason,
+            },
+        }
+    }
+}
+
 impl std::error::Error for ConfigError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {

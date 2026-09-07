@@ -458,14 +458,18 @@ pub fn delete_cache_entry(cache_dir: &Path, hash_key: &str) -> Result<bool, Cach
     validate_cache_key(hash_key)?;
     with_cache_lock(cache_dir, LockMode::Exclusive, || {
         let cache_file = cache_file_path(cache_dir, hash_key);
-        match fs::symlink_metadata(&cache_file) {
+        match crate::fs::open_private_file(&cache_file) {
             Ok(_) => {
                 fs::remove_file(&cache_file).map_err(CacheError::Io)?;
                 crate::fs::sync_private_dir(cache_dir).map_err(CacheError::from)?;
                 Ok(true)
             }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(err) => Err(CacheError::Io(err)),
+            Err(crate::fs::FsError::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                Ok(false)
+            }
+            Err(err) => Err(CacheError::from(err)),
         }
     })
 }

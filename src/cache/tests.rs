@@ -578,6 +578,27 @@ fn insecure_or_symlinked_cache_state_fails_closed() {
 
 #[cfg(unix)]
 #[test]
+fn delete_cache_entry_rejects_insecure_target() {
+    use std::os::unix::fs::symlink;
+
+    let temp = cache_dir();
+    let directory = temp.path().join("cache");
+    ensure_cache_dir(&directory).unwrap();
+    let key = base_key();
+    let path = cache_file_path(&directory, &key);
+    let target = temp.path().join("target");
+    fs::write(&target, b"target").unwrap();
+    symlink(&target, &path).unwrap();
+
+    assert!(matches!(
+        delete_cache_entry(&directory, &key),
+        Err(CacheError::InsecurePath { .. })
+    ));
+    assert!(path.symlink_metadata().is_ok());
+}
+
+#[cfg(unix)]
+#[test]
 fn insecure_global_lock_file_fails_closed() {
     use std::os::unix::fs::{PermissionsExt, symlink};
 

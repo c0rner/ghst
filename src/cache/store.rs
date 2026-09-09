@@ -26,7 +26,7 @@ use crate::token::store::{
     RecordInspection, RevocationBatch, RevocationSelection,
 };
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use time::OffsetDateTime;
 
 /// Concrete filesystem cache implementation of feature storage contracts.
@@ -37,10 +37,6 @@ pub struct CacheStore {
 impl CacheStore {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
     }
 }
 

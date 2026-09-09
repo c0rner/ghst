@@ -13,9 +13,10 @@ mod types;
 mod validation;
 
 pub use acquire::acquire;
+#[cfg(test)]
+pub use base::base_cache_key;
 pub use base::{
-    base_cache_key, load_current_base_entry, load_valid_base_entry, load_valid_base_status,
-    persist_base_response,
+    load_current_base_entry, load_valid_base_entry, load_valid_base_status, persist_base_response,
 };
 pub use device_flow::{DeviceFlow, DeviceFlowError};
 pub use error::TokenError;
@@ -24,7 +25,6 @@ pub use ports::{
     IssuedBaseToken, IssuedScopedToken, RemoteError, RevokeTokenClient, ScopedTokenClient,
     ScopedTokenRequest,
 };
-pub use store::Record;
 pub use types::{AcquireRequest, AcquiredToken, BasePersistence, BaseTokenStatus};
 pub use validation::{validate_base_expiry, validate_scoped_expiry};
 

@@ -13,11 +13,6 @@ pub enum TokenError<E = crate::cache::CacheError> {
     NoBaseTokenCached(String),
     NoSourceBaseTokenCached(String),
     Random(getrandom::Error),
-    UnexpectedCacheKind {
-        profile: String,
-        expected: &'static str,
-        actual: &'static str,
-    },
     InconsistentCacheMetadata {
         profile: String,
         found: String,
@@ -63,14 +58,6 @@ impl<E: fmt::Display> fmt::Display for TokenError<E> {
                 )
             }
             Self::Random(error) => write!(f, "operating-system randomness unavailable: {error}"),
-            Self::UnexpectedCacheKind {
-                profile,
-                expected,
-                actual,
-            } => write!(
-                f,
-                "cache entry for profile '{profile}' has kind '{actual}', expected '{expected}'"
-            ),
             Self::InconsistentCacheMetadata { profile, found } => write!(
                 f,
                 "cache entry for profile '{profile}' contains inconsistent profile metadata '{found}'"

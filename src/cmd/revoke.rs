@@ -7,16 +7,17 @@ pub fn run_revoke(args: &GhstCli, cmd: &RevokeCmd) -> Result<(), CmdError> {
     let selection = selection(cmd)?;
     let config = crate::config::load(args.config.as_deref())?;
     let cache_dir = crate::config::cache_dir()?;
+    let store = crate::cache::CacheStore::new(&cache_dir);
     let now = time::OffsetDateTime::now_utc();
     let client = GitHubClient::new();
     let report = match selection {
         RevokeSelection::All => {
             tracing::debug!(cache_dir = %cache_dir.display(), "revoking all cached credentials");
-            crate::token::revoke::revoke_all(&client, &config, &cache_dir, now)?
+            crate::token::revoke::revoke_all(&client, &config, &store, now)?
         }
         RevokeSelection::One(id) => {
             tracing::debug!(cache_dir = %cache_dir.display(), cache_id = id, "revoking cached credential");
-            match crate::token::revoke::revoke_one(&client, &config, &cache_dir, id, now)? {
+            match crate::token::revoke::revoke_one(&client, &config, &store, id, now)? {
                 RevokeOneOutcome::Revoked(report) => report,
                 RevokeOneOutcome::NotFound => {
                     return Err(CmdError::RevokeTargetNotFound(id.to_owned()));
@@ -65,7 +66,10 @@ fn valid_id(id: &str) -> bool {
         && id.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-fn write_report(writer: &mut impl Write, report: &RevokeReport) -> io::Result<()> {
+fn write_report<E: std::fmt::Display>(
+    writer: &mut impl Write,
+    report: &RevokeReport<E>,
+) -> io::Result<()> {
     writeln!(writer, "Credential revocation report:")?;
     writeln!(
         writer,
@@ -77,6 +81,10 @@ fn write_report(writer: &mut impl Write, report: &RevokeReport) -> io::Result<()
     writeln!(writer, "  Failures: {}", report.failures.len())?;
     for failure in &report.failures {
         match failure {
+            RevokeFailure::InvalidEntry { entry } => writeln!(
+                writer,
+                "  - {entry}: invalid or corrupt cache entry; retained without deletion or remote revocation"
+            )?,
             RevokeFailure::MissingAppCredentials { entry } => writeln!(
                 writer,
                 "  - {entry}: configured app profile unavailable; deleted locally and token may remain active remotely"
@@ -94,6 +102,18 @@ fn write_report(writer: &mut impl Write, report: &RevokeReport) -> io::Result<()
             }
             RevokeFailure::CacheDeletion { entry, source } => {
                 writeln!(writer, "  - {entry}: local deletion failed: {source}")?;
+            }
+            RevokeFailure::DeletedRecordChanged { entry } => {
+                writeln!(
+                    writer,
+                    "  - {entry}: cache entry changed concurrently during revocation; retained"
+                )?;
+            }
+            RevokeFailure::DeletedRecordMissing { entry } => {
+                writeln!(
+                    writer,
+                    "  - {entry}: cache entry disappeared during revocation"
+                )?;
             }
         }
     }

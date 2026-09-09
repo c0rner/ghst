@@ -2,19 +2,20 @@ use crate::cache::error::CacheError;
 use crate::cache::key::{
     cache_file_path, compute_cache_key, compute_run_cache_key, validate_cache_key,
 };
-use crate::cache::lock::{
-    LockMode, cache_dir_exists, ensure_cache_dir, increment_epoch, read_epoch, with_cache_lock,
-    with_locked_file,
-};
+use crate::cache::lock::{LockMode, cache_dir_exists, ensure_cache_dir, with_cache_lock};
+#[cfg(test)]
+use crate::cache::lock::{read_epoch, with_locked_file};
 use crate::cache::types::{
     CACHE_SCHEMA_VERSION, CacheEntryDto, RUN_CACHE_SCHEMA_VERSION, Record, RecordWriteView,
-    ReplaceCacheEntry, RunRecordWriteView, SaveCacheEntry,
+    RunRecordWriteView,
 };
+#[cfg(test)]
+use crate::cache::types::{ReplaceCacheEntry, SaveCacheEntry};
 use crate::run::RunRecord;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub enum CacheInspectionState {
     Current(Box<Record>),
@@ -22,37 +23,12 @@ pub enum CacheInspectionState {
 }
 
 pub struct CacheInspection {
-    path: PathBuf,
     pub label: String,
     pub cache_key: Option<String>,
     pub state: CacheInspectionState,
 }
 
-pub struct RevokeTransaction {
-    entries: Vec<CacheInspection>,
-    deleted: bool,
-}
-
 pub use crate::credential::store::DeleteBaseOutcome;
-
-impl RevokeTransaction {
-    pub fn entries(&self) -> &[CacheInspection] {
-        &self.entries
-    }
-
-    pub fn delete(&mut self, index: usize) -> Result<bool, CacheError> {
-        let path = &self.entries[index].path;
-        match fs::symlink_metadata(path) {
-            Ok(_) => {
-                fs::remove_file(path).map_err(|err| CacheError::io(path, err))?;
-                self.deleted = true;
-                Ok(true)
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(CacheError::io(path, error)),
-        }
-    }
-}
 
 pub fn inspect_cache(cache_dir: &Path) -> Result<Vec<CacheInspection>, CacheError> {
     if !cache_dir_exists(cache_dir)? {
@@ -60,25 +36,6 @@ pub fn inspect_cache(cache_dir: &Path) -> Result<Vec<CacheInspection>, CacheErro
     }
     with_cache_lock(cache_dir, LockMode::Exclusive, || {
         inspect_unlocked(cache_dir)
-    })
-}
-
-pub fn revoke_transaction<T>(
-    cache_dir: &Path,
-    operation: impl FnOnce(&mut RevokeTransaction) -> T,
-) -> Result<T, CacheError> {
-    with_locked_file(cache_dir, LockMode::Exclusive, |lock| {
-        increment_epoch(lock)?;
-        let entries = inspect_unlocked(cache_dir)?;
-        let mut transaction = RevokeTransaction {
-            entries,
-            deleted: false,
-        };
-        let result = operation(&mut transaction);
-        if transaction.deleted {
-            crate::fs::sync_private_dir(cache_dir).map_err(CacheError::from)?;
-        }
-        Ok(result)
     })
 }
 
@@ -125,7 +82,6 @@ pub(super) fn inspect_unlocked(cache_dir: &Path) -> Result<Vec<CacheInspection>,
             }
         };
         entries.push(CacheInspection {
-            path,
             label,
             cache_key,
             state,
@@ -156,40 +112,11 @@ pub fn save_cache_entry(
     })
 }
 
-pub fn save_cache_candidate(
-    cache_dir: &Path,
-    hash_key: &str,
-    entry: &Record,
-    epoch: u64,
-    expected_base: Option<(&str, &str)>,
-) -> Result<SaveCacheEntry, CacheError> {
-    ensure_cache_dir(cache_dir)?;
-    validate_entry_key(hash_key, entry)?;
-    let write_view = RecordWriteView::from(entry);
-    let json_bytes = serde_json::to_vec_pretty(&write_view).map_err(CacheError::Json)?;
-    with_locked_file(cache_dir, LockMode::Exclusive, |lock| {
-        let actual = read_epoch(lock)?;
-        if actual != epoch {
-            return Err(CacheError::EpochChanged {
-                expected: epoch,
-                actual,
-            });
-        }
-        if let Some((base_key, generation)) = expected_base {
-            let base = read_cache_entry(&cache_file_path(cache_dir, base_key))?;
-            if !matches!(base, Some(Record::Base(ref base)) if base.generation_fingerprint() == generation)
-            {
-                return Err(CacheError::BaseGenerationChanged);
-            }
-        }
-        save_unlocked(cache_dir, hash_key, entry, &json_bytes)
-    })
-}
-
 /// Replaces the exact scoped entry selected for renewal under the cache lock.
 ///
 /// A compatible entry written by a concurrent renewal is retained instead. The
 /// caller owns cleanup of either the displaced token or its unused candidate.
+#[cfg(test)]
 pub fn replace_cache_candidate(
     cache_dir: &Path,
     hash_key: &str,
@@ -239,6 +166,7 @@ pub fn replace_cache_candidate(
     })
 }
 
+#[cfg(test)]
 fn save_unlocked(
     cache_dir: &Path,
     hash_key: &str,
@@ -329,30 +257,6 @@ pub fn delete_run_after_cleanup(
                 actual: other.kind_name(),
             }),
         }
-    })
-}
-
-pub fn delete_entry_if_unchanged(
-    cache_dir: &Path,
-    cache_key: &str,
-    expected: &Record,
-) -> Result<bool, CacheError> {
-    if !cache_dir_exists(cache_dir)? {
-        return Ok(false);
-    }
-    validate_cache_key(cache_key)?;
-    with_cache_lock(cache_dir, LockMode::Exclusive, || {
-        let path = cache_file_path(cache_dir, cache_key);
-        let Some(entry) = read_cache_entry(&path)? else {
-            return Ok(false);
-        };
-        validate_entry_key(cache_key, &entry)?;
-        if &entry != expected {
-            return Ok(false);
-        }
-        fs::remove_file(&path).map_err(|err| CacheError::io(&path, err))?;
-        crate::fs::sync_private_dir(cache_dir).map_err(CacheError::from)?;
-        Ok(true)
     })
 }
 

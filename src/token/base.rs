@@ -7,6 +7,7 @@ use crate::domain::profile::{AppAuthority, AppRegistration};
 use crate::token::{BaseTokenClient, IssuedBaseToken};
 use time::OffsetDateTime;
 
+#[cfg(test)]
 pub fn base_cache_key(profile_name: &str) -> String {
     crate::cache::compute_cache_key(profile_name, "all")
 }

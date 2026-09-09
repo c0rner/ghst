@@ -38,6 +38,36 @@ impl CacheStore {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
     }
+
+    pub(crate) fn delete_exact_record_with_sync<F>(
+        &self,
+        slot_id: &str,
+        expected: &Record,
+        sync_fn: F,
+    ) -> Result<DeleteOutcome<CacheError>, CacheError>
+    where
+        F: FnOnce(&Path) -> Result<(), crate::fs::FsError>,
+    {
+        if !cache_dir_exists(&self.path)? {
+            return Ok(DeleteOutcome::Missing);
+        }
+        validate_cache_key(slot_id)?;
+        with_cache_lock(&self.path, LockMode::Exclusive, || {
+            let path = cache_file_path(&self.path, slot_id);
+            let Some(entry) = read_cache_entry(&path)? else {
+                return Ok(DeleteOutcome::Missing);
+            };
+            validate_entry_key(slot_id, &entry)?;
+            if &entry != expected {
+                return Ok(DeleteOutcome::Changed);
+            }
+            std::fs::remove_file(&path).map_err(|err| CacheError::io(&path, err))?;
+            if let Err(err) = sync_fn(&self.path) {
+                return Ok(DeleteOutcome::UnlinkedSyncFailed(CacheError::from(err)));
+            }
+            Ok(DeleteOutcome::Deleted)
+        })
+    }
 }
 
 impl ReadCredentials for CacheStore {
@@ -345,25 +375,7 @@ impl DeleteInspectedRecord for CacheStore {
         slot_id: &str,
         expected: &Record,
     ) -> Result<DeleteOutcome<Self::Error>, Self::Error> {
-        if !cache_dir_exists(&self.path)? {
-            return Ok(DeleteOutcome::Missing);
-        }
-        validate_cache_key(slot_id)?;
-        with_cache_lock(&self.path, LockMode::Exclusive, || {
-            let path = cache_file_path(&self.path, slot_id);
-            let Some(entry) = read_cache_entry(&path)? else {
-                return Ok(DeleteOutcome::Missing);
-            };
-            validate_entry_key(slot_id, &entry)?;
-            if &entry != expected {
-                return Ok(DeleteOutcome::Changed);
-            }
-            std::fs::remove_file(&path).map_err(|err| CacheError::io(&path, err))?;
-            if let Err(err) = crate::fs::sync_private_dir(&self.path) {
-                return Ok(DeleteOutcome::UnlinkedSyncFailed(CacheError::from(err)));
-            }
-            Ok(DeleteOutcome::Deleted)
-        })
+        self.delete_exact_record_with_sync(slot_id, expected, crate::fs::sync_private_dir)
     }
 }
 

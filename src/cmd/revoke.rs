@@ -103,66 +103,66 @@ fn write_report<E: std::fmt::Display>(
             RevokeFailure::CacheDeletion {
                 entry,
                 source,
-                remotely_revoked,
+                remotely_inactive,
             } => {
-                if *remotely_revoked {
+                if *remotely_inactive {
                     writeln!(
                         writer,
-                        "  - {entry}: local deletion failed: {source}; selected token was revoked remotely, but cached file was retained"
+                        "  - {entry}: local deletion failed: {source}; selected token was revoked or confirmed inactive remotely, but cached file was retained"
                     )?;
                 } else {
                     writeln!(
                         writer,
-                        "  - {entry}: local deletion failed: {source}; cached file was retained without remote revocation (token may remain active remotely)"
+                        "  - {entry}: local deletion failed: {source}; cached file was retained without remote revocation (token was not confirmed inactive remotely and may remain active)"
                     )?;
                 }
             }
             RevokeFailure::DirectorySyncFailed {
                 entry,
                 source,
-                remotely_revoked,
+                remotely_inactive,
             } => {
-                if *remotely_revoked {
+                if *remotely_inactive {
                     writeln!(
                         writer,
-                        "  - {entry}: directory sync failed after local deletion: {source}; selected token was revoked remotely, but local deletion durability is uncertain"
+                        "  - {entry}: directory sync failed after local deletion: {source}; selected token was revoked or confirmed inactive remotely, but local deletion durability is uncertain"
                     )?;
                 } else {
                     writeln!(
                         writer,
-                        "  - {entry}: directory sync failed after local deletion: {source}; local deletion durability is uncertain and token was not revoked remotely"
+                        "  - {entry}: directory sync failed after local deletion: {source}; local deletion durability is uncertain and token was not revoked or confirmed inactive remotely"
                     )?;
                 }
             }
             RevokeFailure::DeletedRecordChanged {
                 entry,
-                remotely_revoked,
+                remotely_inactive,
             } => {
-                if *remotely_revoked {
+                if *remotely_inactive {
                     writeln!(
                         writer,
-                        "  - {entry}: cache entry changed concurrently during revocation; selected token was revoked remotely, but newer entry was retained"
+                        "  - {entry}: cache entry changed concurrently during revocation; selected token was revoked or confirmed inactive remotely, but newer entry was retained"
                     )?;
                 } else {
                     writeln!(
                         writer,
-                        "  - {entry}: cache entry changed concurrently during revocation; retained without remote revocation (token was not revoked remotely and may remain active)"
+                        "  - {entry}: cache entry changed concurrently during revocation; retained without remote revocation (token was not confirmed inactive remotely and may remain active)"
                     )?;
                 }
             }
             RevokeFailure::DeletedRecordMissing {
                 entry,
-                remotely_revoked,
+                remotely_inactive,
             } => {
-                if *remotely_revoked {
+                if *remotely_inactive {
                     writeln!(
                         writer,
-                        "  - {entry}: cache entry disappeared during revocation; selected token was remotely revoked or confirmed inactive"
+                        "  - {entry}: cache entry disappeared during revocation; selected token was revoked or confirmed inactive remotely"
                     )?;
                 } else {
                     writeln!(
                         writer,
-                        "  - {entry}: cache entry disappeared during revocation; token was not revoked remotely and may remain active"
+                        "  - {entry}: cache entry disappeared during revocation; token was not revoked or confirmed inactive remotely and may remain active"
                     )?;
                 }
             }

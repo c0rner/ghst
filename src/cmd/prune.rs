@@ -77,6 +77,12 @@ fn write_report(
             CleanupFailure::CacheDeletion { entry, source } => {
                 writeln!(writer, "  - {entry}: local deletion failed: {source}")?;
             }
+            CleanupFailure::DirectorySyncFailed { entry, source } => {
+                writeln!(
+                    writer,
+                    "  - {entry}: directory sync failed after local deletion: {source}; local deletion durability is uncertain"
+                )?;
+            }
         }
     }
     Ok(())

@@ -988,3 +988,136 @@ fn exact_record_deletion_distinguishes_deleted_missing_and_changed() {
     assert!(matches!(outcome, DeleteOutcome::Changed));
     assert!(load_cache_entry(&directory, &base_key()).unwrap().is_some());
 }
+
+#[test]
+fn read_scoped_rejects_inconsistent_repo_scope_metadata() {
+    use crate::cache::store::CacheStore;
+    use crate::credential::store::ReadCredentials;
+
+    let temp = cache_dir();
+    let directory = temp.path().join("cache");
+    let store = CacheStore::new(&directory);
+    let now = OffsetDateTime::now_utc();
+
+    let generation = "gen-1".to_string();
+    let scoped = scoped_entry("scoped-token", now + Duration::hours(1), &generation);
+    let mismatched_key = compute_cache_key("reader", "acme/other");
+    let json = serde_json::to_string(&RecordWriteView::from(&scoped)).unwrap();
+    let file = directory.join(format!("{mismatched_key}.json"));
+    crate::fs::create_private_dir(&directory).unwrap();
+    crate::fs::publish_replacement(&file, json.as_bytes()).unwrap();
+
+    let err = store.read_scoped("reader", "acme/other").unwrap_err();
+    assert!(matches!(
+        err,
+        CacheError::InconsistentMetadata {
+            ref expected_key,
+            ref actual_key,
+        } if expected_key == &mismatched_key && actual_key == &compute_cache_key("reader", "acme/api")
+    ));
+}
+
+#[test]
+fn source_base_validation_rejects_inconsistent_metadata_and_unexpected_kind() {
+    use crate::cache::store::CacheStore;
+    use crate::credential::store::{IssuanceGuardStore, SourceGuard, WriteCredentials};
+
+    let temp = cache_dir();
+    let directory = temp.path().join("cache");
+    let store = CacheStore::new(&directory);
+    let now = OffsetDateTime::now_utc();
+
+    let generation = "gen-1".to_string();
+    let guard = store.issuance_guard().unwrap();
+    let source_guard = SourceGuard {
+        source_profile: "developer",
+        expected_generation: &generation,
+    };
+    let new_scoped = ScopedCredential {
+        profile: "reader".into(),
+        source_profile: "developer".into(),
+        source_authority_fingerprint: "authority".into(),
+        parent_generation: generation.clone(),
+        policy_fingerprint: "policy".into(),
+        github_user: "octocat".into(),
+        repo_scope: "acme/api".into(),
+        expires_at: TokenExpiry::new(now + Duration::hours(2)),
+        access_token: "new-scoped-token".into(),
+    };
+
+    // Case 1: Base slot contains a base record with inconsistent profile metadata
+    let bad_base_json = format!(
+        r#"{{"version": 5, "kind": "base", "profile": "other_prof", "authority_fingerprint": "authority", "github_user": "octocat", "expires_at": "{}", "access_token": "token"}}"#,
+        (now + Duration::hours(1))
+            .format(&time::format_description::well_known::Rfc3339)
+            .unwrap()
+    );
+    let base_file = directory.join(format!("{}.json", base_key()));
+    crate::fs::create_private_dir(&directory).unwrap();
+    crate::fs::publish_replacement(&base_file, bad_base_json.as_bytes()).unwrap();
+
+    let err = store
+        .commit_scoped(&new_scoped, guard, &source_guard)
+        .unwrap_err();
+    assert!(matches!(err, CacheError::InconsistentMetadata { .. }));
+
+    // Case 2: Base slot contains a Scoped record instead of a Base record
+    let scoped = Record::Scoped(ScopedCredential {
+        profile: "developer".into(),
+        source_profile: "developer".into(),
+        source_authority_fingerprint: "authority".into(),
+        parent_generation: generation.clone(),
+        policy_fingerprint: "policy".into(),
+        github_user: "octocat".into(),
+        repo_scope: "all".into(),
+        expires_at: TokenExpiry::new(now + Duration::hours(1)),
+        access_token: "token".into(),
+    });
+    let json = serde_json::to_string(&RecordWriteView::from(&scoped)).unwrap();
+    crate::fs::publish_replacement(&base_file, json.as_bytes()).unwrap();
+
+    let err = store
+        .commit_scoped(&new_scoped, guard, &source_guard)
+        .unwrap_err();
+    assert!(matches!(
+        err,
+        CacheError::UnexpectedKind {
+            expected: "base",
+            actual: "scoped",
+        }
+    ));
+}
+
+#[test]
+fn cache_store_exact_record_deletion_maps_directory_sync_failure() {
+    use crate::cache::store::CacheStore;
+    use crate::token::store::{DeleteOutcome, Record as TokenRecord};
+
+    let temp = cache_dir();
+    let directory = temp.path().join("cache");
+    let store = CacheStore::new(&directory);
+    let now = OffsetDateTime::now_utc();
+
+    let entry = base_entry("token-1", now + Duration::hours(1), "authority");
+    save_cache_entry(&directory, &base_key(), &entry).unwrap();
+
+    let expected = TokenRecord::Base(BaseCredential {
+        profile: "developer".into(),
+        authority_fingerprint: "authority".into(),
+        github_user: "octocat".into(),
+        expires_at: TokenExpiry::new(now + Duration::hours(1)),
+        access_token: "token-1".into(),
+    });
+
+    let outcome = store
+        .delete_exact_record_with_sync(&base_key(), &expected, |path| {
+            Err(crate::fs::FsError::Io {
+                path: path.to_path_buf(),
+                source: std::io::Error::other("simulated sync failure"),
+            })
+        })
+        .unwrap();
+
+    assert!(matches!(outcome, DeleteOutcome::UnlinkedSyncFailed(_)));
+    assert!(load_cache_entry(&directory, &base_key()).unwrap().is_none());
+}

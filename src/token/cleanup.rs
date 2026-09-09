@@ -15,6 +15,7 @@ pub enum CleanupFailure<E> {
     Ownership { entry: String, source: E },
     GitHubRevocation { entry: String, source: RemoteError },
     CacheDeletion { entry: String, source: E },
+    DirectorySyncFailed { entry: String, source: E },
 }
 
 enum CleanupOutcome {
@@ -56,6 +57,11 @@ impl<E: std::fmt::Debug> std::fmt::Debug for CleanupFailure<E> {
                 .field("entry", entry)
                 .field("source", source)
                 .finish(),
+            Self::DirectorySyncFailed { entry, source } => formatter
+                .debug_struct("DirectorySyncFailed")
+                .field("entry", entry)
+                .field("source", source)
+                .finish(),
         }
     }
 }
@@ -92,6 +98,13 @@ impl<E: std::fmt::Debug> CleanupReport<E> {
             Ok(CleanupOutcome::ExpiredDeleted) => self.expired_deletions += 1,
             Ok(CleanupOutcome::RunRevoked) => self.revoked_runs += 1,
             Ok(CleanupOutcome::ActiveRunSkipped) => self.active_runs_skipped += 1,
+            Err(failure @ CleanupFailure::DirectorySyncFailed { .. }) => {
+                tracing::debug!(
+                    failure = ?failure,
+                    "directory sync failed after deleting expired cache entry; durability is uncertain"
+                );
+                self.failures.push(failure);
+            }
             Err(failure) => {
                 tracing::debug!(failure = ?failure, "retaining cache entry for inspection or retry");
                 self.retained_entries += 1;
@@ -200,7 +213,7 @@ where
         }
         Ok(DeleteOutcome::UnlinkedSyncFailed(source)) => {
             tracing::debug!(entry = label, error = %source, "directory sync failed after deleting expired cache entry");
-            Err(CleanupFailure::CacheDeletion {
+            Err(CleanupFailure::DirectorySyncFailed {
                 entry: label.to_owned(),
                 source,
             })
@@ -593,5 +606,118 @@ permissions = { contents = "read" }
                 ..
             }))
         ));
+    }
+
+    struct PostUnlinkSyncFailingStore {
+        inner: crate::cache::CacheStore,
+        cache_dir: std::path::PathBuf,
+    }
+
+    impl InspectRecords for PostUnlinkSyncFailingStore {
+        type Error = crate::cache::CacheError;
+
+        fn inspect_records(
+            &self,
+        ) -> Result<Vec<crate::token::store::RecordInspection>, Self::Error> {
+            self.inner.inspect_records()
+        }
+    }
+
+    impl RunLifecycleStore for PostUnlinkSyncFailingStore {
+        type Error = crate::cache::CacheError;
+
+        fn activate(
+            &self,
+            run_id: &str,
+            wrapper_pid: u32,
+            child_pid: u32,
+        ) -> Result<RunRecord, Self::Error> {
+            self.inner.activate(run_id, wrapper_pid, child_pid)
+        }
+
+        fn abort(
+            &self,
+            run_id: &str,
+            wrapper_pid: u32,
+            child_pid: Option<u32>,
+        ) -> Result<RunRecord, Self::Error> {
+            self.inner.abort(run_id, wrapper_pid, child_pid)
+        }
+
+        fn finish(
+            &self,
+            run_id: &str,
+            wrapper_pid: u32,
+            child_pid: u32,
+        ) -> Result<RunRecord, Self::Error> {
+            self.inner.finish(run_id, wrapper_pid, child_pid)
+        }
+
+        fn claim_abandoned(&self, expected: &RunRecord) -> Result<RunRecord, Self::Error> {
+            self.inner.claim_abandoned(expected)
+        }
+
+        fn delete_cleanup_pending(&self, expected: &RunRecord) -> Result<bool, Self::Error> {
+            self.inner.delete_cleanup_pending(expected)
+        }
+    }
+
+    impl DeleteInspectedRecord for PostUnlinkSyncFailingStore {
+        type Error = crate::cache::CacheError;
+
+        fn delete_exact_record(
+            &self,
+            slot_id: &str,
+            _expected: &Record,
+        ) -> Result<DeleteOutcome<Self::Error>, Self::Error> {
+            let path = self.cache_dir.join(format!("{slot_id}.json"));
+            std::fs::remove_file(&path).map_err(|err| crate::cache::CacheError::io(&path, err))?;
+            Ok(DeleteOutcome::UnlinkedSyncFailed(
+                crate::cache::CacheError::io(
+                    &self.cache_dir,
+                    std::io::Error::other("simulated sync failure"),
+                ),
+            ))
+        }
+    }
+
+    #[test]
+    fn prune_reports_directory_sync_failure_without_retaining() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let now = OffsetDateTime::now_utc();
+        let key = compute_run_cache_key("expired");
+        save_cache_entry(
+            &cache_dir,
+            &key,
+            &run_entry(
+                "expired",
+                RunState::CleanupPending,
+                i32::MAX as u32,
+                None,
+                now - Duration::seconds(1),
+            ),
+        )
+        .unwrap();
+
+        let store = PostUnlinkSyncFailingStore {
+            inner: crate::cache::CacheStore::new(&cache_dir),
+            cache_dir: cache_dir.clone(),
+        };
+        let client = client();
+        let report = prune(&client, &config(), &store, now).unwrap();
+
+        assert_eq!(report.expired_deletions, 0);
+        assert_eq!(
+            report.retained_entries, 0,
+            "file unlinked; must not be counted as retained"
+        );
+        assert_eq!(report.failures.len(), 1);
+        assert!(matches!(
+            report.failures.as_slice(),
+            [CleanupFailure::DirectorySyncFailed { .. }]
+        ));
+        assert!(!report.is_complete());
+        assert!(load_cache_entry(&cache_dir, &key).unwrap().is_none());
     }
 }

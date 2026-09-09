@@ -26,20 +26,20 @@ pub enum RevokeFailure<E> {
     CacheDeletion {
         entry: String,
         source: E,
-        remotely_revoked: bool,
+        remotely_inactive: bool,
     },
     DirectorySyncFailed {
         entry: String,
         source: E,
-        remotely_revoked: bool,
+        remotely_inactive: bool,
     },
     DeletedRecordChanged {
         entry: String,
-        remotely_revoked: bool,
+        remotely_inactive: bool,
     },
     DeletedRecordMissing {
         entry: String,
-        remotely_revoked: bool,
+        remotely_inactive: bool,
     },
 }
 
@@ -70,38 +70,38 @@ impl<E: std::fmt::Debug> std::fmt::Debug for RevokeFailure<E> {
             Self::CacheDeletion {
                 entry,
                 source,
-                remotely_revoked,
+                remotely_inactive,
             } => formatter
                 .debug_struct("CacheDeletion")
                 .field("entry", entry)
                 .field("source", source)
-                .field("remotely_revoked", remotely_revoked)
+                .field("remotely_inactive", remotely_inactive)
                 .finish(),
             Self::DirectorySyncFailed {
                 entry,
                 source,
-                remotely_revoked,
+                remotely_inactive,
             } => formatter
                 .debug_struct("DirectorySyncFailed")
                 .field("entry", entry)
                 .field("source", source)
-                .field("remotely_revoked", remotely_revoked)
+                .field("remotely_inactive", remotely_inactive)
                 .finish(),
             Self::DeletedRecordChanged {
                 entry,
-                remotely_revoked,
+                remotely_inactive,
             } => formatter
                 .debug_struct("DeletedRecordChanged")
                 .field("entry", entry)
-                .field("remotely_revoked", remotely_revoked)
+                .field("remotely_inactive", remotely_inactive)
                 .finish(),
             Self::DeletedRecordMissing {
                 entry,
-                remotely_revoked,
+                remotely_inactive,
             } => formatter
                 .debug_struct("DeletedRecordMissing")
                 .field("entry", entry)
-                .field("remotely_revoked", remotely_revoked)
+                .field("remotely_inactive", remotely_inactive)
                 .finish(),
         }
     }
@@ -202,7 +202,7 @@ where
 
 #[derive(Clone, Copy)]
 enum DeletionIntent {
-    RemotelyRevoked,
+    RemotelyInactive,
     LocalOnly(Option<LocalOnlyReason>),
 }
 
@@ -331,7 +331,7 @@ fn revoke_matching_authority<C, S, E>(
                 slot_id,
                 entry,
                 label,
-                DeletionIntent::RemotelyRevoked,
+                DeletionIntent::RemotelyInactive,
                 report,
             );
         }
@@ -345,7 +345,7 @@ fn revoke_matching_authority<C, S, E>(
                 slot_id,
                 entry,
                 label,
-                DeletionIntent::RemotelyRevoked,
+                DeletionIntent::RemotelyInactive,
                 report,
             );
         }
@@ -375,10 +375,10 @@ fn finalize_deletion<S, E>(
     S: DeleteInspectedRecord<Error = E>,
     E: std::error::Error + 'static,
 {
-    let remotely_revoked = matches!(intent, DeletionIntent::RemotelyRevoked);
+    let remotely_inactive = matches!(intent, DeletionIntent::RemotelyInactive);
     match store.delete_exact_record(slot_id, expected) {
         Ok(DeleteOutcome::Deleted) => match intent {
-            DeletionIntent::RemotelyRevoked => {
+            DeletionIntent::RemotelyInactive => {
                 report.remotely_inactive += 1;
                 tracing::debug!(
                     entry = label,
@@ -419,51 +419,51 @@ fn finalize_deletion<S, E>(
         Ok(DeleteOutcome::Changed) => {
             tracing::debug!(
                 entry = label,
-                remotely_revoked,
+                remotely_inactive,
                 "cached credential changed during revocation; retaining"
             );
             report.retained += 1;
             report.failures.push(RevokeFailure::DeletedRecordChanged {
                 entry: label.to_owned(),
-                remotely_revoked,
+                remotely_inactive,
             });
         }
         Ok(DeleteOutcome::Missing) => {
             tracing::debug!(
                 entry = label,
-                remotely_revoked,
+                remotely_inactive,
                 "cached credential disappeared during revocation"
             );
             report.failures.push(RevokeFailure::DeletedRecordMissing {
                 entry: label.to_owned(),
-                remotely_revoked,
+                remotely_inactive,
             });
         }
         Ok(DeleteOutcome::UnlinkedSyncFailed(source)) => {
             tracing::debug!(
                 entry = label,
                 error = %source,
-                remotely_revoked,
+                remotely_inactive,
                 "directory sync failed after credential deletion; durability is uncertain"
             );
             report.failures.push(RevokeFailure::DirectorySyncFailed {
                 entry: label.to_owned(),
                 source,
-                remotely_revoked,
+                remotely_inactive,
             });
         }
         Err(source) => {
             tracing::debug!(
                 entry = label,
                 error = %source,
-                remotely_revoked,
+                remotely_inactive,
                 "failed to delete credential from storage"
             );
             report.retained += 1;
             report.failures.push(RevokeFailure::CacheDeletion {
                 entry: label.to_owned(),
                 source,
-                remotely_revoked,
+                remotely_inactive,
             });
         }
     }
@@ -692,8 +692,16 @@ mod tests {
         cache_base(&cache_dir, now + Duration::hours(1));
         let first = format!("0123456{}", "a".repeat(57));
         let second = format!("0123456{}", "b".repeat(57));
-        std::fs::write(cache_dir.join(format!("{first}.json")), b"{").unwrap();
-        std::fs::write(cache_dir.join(format!("{second}.json")), b"{").unwrap();
+        let first_path = cache_dir.join(format!("{first}.json"));
+        let second_path = cache_dir.join(format!("{second}.json"));
+        std::fs::write(&first_path, b"{").unwrap();
+        std::fs::write(&second_path, b"{").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&first_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            std::fs::set_permissions(&second_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
         let client = RecordingClient {
             revoked: RefCell::new(Vec::new()),
             fails: false,
@@ -1039,6 +1047,14 @@ mod tests {
                 .unwrap()
         );
         std::fs::write(&inconsistent_path, json).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&unsupported_path, std::fs::Permissions::from_mode(0o600))
+                .unwrap();
+            std::fs::set_permissions(&inconsistent_path, std::fs::Permissions::from_mode(0o600))
+                .unwrap();
+        }
 
         let client = MockClient(Cell::new(0));
         let store = CacheStore::new(&cache_dir);
@@ -1128,7 +1144,7 @@ mod tests {
         assert!(matches!(
             report2.failures.as_slice(),
             [RevokeFailure::DeletedRecordMissing {
-                remotely_revoked: true,
+                remotely_inactive: true,
                 ..
             }]
         ));
@@ -1196,7 +1212,7 @@ mod tests {
         assert!(matches!(
             report.failures.as_slice(),
             [RevokeFailure::DirectorySyncFailed {
-                remotely_revoked: true,
+                remotely_inactive: true,
                 ..
             }]
         ));

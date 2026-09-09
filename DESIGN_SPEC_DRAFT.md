@@ -227,11 +227,13 @@ fallback parsing for credential reuse.
 ## 6. Concurrency and storage contracts
 
 Storage contracts are owned by individual features as small, focused traits:
-- `credential::store::BaseCredentialStore` for base token acquisition and renewal
-- `token::scoped::store::ScopedCredentialStore` for scoped token caching and provenance
-- `run::store::RunRecordStore` for foreground run creation, activation, and completion
-- `token::cleanup::store::RunPruneStore` for abandoned run scanning and cleanup
-- `token::store::BeginRevocation` and `DeleteInspectedRecord` for staged revocation
+- `credential::store::ReadCredentials` for loading cached base and scoped credentials
+- `credential::store::WriteCredentials` for persisting and renewing credentials under epoch and source guards
+- `credential::store::IssuanceGuardStore` for sampling the issuance guard epoch
+- `run::store::PendingRunStore` for persisting initial pending run state
+- `run::store::RunLifecycleStore` for run lifecycle transitions and cleanup deletion
+- `token::store::InspectRecords` for listing cache state without mutating entries
+- `token::store::BeginRevocation` and `DeleteInspectedRecord` for staged revocation and conditional exact deletion
 
 The concrete filesystem adapter `CacheStore` in `src/cache/store.rs` implements these
 contracts using static dispatch (`impl Trait` / generics). The public `revoke_transaction`
@@ -398,8 +400,9 @@ lockless-network revocation.
 
 Step 3 completely decouples `src/token`, `src/credential`, and `src/run` from concrete
 `crate::cache` types and filesystem paths. Feature modules define small, focused traits
-(`BaseCredentialStore`, `ScopedCredentialStore`, `RunRecordStore`, `RunPruneStore`,
-`BeginRevocation`, `DeleteInspectedRecord`), and workflows use generics with trait bounds.
+(`ReadCredentials`, `WriteCredentials`, `IssuanceGuardStore`, `PendingRunStore`,
+`RunLifecycleStore`, `InspectRecords`, `BeginRevocation`, `DeleteInspectedRecord`),
+and workflows use generics with trait bounds.
 Cache locking descriptors and transaction callbacks are completely private to `src/cache`.
 The public `revoke_transaction` callback was removed.
 
@@ -412,7 +415,7 @@ silently deleted; they fail closed, are reported in `RevokeReport.failures`, and
 on disk.
 
 Validation at this checkpoint: `cargo fmt --check`, `cargo check`, `cargo clippy --all-targets`,
-and all 207 tests passed. Concurrency and failure ordering tests prove:
+and all 213 tests passed. Concurrency and failure ordering tests prove:
 - epoch advance during Phase A invalidates concurrent in-flight token issuance and renewal
 - exact deletion distinguishes deleted, missing, and changed records
 - cache lock is not held across network I/O during revocation

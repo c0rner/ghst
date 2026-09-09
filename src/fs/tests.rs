@@ -205,6 +205,16 @@ fn open_private_child_rejects_invalid_components_and_uses_relative_descriptor() 
     child.read_to_string(&mut buf).unwrap();
     assert_eq!(buf, "child-secret");
 
+    let symlink_name = Path::new("child-link.txt");
+    symlink(&child_path, dir_path.join(symlink_name)).unwrap();
+    assert!(matches!(
+        open_private_child(&dir_path, &dir, symlink_name),
+        Err(FsError::InsecurePath {
+            reason: "symbolic links are not permitted",
+            ..
+        })
+    ));
+
     // Reject absolute path
     assert!(matches!(
         open_private_child(&dir_path, &dir, Path::new("/etc/passwd")),
@@ -550,7 +560,7 @@ fn sync_dir_and_sync_private_dir_propagate_io_errors() {
 
 #[cfg(unix)]
 #[test]
-fn create_private_dir_enforces_private_directory_invariants() {
+fn create_private_dir_creates_privately_and_leaves_existing_policy_to_callers() {
     let temp = tempfile::tempdir().unwrap();
 
     // Creates new private directory with mode 0700
@@ -575,12 +585,17 @@ fn create_private_dir_enforces_private_directory_invariants() {
         })
     ));
 
-    // Existing directory with insecure permissions is rejected
+    // Existing directory permissions are left for the caller to validate or repair
     let insecure_dir = temp.path().join("insecure_dir");
     create_private_dir(&insecure_dir).unwrap();
     fs::set_permissions(&insecure_dir, fs::Permissions::from_mode(0o755)).unwrap();
+    create_private_dir(&insecure_dir).unwrap();
+    assert_eq!(
+        fs::metadata(&insecure_dir).unwrap().permissions().mode() & 0o7777,
+        0o755
+    );
     assert!(matches!(
-        create_private_dir(&insecure_dir),
+        validate_private_dir(&insecure_dir),
         Err(FsError::InsecurePath {
             reason: "unexpected permissions",
             ..

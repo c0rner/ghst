@@ -14,7 +14,7 @@ use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 
 /// Resolves the parent directory of `path`, returning `.` if the parent component is empty.
-pub fn parent_directory(path: &Path) -> Result<&Path, FsError> {
+fn parent_directory(path: &Path) -> Result<&Path, FsError> {
     let parent = path.parent().ok_or_else(|| FsError::InsecurePath {
         path: path.to_path_buf(),
         reason: "path has no parent directory",
@@ -228,6 +228,9 @@ pub fn open_private_child(
 
 /// Creates a directory and any missing parents with mode `0700`.
 ///
+/// Existing real directories are left unchanged so callers can apply their own validation or
+/// repair policy. Existing symbolic links are rejected.
+///
 /// # Errors
 ///
 /// Returns `FsError` if directory creation fails.
@@ -238,32 +241,28 @@ pub fn create_private_dir(dir_path: &Path) -> Result<(), FsError> {
     let mut builder = std::fs::DirBuilder::new();
     builder.mode(0o700);
     builder.recursive(true);
-    match builder.create(dir_path) {
-        Ok(()) => validate_private_dir(dir_path),
-        Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => {
-            let metadata = std::fs::symlink_metadata(dir_path).map_err(|source| FsError::Io {
-                path: dir_path.to_path_buf(),
-                source,
-            })?;
-            if metadata.file_type().is_symlink() {
-                return Err(FsError::InsecurePath {
-                    path: dir_path.to_path_buf(),
-                    reason: "symbolic links are not permitted",
-                });
-            }
-            if !metadata.is_dir() {
-                return Err(FsError::Io {
-                    path: dir_path.to_path_buf(),
-                    source: err,
-                });
-            }
-            validate_private_dir(dir_path)
-        }
-        Err(source) => Err(FsError::Io {
+    builder.create(dir_path).map_err(|source| FsError::Io {
+        path: dir_path.to_path_buf(),
+        source,
+    })?;
+
+    let metadata = std::fs::symlink_metadata(dir_path).map_err(|source| FsError::Io {
+        path: dir_path.to_path_buf(),
+        source,
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(FsError::InsecurePath {
             path: dir_path.to_path_buf(),
-            source,
-        }),
+            reason: "symbolic links are not permitted",
+        });
     }
+    if !metadata.is_dir() {
+        return Err(FsError::InsecurePath {
+            path: dir_path.to_path_buf(),
+            reason: "expected a directory",
+        });
+    }
+    Ok(())
 }
 
 #[cfg(not(unix))]

@@ -660,7 +660,7 @@ permissions = {}
 
     #[cfg(unix)]
     #[test]
-    fn explicit_config_path_does_not_require_a_private_parent_directory() {
+    fn explicit_config_path_initializes_and_loads_without_a_private_parent_directory() {
         use std::os::unix::fs::PermissionsExt;
 
         let temp = tempfile::tempdir().unwrap();
@@ -668,10 +668,14 @@ permissions = {}
         std::fs::create_dir(&custom_dir).unwrap();
         std::fs::set_permissions(&custom_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         let config_file = custom_dir.join("custom.toml");
-        std::fs::write(&config_file, VALID_CONFIG).unwrap();
-        std::fs::set_permissions(&config_file, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let location = config_location(Some(&config_file)).unwrap();
 
-        assert!(load(Some(&config_file)).is_ok());
+        assert!(location.initialize().unwrap());
+        assert_eq!(
+            std::fs::metadata(&custom_dir).unwrap().permissions().mode() & 0o7777,
+            0o755
+        );
+        assert!(location.load().is_ok());
     }
 
     #[cfg(unix)]
@@ -711,6 +715,28 @@ permissions = {}
             std::fs::read_to_string(config_file).unwrap(),
             "existing credentials"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn initialization_repairs_an_existing_default_directory() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let directory = temp.path().join(CONFIG_DIRECTORY);
+        std::fs::create_dir(&directory).unwrap();
+        std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let location = ConfigLocation {
+            path: directory.join(CONFIG_FILE),
+            default_directory: Some(directory.clone()),
+        };
+
+        assert!(location.initialize().unwrap());
+        assert_eq!(
+            std::fs::metadata(directory).unwrap().permissions().mode() & 0o7777,
+            0o700
+        );
+        assert!(location.load().is_ok());
     }
 
     #[cfg(unix)]

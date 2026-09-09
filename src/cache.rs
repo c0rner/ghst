@@ -4,6 +4,7 @@ mod key;
 mod lock;
 pub mod run_storage;
 mod storage;
+pub mod store;
 mod types;
 
 #[cfg(test)]
@@ -25,4 +26,5 @@ pub use storage::{
 };
 #[cfg(test)]
 pub use storage::{delete_cache_entry, list_all_cache_entries, save_cache_entry};
+pub use store::CacheStore;
 pub use types::{Record, ReplaceCacheEntry, SaveCacheEntry};

@@ -33,12 +33,7 @@ pub struct RevokeTransaction {
     deleted: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeleteBaseOutcome {
-    Deleted,
-    Missing,
-    Changed,
-}
+pub use crate::credential::store::DeleteBaseOutcome;
 
 impl RevokeTransaction {
     pub fn entries(&self) -> &[CacheInspection] {
@@ -87,7 +82,7 @@ pub fn revoke_transaction<T>(
     })
 }
 
-fn inspect_unlocked(cache_dir: &Path) -> Result<Vec<CacheInspection>, CacheError> {
+pub(super) fn inspect_unlocked(cache_dir: &Path) -> Result<Vec<CacheInspection>, CacheError> {
     let mut entries = Vec::new();
     for item in fs::read_dir(cache_dir).map_err(|err| CacheError::io(cache_dir, err))? {
         let item = item.map_err(|err| CacheError::io(cache_dir, err))?;
@@ -278,7 +273,7 @@ fn persist_cache_file(
     crate::fs::publish_replacement(cache_file, json_bytes).map_err(CacheError::from)
 }
 
-fn validate_entry_key(hash_key: &str, entry: &Record) -> Result<(), CacheError> {
+pub(super) fn validate_entry_key(hash_key: &str, entry: &Record) -> Result<(), CacheError> {
     let actual_key = match entry {
         Record::Base(_) | Record::Scoped(_) => {
             compute_cache_key(entry.profile(), entry.repo_scope())
@@ -514,7 +509,7 @@ pub fn list_all_cache_entries(cache_dir: &Path) -> Result<CacheFileEntries, Cach
     })
 }
 
-fn read_cache_entry(cache_file: &Path) -> Result<Option<Record>, CacheError> {
+pub(super) fn read_cache_entry(cache_file: &Path) -> Result<Option<Record>, CacheError> {
     let mut file = match crate::fs::open_private_file(cache_file) {
         Ok(file) => file,
         Err(crate::fs::FsError::Io { source, .. })

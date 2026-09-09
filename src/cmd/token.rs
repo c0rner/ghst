@@ -40,7 +40,6 @@ struct TokenContext<'a, C> {
 
 fn prepare_acquire_request<'a>(
     profile: &'a crate::domain::profile::ResolvedTokenProfile<'a>,
-    cache_dir: &'a Path,
     cli_repositories: &[String],
     resolve_auto: impl FnMut() -> Result<String, RepositoryError>,
 ) -> Result<AcquireRequest<'a>, CmdError> {
@@ -50,7 +49,6 @@ fn prepare_acquire_request<'a>(
                 return Err(CmdError::AppScopeRejected((*name).to_owned()));
             }
             Ok(AcquireRequest::Base {
-                cache_dir,
                 profile_name: name,
                 authority: app.authority,
             })
@@ -69,7 +67,6 @@ fn prepare_acquire_request<'a>(
                 resolve_auto,
             )?;
             Ok(AcquireRequest::Scoped {
-                cache_dir,
                 profile_name: name,
                 source_name,
                 app: *app,
@@ -86,9 +83,9 @@ fn execute_token<C: ScopedTokenClient, W: Write>(
     writer: &mut W,
     resolve_auto: impl FnMut() -> Result<String, RepositoryError>,
 ) -> Result<(), CmdError> {
-    let request =
-        prepare_acquire_request(context.profile, context.cache_dir, &cmd.repo, resolve_auto)?;
-    let token = crate::token::acquire(context.client, request)?;
+    let store = crate::cache::CacheStore::new(context.cache_dir);
+    let request = prepare_acquire_request(context.profile, &cmd.repo, resolve_auto)?;
+    let token = crate::token::acquire(context.client, &store, request)?;
     tracing::debug!(
         profile = token.profile,
         repo_scope = token.repo_scope,
@@ -235,8 +232,7 @@ permissions = { contents = "read" }
     fn app_profile_with_repositories_is_rejected_before_acquisition() {
         let config = test_config();
         let profile = config.resolve_token_profile("developer").unwrap();
-        let temp = tempfile::tempdir().unwrap();
-        let result = prepare_acquire_request(&profile, temp.path(), &["acme/api".into()], || {
+        let result = prepare_acquire_request(&profile, &["acme/api".into()], || {
             panic!("auto must not be called")
         });
         assert!(matches!(
@@ -249,11 +245,9 @@ permissions = { contents = "read" }
     fn repository_resolution_failure_is_returned_before_acquisition() {
         let config = test_config();
         let profile = config.resolve_token_profile("reader").unwrap();
-        let temp = tempfile::tempdir().unwrap();
-        let result =
-            prepare_acquire_request(&profile, temp.path(), &["invalid-scope".into()], || {
-                panic!("auto must not be called")
-            });
+        let result = prepare_acquire_request(&profile, &["invalid-scope".into()], || {
+            panic!("auto must not be called")
+        });
         assert!(matches!(
             result,
             Err(CmdError::Repository(RepositoryError::InvalidScope { .. }))
@@ -263,22 +257,19 @@ permissions = { contents = "read" }
     #[test]
     fn auto_is_not_invoked_for_app_profile_or_explicit_selection() {
         let config = test_config();
-        let temp = tempfile::tempdir().unwrap();
 
         // App profile without repo does not call auto
         let dev = config.resolve_token_profile("developer").unwrap();
         let base_req =
-            prepare_acquire_request(&dev, temp.path(), &[], || panic!("auto must not be called"))
-                .unwrap();
+            prepare_acquire_request(&dev, &[], || panic!("auto must not be called")).unwrap();
         assert!(matches!(base_req, AcquireRequest::Base { .. }));
 
         // Scoped profile with explicit repo does not call auto
         let reader = config.resolve_token_profile("reader").unwrap();
-        let scoped_req =
-            prepare_acquire_request(&reader, temp.path(), &["acme/other".into()], || {
-                panic!("auto must not be called")
-            })
-            .unwrap();
+        let scoped_req = prepare_acquire_request(&reader, &["acme/other".into()], || {
+            panic!("auto must not be called")
+        })
+        .unwrap();
         assert!(matches!(
             scoped_req,
             AcquireRequest::Scoped { repositories, .. } if repositories.canonical() == "acme/other"

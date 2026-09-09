@@ -170,8 +170,9 @@ fn mint_with_clock<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     request: &MintRunRequest<'_>,
     mut now: N,
 ) -> Result<PendingRun, TokenError> {
+    let store = crate::cache::CacheStore::new(request.cache_dir);
     let prepared = super::scoped::prepare(
-        request.cache_dir,
+        &store,
         request.profile_name,
         request.source_name,
         request.app,
@@ -190,8 +191,7 @@ fn mint_with_clock<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     let epoch = cache_epoch(request.cache_dir)?;
     let generation = prepared.base.generation_fingerprint();
     let request_time = now();
-    let issued =
-        super::scoped::issue(client, &prepared, request.cache_dir, request_time, &mut now)?;
+    let issued = super::scoped::issue(client, &store, &prepared, request_time, &mut now)?;
     tracing::debug!(profile = prepared.profile_name, expires_at = %issued.expires_at, "received valid run token from GitHub");
     let candidate = Record::Run(RunRecord {
         run_id: run_id.clone(),
@@ -244,7 +244,7 @@ fn mint_with_clock<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
                 client,
                 &prepared.app.as_registration(),
                 candidate.access_token(),
-                TokenError::Cache(source_error),
+                TokenError::Storage(source_error),
             ))
         }
     }

@@ -30,12 +30,12 @@ pub use validation::{validate_base_expiry, validate_scoped_expiry};
 
 use crate::domain::profile::AppRegistration;
 
-fn revoke_with_context<C: RevokeTokenClient + ?Sized>(
+fn revoke_with_context<C: RevokeTokenClient + ?Sized, E>(
     client: &C,
     app: &AppRegistration<'_>,
     token: &crate::credential::AccessToken,
-    context: TokenError,
-) -> TokenError {
+    context: TokenError<E>,
+) -> TokenError<E> {
     let Some(secret) = app.client_secret else {
         tracing::warn!(
             "client secret unavailable; unused remote token could not be revoked and may remain active until GitHub invalidates it or it is manually revoked"

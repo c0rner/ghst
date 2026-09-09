@@ -1,12 +1,11 @@
 use std::collections::BTreeMap;
-use std::path::Path;
 use time::OffsetDateTime;
 
 use super::{
-    IssuedScopedToken, ScopedTokenClient, ScopedTokenRequest, TokenError, base_cache_key,
-    load_current_base_entry, revoke_with_context, validate_scoped_expiry,
+    IssuedScopedToken, ScopedTokenClient, ScopedTokenRequest, TokenError, load_current_base_entry,
+    revoke_with_context, validate_scoped_expiry,
 };
-use crate::cache::{CacheError, DeleteBaseOutcome, delete_base_if_generation};
+use crate::credential::store::{DeleteBaseOutcome, ReadCredentials, WriteCredentials};
 use crate::credential::{AccessToken, BaseCredential, TokenExpiry};
 use crate::domain::profile::{AppCredentials, PermissionLevel};
 use crate::repository::RepositorySelection;
@@ -27,14 +26,18 @@ pub(super) struct ValidatedScopedToken {
     pub received_at: OffsetDateTime,
 }
 
-pub(super) fn prepare<'a>(
-    cache_dir: &Path,
+pub(super) fn prepare<'a, S, E>(
+    store: &S,
     profile_name: &'a str,
     source_name: &'a str,
     app: AppCredentials<'a>,
     permissions: &'a BTreeMap<String, PermissionLevel>,
     repositories: &RepositorySelection,
-) -> Result<PreparedScopedToken<'a>, TokenError> {
+) -> Result<PreparedScopedToken<'a>, TokenError<E>>
+where
+    S: ReadCredentials<Error = E>,
+    E: std::error::Error + 'static,
+{
     let scope = repositories.canonical();
     let repository_names = repositories.repository_names();
     tracing::debug!(
@@ -46,7 +49,7 @@ pub(super) fn prepare<'a>(
         permissions = ?permissions,
         "resolved scoped token policy"
     );
-    let base = load_current_base_entry(cache_dir, source_name, &app.authority)?
+    let base = load_current_base_entry(store, source_name, &app.authority)?
         .ok_or_else(|| TokenError::NoSourceBaseTokenCached(source_name.to_owned()))?;
     Ok(PreparedScopedToken {
         profile_name,
@@ -59,13 +62,19 @@ pub(super) fn prepare<'a>(
     })
 }
 
-pub(super) fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
+pub(super) fn issue<C, S, E, N>(
     client: &C,
+    store: &S,
     prepared: &PreparedScopedToken<'_>,
-    cache_dir: &Path,
     request_time: OffsetDateTime,
     now: &mut N,
-) -> Result<ValidatedScopedToken, TokenError> {
+) -> Result<ValidatedScopedToken, TokenError<E>>
+where
+    C: ScopedTokenClient,
+    S: WriteCredentials<Error = E>,
+    E: std::error::Error + 'static,
+    N: FnMut() -> OffsetDateTime,
+{
     if !prepared.base.expires_at.is_safe_to_handoff_at(request_time) {
         tracing::debug!(
             source_profile = prepared.source_name,
@@ -95,7 +104,7 @@ pub(super) fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
         Ok(response) => response,
         Err(crate::token::RemoteError::Http {
             status: 401 | 404, ..
-        }) => return Err(permanent_rejection_error(prepared, cache_dir)?),
+        }) => return Err(permanent_rejection_error(store, prepared)),
         Err(source @ crate::token::RemoteError::Http { status: 403, .. }) => {
             tracing::debug!(
                 source_profile = prepared.source_name,
@@ -111,7 +120,11 @@ pub(super) fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
             });
         }
         Err(source) => {
-            tracing::debug!(source_profile = prepared.source_name, error = %source, "GitHub scoped token request failed");
+            tracing::debug!(
+                source_profile = prepared.source_name,
+                error = %source,
+                "GitHub scoped token request failed"
+            );
             return Err(TokenError::GitHub(source));
         }
     };
@@ -122,7 +135,11 @@ pub(super) fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     } = response;
     match validate_scoped_expiry(expires_at.as_deref(), received_at) {
         Ok(expires_at) => {
-            tracing::debug!(source_profile = prepared.source_name, expires_at = %expires_at, "validated scoped token lifetime");
+            tracing::debug!(
+                source_profile = prepared.source_name,
+                expires_at = %expires_at,
+                "validated scoped token lifetime"
+            );
             Ok(ValidatedScopedToken {
                 access_token,
                 expires_at,
@@ -130,7 +147,11 @@ pub(super) fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
             })
         }
         Err(error) => {
-            tracing::debug!(source_profile = prepared.source_name, error = %error, "issued scoped token had an invalid lifetime");
+            tracing::debug!(
+                source_profile = prepared.source_name,
+                error = %error,
+                "issued scoped token had an invalid lifetime"
+            );
             Err(revoke_with_context(
                 client,
                 &prepared.app.as_registration(),
@@ -141,14 +162,17 @@ pub(super) fn issue<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     }
 }
 
-fn permanent_rejection_error(
-    prepared: &PreparedScopedToken<'_>,
-    cache_dir: &Path,
-) -> Result<TokenError, CacheError> {
+fn permanent_rejection_error<S, E>(store: &S, prepared: &PreparedScopedToken<'_>) -> TokenError<E>
+where
+    S: WriteCredentials<Error = E>,
+    E: std::error::Error + 'static,
+{
     let source_profile = prepared.source_name;
     let generation = prepared.base.generation_fingerprint();
-    let outcome =
-        delete_base_if_generation(cache_dir, &base_cache_key(source_profile), &generation)?;
+    let outcome = match store.delete_base_if_generation(source_profile, &generation) {
+        Ok(outcome) => outcome,
+        Err(error) => return TokenError::Storage(error),
+    };
     match outcome {
         DeleteBaseOutcome::Deleted => tracing::warn!(
             source_profile,
@@ -163,10 +187,8 @@ fn permanent_rejection_error(
                 source_profile,
                 "rejected base token was replaced while minting"
             );
-            return Ok(TokenError::BaseGenerationChanged(source_profile.to_owned()));
+            return TokenError::BaseGenerationChanged(source_profile.to_owned());
         }
     }
-    Ok(TokenError::NoSourceBaseTokenCached(
-        source_profile.to_owned(),
-    ))
+    TokenError::NoSourceBaseTokenCached(source_profile.to_owned())
 }

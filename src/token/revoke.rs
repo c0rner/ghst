@@ -7,14 +7,40 @@ use crate::token::{RemoteError, RevokeTokenClient};
 use time::OffsetDateTime;
 
 pub enum RevokeFailure<E> {
-    InvalidEntry { entry: String },
-    MissingAppCredentials { entry: String },
-    ClientSecretUnavailable { entry: String },
-    AuthorityMismatch { entry: String },
-    GitHubRevocation { entry: String, source: RemoteError },
-    CacheDeletion { entry: String, source: E },
-    DeletedRecordChanged { entry: String },
-    DeletedRecordMissing { entry: String },
+    InvalidEntry {
+        entry: String,
+    },
+    MissingAppCredentials {
+        entry: String,
+    },
+    ClientSecretUnavailable {
+        entry: String,
+    },
+    AuthorityMismatch {
+        entry: String,
+    },
+    GitHubRevocation {
+        entry: String,
+        source: RemoteError,
+    },
+    CacheDeletion {
+        entry: String,
+        source: E,
+        remotely_revoked: bool,
+    },
+    DirectorySyncFailed {
+        entry: String,
+        source: E,
+        remotely_revoked: bool,
+    },
+    DeletedRecordChanged {
+        entry: String,
+        remotely_revoked: bool,
+    },
+    DeletedRecordMissing {
+        entry: String,
+        remotely_revoked: bool,
+    },
 }
 
 impl<E: std::fmt::Debug> std::fmt::Debug for RevokeFailure<E> {
@@ -41,18 +67,41 @@ impl<E: std::fmt::Debug> std::fmt::Debug for RevokeFailure<E> {
                 .field("entry", entry)
                 .field("source_kind", &source.kind())
                 .finish(),
-            Self::CacheDeletion { entry, source } => formatter
+            Self::CacheDeletion {
+                entry,
+                source,
+                remotely_revoked,
+            } => formatter
                 .debug_struct("CacheDeletion")
                 .field("entry", entry)
                 .field("source", source)
+                .field("remotely_revoked", remotely_revoked)
                 .finish(),
-            Self::DeletedRecordChanged { entry } => formatter
+            Self::DirectorySyncFailed {
+                entry,
+                source,
+                remotely_revoked,
+            } => formatter
+                .debug_struct("DirectorySyncFailed")
+                .field("entry", entry)
+                .field("source", source)
+                .field("remotely_revoked", remotely_revoked)
+                .finish(),
+            Self::DeletedRecordChanged {
+                entry,
+                remotely_revoked,
+            } => formatter
                 .debug_struct("DeletedRecordChanged")
                 .field("entry", entry)
+                .field("remotely_revoked", remotely_revoked)
                 .finish(),
-            Self::DeletedRecordMissing { entry } => formatter
+            Self::DeletedRecordMissing {
+                entry,
+                remotely_revoked,
+            } => formatter
                 .debug_struct("DeletedRecordMissing")
                 .field("entry", entry)
+                .field("remotely_revoked", remotely_revoked)
                 .finish(),
         }
     }
@@ -326,6 +375,7 @@ fn finalize_deletion<S, E>(
     S: DeleteInspectedRecord<Error = E>,
     E: std::error::Error + 'static,
 {
+    let remotely_revoked = matches!(intent, DeletionIntent::RemotelyRevoked);
     match store.delete_exact_record(slot_id, expected) {
         Ok(DeleteOutcome::Deleted) => match intent {
             DeletionIntent::RemotelyRevoked => {
@@ -369,32 +419,51 @@ fn finalize_deletion<S, E>(
         Ok(DeleteOutcome::Changed) => {
             tracing::debug!(
                 entry = label,
+                remotely_revoked,
                 "cached credential changed during revocation; retaining"
             );
             report.retained += 1;
             report.failures.push(RevokeFailure::DeletedRecordChanged {
                 entry: label.to_owned(),
+                remotely_revoked,
             });
         }
         Ok(DeleteOutcome::Missing) => {
             tracing::debug!(
                 entry = label,
+                remotely_revoked,
                 "cached credential disappeared during revocation"
             );
             report.failures.push(RevokeFailure::DeletedRecordMissing {
                 entry: label.to_owned(),
+                remotely_revoked,
+            });
+        }
+        Ok(DeleteOutcome::UnlinkedSyncFailed(source)) => {
+            tracing::debug!(
+                entry = label,
+                error = %source,
+                remotely_revoked,
+                "directory sync failed after credential deletion; durability is uncertain"
+            );
+            report.failures.push(RevokeFailure::DirectorySyncFailed {
+                entry: label.to_owned(),
+                source,
+                remotely_revoked,
             });
         }
         Err(source) => {
             tracing::debug!(
                 entry = label,
                 error = %source,
+                remotely_revoked,
                 "failed to delete credential from storage"
             );
             report.retained += 1;
             report.failures.push(RevokeFailure::CacheDeletion {
                 entry: label.to_owned(),
                 source,
+                remotely_revoked,
             });
         }
     }
@@ -762,10 +831,19 @@ mod tests {
 
         // While the worker is blocked in HTTP, another store instance acquires the cache lock.
         // If the workflow held the lock across HTTP, this operation would block or deadlock.
-        let store2 = CacheStore::new(&cache_dir);
-        let batch = store2
-            .begin_revocation(crate::token::store::RevocationSelection::All)
-            .expect("second adapter must acquire exclusive lock while HTTP is paused");
+        // We use a separate thread and bounded timeout to ensure the test fails fast instead of hanging.
+        let (lock_tx, lock_rx) = std::sync::mpsc::channel();
+        let locker = std::thread::spawn(move || {
+            let store2 = CacheStore::new(&cache_dir);
+            let batch = store2
+                .begin_revocation(crate::token::store::RevocationSelection::All)
+                .expect("second adapter must acquire exclusive lock while HTTP is paused");
+            lock_tx.send(batch).unwrap();
+        });
+
+        let batch = lock_rx
+            .recv_timeout(std::time::Duration::from_secs(3))
+            .expect("second adapter timed out acquiring exclusive lock; network held lock");
         assert!(matches!(
             batch,
             crate::token::store::RevocationBatch::Selected(_)
@@ -773,6 +851,7 @@ mod tests {
 
         proceed_tx.send(()).unwrap();
         let report = worker.join().unwrap();
+        locker.join().unwrap();
         assert_eq!(report.remotely_inactive, 1);
         assert!(report.failures.is_empty());
     }
@@ -953,7 +1032,7 @@ mod tests {
         let inconsistent_path =
             cache_dir.join(format!("{}.json", compute_cache_key("dev2", "all")));
         let json = format!(
-            r#"{{"version": 1, "kind": "base", "profile": "wrong_profile", "authority_fingerprint": "{}", "github_user": "octocat", "expires_at": "{}", "access_token": "token"}}"#,
+            r#"{{"version": 5, "kind": "base", "profile": "wrong_profile", "authority_fingerprint": "{}", "github_user": "octocat", "expires_at": "{}", "access_token": "token"}}"#,
             authority_fingerprint("id", "acme"),
             (now + Duration::hours(1))
                 .format(&time::format_description::well_known::Rfc3339)
@@ -972,5 +1051,157 @@ mod tests {
         assert_eq!(report.failures.len(), 2);
         assert!(unsupported_path.exists());
         assert!(inconsistent_path.exists());
+    }
+
+    struct SequentialStatusClient {
+        calls: Cell<usize>,
+    }
+
+    impl RevokeTokenClient for SequentialStatusClient {
+        fn delete_token(
+            &self,
+            _client_id: &str,
+            _client_secret: &str,
+            _access_token: &str,
+        ) -> Result<(), RemoteError> {
+            let count = self.calls.get();
+            self.calls.set(count + 1);
+            if count == 0 {
+                Ok(())
+            } else {
+                Err(RemoteError::Http {
+                    status: 404,
+                    message: "Not Found".into(),
+                })
+            }
+        }
+    }
+
+    #[test]
+    fn concurrent_revokers_select_same_token_and_second_reports_missing_with_no_loss() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let now = OffsetDateTime::now_utc();
+        cache_base(&cache_dir, now + Duration::hours(1));
+
+        let client = SequentialStatusClient {
+            calls: Cell::new(0),
+        };
+        let store = CacheStore::new(&cache_dir);
+
+        // Both revokers snapshot the same cache state before deletion begins
+        let batch1 = match store
+            .begin_revocation(crate::token::store::RevocationSelection::All)
+            .unwrap()
+        {
+            RevocationBatch::Selected(s) => s,
+            other => panic!("expected selected batch, got {other:?}"),
+        };
+        let batch2 = match store
+            .begin_revocation(crate::token::store::RevocationSelection::All)
+            .unwrap()
+        {
+            RevocationBatch::Selected(s) => s,
+            other => panic!("expected selected batch, got {other:?}"),
+        };
+
+        // Revoker 1 completes remote deletion and removes the exact record
+        let report1 = process_revocation_batch(&client, &config(true), &store, batch1, now);
+        assert_eq!(report1.remotely_inactive, 1);
+        assert_eq!(report1.local_only, 0);
+        assert_eq!(report1.retained, 0);
+        assert!(report1.failures.is_empty());
+        assert!(list_all_cache_entries(&cache_dir).unwrap().is_empty());
+
+        // Revoker 2 completes remote deletion (404 already inactive) and finds the record missing locally
+        let report2 = process_revocation_batch(&client, &config(true), &store, batch2, now);
+        assert_eq!(
+            report2.remotely_inactive, 0,
+            "must not increment success count on missing finalization"
+        );
+        assert_eq!(report2.local_only, 0);
+        assert_eq!(
+            report2.retained, 0,
+            "missing record must not be counted as retained"
+        );
+        assert_eq!(report2.failures.len(), 1);
+        assert!(matches!(
+            report2.failures.as_slice(),
+            [RevokeFailure::DeletedRecordMissing {
+                remotely_revoked: true,
+                ..
+            }]
+        ));
+        assert_eq!(client.calls.get(), 2);
+    }
+
+    struct PostUnlinkSyncFailingStore {
+        inner: CacheStore,
+        cache_dir: std::path::PathBuf,
+    }
+
+    impl BeginRevocation for PostUnlinkSyncFailingStore {
+        type Error = crate::cache::CacheError;
+
+        fn begin_revocation(
+            &self,
+            selection: crate::token::store::RevocationSelection<'_>,
+        ) -> Result<RevocationBatch, Self::Error> {
+            self.inner.begin_revocation(selection)
+        }
+    }
+
+    impl DeleteInspectedRecord for PostUnlinkSyncFailingStore {
+        type Error = crate::cache::CacheError;
+
+        fn delete_exact_record(
+            &self,
+            slot_id: &str,
+            _expected: &Record,
+        ) -> Result<DeleteOutcome<Self::Error>, Self::Error> {
+            let path = self.cache_dir.join(format!("{slot_id}.json"));
+            std::fs::remove_file(&path).map_err(|err| crate::cache::CacheError::io(&path, err))?;
+            Ok(DeleteOutcome::UnlinkedSyncFailed(
+                crate::cache::CacheError::io(
+                    &self.cache_dir,
+                    std::io::Error::other("simulated sync failure"),
+                ),
+            ))
+        }
+    }
+
+    #[test]
+    fn post_unlink_directory_sync_failure_reports_durability_uncertainty_without_retention() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let now = OffsetDateTime::now_utc();
+        cache_base(&cache_dir, now + Duration::hours(1));
+
+        let store = PostUnlinkSyncFailingStore {
+            inner: CacheStore::new(&cache_dir),
+            cache_dir: cache_dir.clone(),
+        };
+        let client = MockClient(Cell::new(0));
+        let report = revoke_all(&client, &config(true), &store, now).unwrap();
+
+        // 1. No success count
+        assert_eq!(report.remotely_inactive, 0);
+        assert_eq!(report.local_only, 0);
+
+        // 2. Not counted as retained (file has already been unlinked)
+        assert_eq!(report.retained, 0);
+
+        // 3. Accurate partial outcome: DirectorySyncFailed with source error and remote revocation status
+        assert_eq!(report.failures.len(), 1);
+        assert!(matches!(
+            report.failures.as_slice(),
+            [RevokeFailure::DirectorySyncFailed {
+                remotely_revoked: true,
+                ..
+            }]
+        ));
+
+        // 4. File was unlinked from disk
+        assert!(list_all_cache_entries(&cache_dir).unwrap().is_empty());
     }
 }

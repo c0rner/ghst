@@ -10,7 +10,7 @@ pub enum CmdError {
     Config(ConfigError),
     Cache(CacheError),
     GitHub(RemoteError),
-    Token(TokenError),
+    Token(TokenError<CacheError>),
     Repository(RepositoryError),
     AppScopeRejected(String),
     RunRequiresScoped(String),
@@ -197,8 +197,8 @@ impl From<CacheError> for CmdError {
     }
 }
 
-impl From<TokenError> for CmdError {
-    fn from(error: TokenError) -> Self {
+impl From<TokenError<CacheError>> for CmdError {
+    fn from(error: TokenError<CacheError>) -> Self {
         Self::Token(error)
     }
 }

@@ -22,7 +22,7 @@ $ ghst revoke 3a8f1b2
 ```
 
 - `<id>` must be a 7-to-64 character hexadecimal prefix copied from [`ghst status`](status.md).
-- Ambiguous or non-existent prefixes fail immediately without modifying cache state.
+- Ambiguous or non-existent prefixes fail immediately without modifying or deleting cached credentials; the cache issuance epoch still advances to invalidate in-flight token issuance.
 
 ### 2. Cache-Wide Unconditional Revocation (`ghst revoke --all`)
 Selects and revokes **every** locally known base, scoped, and run token:

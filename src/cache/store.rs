@@ -25,7 +25,7 @@ use crate::token::store::{
     BeginRevocation, DeleteInspectedRecord, DeleteOutcome, InspectRecords, InspectionState, Record,
     RecordInspection, RevocationBatch, RevocationSelection,
 };
-use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
 use time::OffsetDateTime;
 
@@ -48,12 +48,7 @@ impl ReadCredentials for CacheStore {
         let Some(entry) = crate::cache::storage::load_cache_entry(&self.path, &key)? else {
             return Ok(None);
         };
-        if entry.profile() != profile {
-            return Err(CacheError::InconsistentMetadata {
-                expected_key: key,
-                actual_key: compute_cache_key(entry.profile(), entry.repo_scope()),
-            });
-        }
+        crate::cache::storage::validate_entry_key(&key, &entry)?;
         match entry {
             Record::Base(b) => Ok(Some(b)),
             other => Err(CacheError::UnexpectedKind {
@@ -72,12 +67,7 @@ impl ReadCredentials for CacheStore {
         let Some(entry) = crate::cache::storage::load_cache_entry(&self.path, &key)? else {
             return Ok(None);
         };
-        if entry.profile() != profile {
-            return Err(CacheError::InconsistentMetadata {
-                expected_key: key,
-                actual_key: compute_cache_key(entry.profile(), entry.repo_scope()),
-            });
-        }
+        crate::cache::storage::validate_entry_key(&key, &entry)?;
         match entry {
             Record::Scoped(s) => Ok(Some(s)),
             other => Err(CacheError::UnexpectedKind {
@@ -152,10 +142,7 @@ impl WriteCredentials for CacheStore {
             if actual != guard.value() {
                 return Ok(SaveOutcome::EpochChanged);
             }
-            let base_key = compute_cache_key(source_guard.source_profile, "all");
-            let base = read_cache_entry(&cache_file_path(&self.path, &base_key))?;
-            if !matches!(base, Some(Record::Base(ref base)) if base.generation_fingerprint() == source_guard.expected_generation)
-            {
+            if !validate_source_base(&self.path, source_guard)? {
                 return Ok(SaveOutcome::BaseGenerationChanged);
             }
             let cache_file = cache_file_path(&self.path, &key);
@@ -198,10 +185,7 @@ impl WriteCredentials for CacheStore {
             if actual != guard.value() {
                 return Ok(ReplaceOutcome::EpochChanged);
             }
-            let base_key = compute_cache_key(source_guard.source_profile, "all");
-            let base = read_cache_entry(&cache_file_path(&self.path, &base_key))?;
-            if !matches!(base, Some(Record::Base(ref base)) if base.generation_fingerprint() == source_guard.expected_generation)
-            {
+            if !validate_source_base(&self.path, source_guard)? {
                 return Ok(ReplaceOutcome::BaseGenerationChanged);
             }
 
@@ -238,6 +222,25 @@ impl WriteCredentials for CacheStore {
     }
 }
 
+fn validate_source_base(
+    cache_dir: &Path,
+    source_guard: &SourceGuard<'_>,
+) -> Result<bool, CacheError> {
+    let base_key = compute_cache_key(source_guard.source_profile, "all");
+    let base = read_cache_entry(&cache_file_path(cache_dir, &base_key))?;
+    let Some(base_entry) = base else {
+        return Ok(false);
+    };
+    crate::cache::storage::validate_entry_key(&base_key, &base_entry)?;
+    let Record::Base(ref base) = base_entry else {
+        return Err(CacheError::UnexpectedKind {
+            expected: "base",
+            actual: base_entry.kind_name(),
+        });
+    };
+    Ok(base.generation_fingerprint() == source_guard.expected_generation)
+}
+
 impl PendingRunStore for CacheStore {
     type Error = CacheError;
 
@@ -257,10 +260,7 @@ impl PendingRunStore for CacheStore {
             if actual != guard.value() {
                 return Ok(PendingRunOutcome::EpochChanged);
             }
-            let base_key = compute_cache_key(source_guard.source_profile, "all");
-            let base = read_cache_entry(&cache_file_path(&self.path, &base_key))?;
-            if !matches!(base, Some(Record::Base(ref base)) if base.generation_fingerprint() == source_guard.expected_generation)
-            {
+            if !validate_source_base(&self.path, source_guard)? {
                 return Ok(PendingRunOutcome::BaseGenerationChanged);
             }
             let cache_file = cache_file_path(&self.path, &key);
@@ -344,7 +344,7 @@ impl DeleteInspectedRecord for CacheStore {
         &self,
         slot_id: &str,
         expected: &Record,
-    ) -> Result<DeleteOutcome, Self::Error> {
+    ) -> Result<DeleteOutcome<Self::Error>, Self::Error> {
         if !cache_dir_exists(&self.path)? {
             return Ok(DeleteOutcome::Missing);
         }
@@ -358,8 +358,10 @@ impl DeleteInspectedRecord for CacheStore {
             if &entry != expected {
                 return Ok(DeleteOutcome::Changed);
             }
-            fs::remove_file(&path).map_err(|err| CacheError::io(&path, err))?;
-            crate::fs::sync_private_dir(&self.path).map_err(CacheError::from)?;
+            std::fs::remove_file(&path).map_err(|err| CacheError::io(&path, err))?;
+            if let Err(err) = crate::fs::sync_private_dir(&self.path) {
+                return Ok(DeleteOutcome::UnlinkedSyncFailed(CacheError::from(err)));
+            }
             Ok(DeleteOutcome::Deleted)
         })
     }

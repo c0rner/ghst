@@ -104,11 +104,12 @@ pub struct RecordInspection {
 }
 
 /// Result of conditional exact-record deletion.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeleteOutcome {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeleteOutcome<E = ()> {
     Deleted,
     Missing,
     Changed,
+    UnlinkedSyncFailed(E),
 }
 
 /// Target specification for starting a revocation batch.
@@ -143,7 +144,7 @@ pub trait DeleteInspectedRecord {
         &self,
         slot_id: &str,
         expected: &Record,
-    ) -> Result<DeleteOutcome, Self::Error>;
+    ) -> Result<DeleteOutcome<Self::Error>, Self::Error>;
 }
 
 /// Trait for starting revocation under an atomic epoch advance and inspection.

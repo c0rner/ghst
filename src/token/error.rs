@@ -2,7 +2,7 @@ use crate::token::RemoteError;
 use std::fmt;
 
 #[derive(Debug)]
-pub enum TokenError<E = crate::cache::CacheError> {
+pub enum TokenError<E> {
     Storage(E),
     GitHub(RemoteError),
     ScopedTokenForbidden {
@@ -107,12 +107,6 @@ impl<E: std::error::Error + 'static> std::error::Error for TokenError<E> {
     }
 }
 
-impl From<crate::cache::CacheError> for TokenError<crate::cache::CacheError> {
-    fn from(error: crate::cache::CacheError) -> Self {
-        Self::Storage(error)
-    }
-}
-
 impl<E> From<RemoteError> for TokenError<E> {
     fn from(error: RemoteError) -> Self {
         Self::GitHub(error)
@@ -144,7 +138,7 @@ mod error_tests {
     #[test]
     fn random_error_exposes_its_source() {
         let random = getrandom::Error::UNSUPPORTED;
-        let error: TokenError = TokenError::from(random);
+        let error: TokenError<std::io::Error> = TokenError::from(random);
 
         let source = std::error::Error::source(&error).expect("random error should have a source");
         assert_eq!(source.downcast_ref::<getrandom::Error>(), Some(&random));

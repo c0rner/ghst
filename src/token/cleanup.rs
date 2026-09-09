@@ -198,6 +198,13 @@ where
                 entry: label.to_owned(),
             })
         }
+        Ok(DeleteOutcome::UnlinkedSyncFailed(source)) => {
+            tracing::debug!(entry = label, error = %source, "directory sync failed after deleting expired cache entry");
+            Err(CleanupFailure::CacheDeletion {
+                entry: label.to_owned(),
+                source,
+            })
+        }
         Err(source) => {
             tracing::debug!(entry = label, error = %source, "failed to delete expired cache entry");
             Err(CleanupFailure::CacheDeletion {

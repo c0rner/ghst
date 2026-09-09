@@ -976,15 +976,15 @@ fn exact_record_deletion_distinguishes_deleted_missing_and_changed() {
     });
 
     let outcome = store.delete_exact_record(&base_key(), &expected).unwrap();
-    assert_eq!(outcome, DeleteOutcome::Deleted);
+    assert!(matches!(outcome, DeleteOutcome::Deleted));
 
     let outcome = store.delete_exact_record(&base_key(), &expected).unwrap();
-    assert_eq!(outcome, DeleteOutcome::Missing);
+    assert!(matches!(outcome, DeleteOutcome::Missing));
 
     let new_entry = base_entry("token-2", now + Duration::hours(2), "authority");
     save_cache_entry(&directory, &base_key(), &new_entry).unwrap();
 
     let outcome = store.delete_exact_record(&base_key(), &expected).unwrap();
-    assert_eq!(outcome, DeleteOutcome::Changed);
+    assert!(matches!(outcome, DeleteOutcome::Changed));
     assert!(load_cache_entry(&directory, &base_key()).unwrap().is_some());
 }

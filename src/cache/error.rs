@@ -98,6 +98,37 @@ impl fmt::Display for CacheError {
     }
 }
 
+impl From<crate::fs::FsError> for CacheError {
+    fn from(source: crate::fs::FsError) -> Self {
+        match source {
+            crate::fs::FsError::Io { source, .. } => Self::Io(source),
+            crate::fs::FsError::InsecurePath { path, reason } => {
+                Self::InsecurePath { path, reason }
+            }
+            crate::fs::FsError::Platform(reason) => Self::Platform(reason),
+        }
+    }
+}
+
+impl From<crate::run::RunTransitionError> for CacheError {
+    fn from(error: crate::run::RunTransitionError) -> Self {
+        match error {
+            crate::run::RunTransitionError::PendingOwnership => {
+                Self::InvalidRunTransition("pending run ownership did not match")
+            }
+            crate::run::RunTransitionError::ReleasedOwnership => {
+                Self::InvalidRunTransition("released run ownership did not match")
+            }
+            crate::run::RunTransitionError::AbandonedRun => {
+                Self::InvalidRunTransition("abandoned run changed while checking liveness")
+            }
+            crate::run::RunTransitionError::CleanupDeletion => {
+                Self::InvalidRunTransition("cleanup deletion ownership did not match")
+            }
+        }
+    }
+}
+
 impl std::error::Error for CacheError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {

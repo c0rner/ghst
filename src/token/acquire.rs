@@ -6,10 +6,10 @@ use super::{
     revoke_with_context,
 };
 use crate::cache::{
-    CACHE_SCHEMA_VERSION, CacheEntry, ReplaceCacheEntry, SaveCacheEntry, ScopedCacheEntry,
-    cache_epoch, compute_cache_key, load_cache_entry, policy_fingerprint, replace_cache_candidate,
-    save_cache_candidate,
+    Record, ReplaceCacheEntry, SaveCacheEntry, cache_epoch, compute_cache_key, load_cache_entry,
+    replace_cache_candidate, save_cache_candidate,
 };
+use crate::credential::{ScopedCredential, authority_fingerprint, policy_fingerprint};
 use crate::domain::profile::AppAuthority;
 use crate::token::ScopedTokenClient;
 
@@ -152,8 +152,8 @@ struct ScopedProvenance<'a> {
 }
 
 enum CachedScoped {
-    Fresh(ScopedCacheEntry),
-    Renewable(ScopedCacheEntry),
+    Fresh(ScopedCredential),
+    Renewable(ScopedCredential),
     MissingOrUnsafe,
 }
 
@@ -178,7 +178,7 @@ fn classify_scoped_entry(
         });
     }
     match entry {
-        CacheEntry::Scoped(entry) => {
+        Record::Scoped(entry) => {
             let rejection = if entry.source_profile != provenance.source_name {
                 Some("source profile changed")
             } else if !super::provenance::matches_authority(
@@ -212,13 +212,11 @@ fn classify_scoped_entry(
                 Ok(CachedScoped::Fresh(entry))
             }
         }
-        other @ (CacheEntry::Base(_) | CacheEntry::Run(_)) => {
-            Err(TokenError::UnexpectedCacheKind {
-                profile: provenance.profile_name.to_owned(),
-                expected: "scoped",
-                actual: other.kind_name(),
-            })
-        }
+        other @ (Record::Base(_) | Record::Run(_)) => Err(TokenError::UnexpectedCacheKind {
+            profile: provenance.profile_name.to_owned(),
+            expected: "scoped",
+            actual: other.kind_name(),
+        }),
     }
 }
 
@@ -226,7 +224,7 @@ struct MintRequest<'a> {
     cache_key: &'a str,
     policy: &'a str,
     prepared: super::scoped::PreparedScopedToken<'a>,
-    renewal: Option<ScopedCacheEntry>,
+    renewal: Option<ScopedCredential>,
 }
 
 fn mint_and_persist<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
@@ -275,11 +273,10 @@ fn mint_and_persist<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     }
     let issued = super::scoped::issue(client, &mint.prepared, cache_dir, request_time, now)?;
     tracing::debug!(profile = mint.prepared.profile_name, expires_at = %issued.expires_at, "received valid scoped token from GitHub");
-    let candidate = CacheEntry::Scoped(ScopedCacheEntry {
-        version: CACHE_SCHEMA_VERSION,
+    let candidate = Record::Scoped(ScopedCredential {
         profile: mint.prepared.profile_name.to_owned(),
         source_profile: mint.prepared.source_name.to_owned(),
-        source_authority_fingerprint: crate::cache::authority_fingerprint(
+        source_authority_fingerprint: authority_fingerprint(
             mint.prepared.app.authority.client_id,
             mint.prepared.app.authority.account,
         ),
@@ -339,7 +336,7 @@ fn finish_persisted_candidate<C: ScopedTokenClient>(
     profile_name: &str,
     client_id: &str,
     secret: &str,
-    candidate: CacheEntry,
+    candidate: Record,
     saved: PersistedCandidate,
 ) -> Result<AcquiredToken, TokenError> {
     match saved {
@@ -382,8 +379,8 @@ enum PersistedCandidate {
 fn persist_candidate(
     cache_dir: &Path,
     cache_key: &str,
-    renewal: Option<ScopedCacheEntry>,
-    candidate: &CacheEntry,
+    renewal: Option<ScopedCredential>,
+    candidate: &Record,
     epoch: u64,
     expected_base: (&str, &str),
     received_at: OffsetDateTime,
@@ -397,7 +394,7 @@ fn persist_candidate(
             replace_cache_candidate(
                 cache_dir,
                 cache_key,
-                &CacheEntry::Scoped(entry),
+                &Record::Scoped(entry),
                 candidate,
                 epoch,
                 expected_base,
@@ -413,7 +410,7 @@ fn revoke_candidate<C: ScopedTokenClient>(
     profile_name: &str,
     client_id: &str,
     secret: &str,
-    candidate: &CacheEntry,
+    candidate: &Record,
 ) -> Result<(), TokenError> {
     client
         .delete_token(client_id, secret, candidate.access_token().as_ref())
@@ -426,27 +423,25 @@ fn revoke_candidate<C: ScopedTokenClient>(
         })
 }
 
-fn acquired_candidate(candidate: CacheEntry) -> AcquiredToken {
+fn acquired_candidate(candidate: Record) -> AcquiredToken {
     match candidate {
-        CacheEntry::Scoped(entry) => acquired_scoped(entry),
-        CacheEntry::Base(_) | CacheEntry::Run(_) => unreachable!("candidate is scoped"),
+        Record::Scoped(entry) => acquired_scoped(entry),
+        Record::Base(_) | Record::Run(_) => unreachable!("candidate is scoped"),
     }
 }
 
-fn acquired_retained(retained: CacheEntry) -> Result<AcquiredToken, TokenError> {
+fn acquired_retained(retained: Record) -> Result<AcquiredToken, TokenError> {
     match retained {
-        CacheEntry::Scoped(entry) => Ok(acquired_scoped(entry)),
-        other @ (CacheEntry::Base(_) | CacheEntry::Run(_)) => {
-            Err(TokenError::UnexpectedCacheKind {
-                profile: other.profile().to_owned(),
-                expected: "scoped",
-                actual: other.kind_name(),
-            })
-        }
+        Record::Scoped(entry) => Ok(acquired_scoped(entry)),
+        other @ (Record::Base(_) | Record::Run(_)) => Err(TokenError::UnexpectedCacheKind {
+            profile: other.profile().to_owned(),
+            expected: "scoped",
+            actual: other.kind_name(),
+        }),
     }
 }
 
-fn acquired_scoped(entry: ScopedCacheEntry) -> AcquiredToken {
+fn acquired_scoped(entry: ScopedCredential) -> AcquiredToken {
     AcquiredToken {
         access_token: entry.access_token,
         expires_at: entry.expires_at,

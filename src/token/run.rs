@@ -5,13 +5,13 @@ use time::OffsetDateTime;
 
 use super::{TokenError, base_cache_key, revoke_with_context};
 use crate::cache::{
-    CacheEntry, CacheError, RUN_CACHE_SCHEMA_VERSION, RunCacheEntry, RunState, SaveCacheEntry,
-    cache_epoch, compute_run_cache_key, save_cache_candidate,
+    CacheError, Record, SaveCacheEntry, cache_epoch, compute_run_cache_key, save_cache_candidate,
 };
 use crate::config::Config;
-use crate::domain::credential::AccessToken;
+use crate::credential::{AccessToken, authority_fingerprint};
 use crate::domain::profile::{AppCredentials, PermissionLevel};
 use crate::repository::RepositorySelection;
+use crate::run::{RunRecord, RunState};
 use crate::token::{RevokeTokenClient, ScopedTokenClient};
 
 pub struct MintRunRequest<'a> {
@@ -193,8 +193,7 @@ fn mint_with_clock<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     let issued =
         super::scoped::issue(client, &prepared, request.cache_dir, request_time, &mut now)?;
     tracing::debug!(profile = prepared.profile_name, expires_at = %issued.expires_at, "received valid run token from GitHub");
-    let candidate = CacheEntry::Run(RunCacheEntry {
-        version: RUN_CACHE_SCHEMA_VERSION,
+    let candidate = Record::Run(RunRecord {
         run_id: run_id.clone(),
         state: RunState::Pending,
         wrapper_pid: request.wrapper_pid,
@@ -202,7 +201,7 @@ fn mint_with_clock<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
         command: request.command.to_owned(),
         profile: prepared.profile_name.to_owned(),
         source_profile: prepared.source_name.to_owned(),
-        source_authority_fingerprint: crate::cache::authority_fingerprint(
+        source_authority_fingerprint: authority_fingerprint(
             prepared.app.authority.client_id,
             prepared.app.authority.account,
         ),
@@ -220,7 +219,7 @@ fn mint_with_clock<C: ScopedTokenClient, N: FnMut() -> OffsetDateTime>(
     );
     match saved {
         Ok(SaveCacheEntry::Saved) => {
-            let CacheEntry::Run(entry) = candidate else {
+            let Record::Run(entry) = candidate else {
                 unreachable!("run candidate changed kind")
             };
             tracing::debug!(
@@ -264,11 +263,11 @@ fn generate_run_id() -> Result<String, TokenError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::{
-        BaseCacheEntry, CACHE_SCHEMA_VERSION, ScopedCacheEntry, authority_fingerprint,
-        compute_cache_key, compute_run_cache_key, policy_fingerprint, save_cache_entry,
+    use crate::cache::{Record, compute_cache_key, compute_run_cache_key, save_cache_entry};
+    use crate::credential::{
+        BaseCredential, ScopedCredential, TokenExpiry, authority_fingerprint, policy_fingerprint,
     };
-    use crate::domain::credential::TokenExpiry;
+    use crate::run::{RunRecord, RunState};
     use crate::token::{IssuedScopedToken, RemoteError, RevokeTokenClient, ScopedTokenRequest};
     use std::cell::{Cell, RefCell};
     use std::collections::BTreeMap;
@@ -330,7 +329,7 @@ mod tests {
             access_token: &str,
         ) -> Result<(), RemoteError> {
             if let Some((cache_dir, cache_key)) = &self.cache_entry {
-                let CacheEntry::Run(entry) = crate::cache::load_cache_entry(cache_dir, cache_key)
+                let Record::Run(entry) = crate::cache::load_cache_entry(cache_dir, cache_key)
                     .unwrap()
                     .unwrap()
                 else {
@@ -373,8 +372,7 @@ permissions = { contents = "read" }
         save_cache_entry(
             cache_dir,
             &compute_cache_key("developer", "all"),
-            &CacheEntry::Base(BaseCacheEntry {
-                version: CACHE_SCHEMA_VERSION,
+            &Record::Base(BaseCredential {
                 profile: "developer".into(),
                 authority_fingerprint: authority_fingerprint("id", "acme"),
                 github_user: "octocat".into(),
@@ -390,8 +388,7 @@ permissions = { contents = "read" }
         save_cache_entry(
             cache_dir,
             &cache_key,
-            &CacheEntry::Run(RunCacheEntry {
-                version: RUN_CACHE_SCHEMA_VERSION,
+            &Record::Run(RunRecord {
                 run_id: run_id.into(),
                 state: RunState::Pending,
                 wrapper_pid: 100,
@@ -439,8 +436,7 @@ permissions = { contents = "read" }
         save_cache_entry(
             &cache_dir,
             &compute_cache_key("reader", "acme/api"),
-            &CacheEntry::Scoped(ScopedCacheEntry {
-                version: CACHE_SCHEMA_VERSION,
+            &Record::Scoped(ScopedCredential {
                 profile: "reader".into(),
                 source_profile: "developer".into(),
                 source_authority_fingerprint: authority_fingerprint("id", "acme"),
@@ -451,8 +447,8 @@ permissions = { contents = "read" }
                 .unwrap()
                 .unwrap()
                 {
-                    CacheEntry::Base(entry) => entry.generation_fingerprint(),
-                    CacheEntry::Scoped(_) | CacheEntry::Run(_) => panic!("expected base"),
+                    Record::Base(entry) => entry.generation_fingerprint(),
+                    Record::Scoped(_) | Record::Run(_) => panic!("expected base"),
                 },
                 policy_fingerprint: policy_fingerprint("acme", "acme/api", &permissions),
                 github_user: "octocat".into(),
@@ -507,7 +503,7 @@ permissions = { contents = "read" }
         assert_eq!(active.child_pid, 200);
         assert!(matches!(
             crate::cache::load_cache_entry(&cache_dir, &cache_key).unwrap(),
-            Some(CacheEntry::Run(RunCacheEntry {
+            Some(Record::Run(RunRecord {
                 state: RunState::Running,
                 child_pid: Some(200),
                 ..
@@ -558,7 +554,7 @@ permissions = { contents = "read" }
         );
         assert!(matches!(
             crate::cache::load_cache_entry(&cache_dir, &cache_key).unwrap(),
-            Some(CacheEntry::Run(RunCacheEntry {
+            Some(Record::Run(RunRecord {
                 state: RunState::CleanupPending,
                 child_pid: Some(201),
                 ..
@@ -623,7 +619,7 @@ permissions = { contents = "read" }
         assert!(!report.is_complete());
         assert!(matches!(
             crate::cache::load_cache_entry(&cache_dir, &cache_key).unwrap(),
-            Some(CacheEntry::Run(RunCacheEntry {
+            Some(Record::Run(RunRecord {
                 state: RunState::CleanupPending,
                 ..
             }))

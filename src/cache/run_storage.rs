@@ -1,4 +1,5 @@
-use super::{CacheError, RunCacheEntry, RunState};
+use super::CacheError;
+use crate::run::RunRecord;
 use std::path::Path;
 
 pub fn activate(
@@ -7,20 +8,11 @@ pub fn activate(
     run_id: &str,
     wrapper_pid: u32,
     child_pid: u32,
-) -> Result<RunCacheEntry, CacheError> {
+) -> Result<RunRecord, CacheError> {
     super::storage::update_run(cache_dir, cache_key, |entry| {
-        if entry.run_id != run_id
-            || entry.wrapper_pid != wrapper_pid
-            || entry.child_pid.is_some()
-            || entry.state != RunState::Pending
-        {
-            return Err(CacheError::InvalidRunTransition(
-                "pending run ownership did not match",
-            ));
-        }
-        entry.child_pid = Some(child_pid);
-        entry.state = RunState::Running;
-        Ok(())
+        entry
+            .activate(run_id, wrapper_pid, child_pid)
+            .map_err(CacheError::from)
     })
 }
 
@@ -30,20 +22,11 @@ pub fn abort(
     run_id: &str,
     wrapper_pid: u32,
     child_pid: Option<u32>,
-) -> Result<RunCacheEntry, CacheError> {
+) -> Result<RunRecord, CacheError> {
     super::storage::update_run(cache_dir, cache_key, |entry| {
-        if entry.run_id != run_id
-            || entry.wrapper_pid != wrapper_pid
-            || entry.child_pid.is_some()
-            || entry.state != RunState::Pending
-        {
-            return Err(CacheError::InvalidRunTransition(
-                "pending run ownership did not match",
-            ));
-        }
-        entry.child_pid = child_pid;
-        entry.state = RunState::CleanupPending;
-        Ok(())
+        entry
+            .abort(run_id, wrapper_pid, child_pid)
+            .map_err(CacheError::from)
     })
 }
 
@@ -53,18 +36,10 @@ pub fn finish(
     run_id: &str,
     wrapper_pid: u32,
     child_pid: u32,
-) -> Result<RunCacheEntry, CacheError> {
+) -> Result<RunRecord, CacheError> {
     super::storage::update_run(cache_dir, cache_key, |entry| {
-        if entry.run_id != run_id
-            || entry.wrapper_pid != wrapper_pid
-            || entry.child_pid != Some(child_pid)
-            || entry.state != RunState::Running
-        {
-            return Err(CacheError::InvalidRunTransition(
-                "released run ownership did not match",
-            ));
-        }
-        entry.state = RunState::CleanupPending;
-        Ok(())
+        entry
+            .finish(run_id, wrapper_pid, child_pid)
+            .map_err(CacheError::from)
     })
 }

@@ -1,8 +1,10 @@
 use crate::cache::{
-    CacheEntry, CacheInspectionState, RunCacheEntry, RunState, claim_abandoned_run,
-    delete_entry_if_unchanged, delete_run_after_cleanup, inspect_cache,
+    CacheInspectionState, Record, claim_abandoned_run, delete_entry_if_unchanged,
+    delete_run_after_cleanup, inspect_cache,
 };
 use crate::config::{AppProfile, Config};
+use crate::credential::TokenExpiry;
+use crate::run::{RunRecord, RunState};
 use crate::token::{RemoteError, RevokeTokenClient};
 use std::path::Path;
 use time::OffsetDateTime;
@@ -108,7 +110,7 @@ pub(super) fn cleanup_marked_run<C: RevokeTokenClient>(
     config: &Config,
     cache_dir: &Path,
     cache_key: &str,
-    entry: &RunCacheEntry,
+    entry: &RunRecord,
 ) -> CleanupReport {
     let mut report = CleanupReport::default();
     let attempt = match entry.state {
@@ -165,7 +167,7 @@ fn delete_expired_entry(
     cache_dir: &Path,
     cache_key: &str,
     label: &str,
-    entry: &CacheEntry,
+    entry: &Record,
 ) -> CleanupAttempt {
     tracing::debug!(
         entry = label,
@@ -202,11 +204,11 @@ fn cleanup_unexpired_entry<C: RevokeTokenClient>(
     cache_dir: &Path,
     cache_key: &str,
     label: &str,
-    entry: CacheEntry,
+    entry: Record,
 ) -> CleanupAttempt {
     match entry {
-        CacheEntry::Base(_) | CacheEntry::Scoped(_) => Ok(CleanupOutcome::NoAction),
-        CacheEntry::Run(entry) => {
+        Record::Base(_) | Record::Scoped(_) => Ok(CleanupOutcome::NoAction),
+        Record::Run(entry) => {
             cleanup_pruned_run(client, config, cache_dir, cache_key, label, &entry)
         }
     }
@@ -218,7 +220,7 @@ fn cleanup_pruned_run<C: RevokeTokenClient>(
     cache_dir: &Path,
     cache_key: &str,
     label: &str,
-    entry: &RunCacheEntry,
+    entry: &RunRecord,
 ) -> CleanupAttempt {
     match entry.state {
         RunState::CleanupPending => cleanup_run_entry(client, config, cache_dir, cache_key, entry),
@@ -249,7 +251,7 @@ fn cleanup_run_entry<C: RevokeTokenClient>(
     config: &Config,
     cache_dir: &Path,
     cache_key: &str,
-    entry: &RunCacheEntry,
+    entry: &RunRecord,
 ) -> CleanupAttempt {
     let label = cache_key.to_owned();
     let Some(app) = validated_app(config, entry) else {
@@ -300,7 +302,7 @@ fn cleanup_run_entry<C: RevokeTokenClient>(
     }
 }
 
-fn validated_app<'a>(config: &'a Config, entry: &RunCacheEntry) -> Option<&'a AppProfile> {
+fn validated_app<'a>(config: &'a Config, entry: &RunRecord) -> Option<&'a AppProfile> {
     match super::provenance::for_source(
         config,
         &entry.source_profile,
@@ -312,12 +314,8 @@ fn validated_app<'a>(config: &'a Config, entry: &RunCacheEntry) -> Option<&'a Ap
     }
 }
 
-const fn expiry(entry: &CacheEntry) -> crate::domain::credential::TokenExpiry {
-    match entry {
-        CacheEntry::Base(entry) => entry.expires_at,
-        CacheEntry::Scoped(entry) => entry.expires_at,
-        CacheEntry::Run(entry) => entry.expires_at,
-    }
+const fn expiry(entry: &Record) -> TokenExpiry {
+    entry.expires_at()
 }
 
 #[cfg(unix)]
@@ -342,11 +340,9 @@ fn pid_is_alive(_pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::{
-        RUN_CACHE_SCHEMA_VERSION, RunState, authority_fingerprint, compute_run_cache_key,
-        load_cache_entry, save_cache_entry,
-    };
-    use crate::domain::credential::TokenExpiry;
+    use crate::cache::{Record, compute_run_cache_key, load_cache_entry, save_cache_entry};
+    use crate::credential::{TokenExpiry, authority_fingerprint};
+    use crate::run::{RunRecord, RunState};
     use std::cell::{Cell, RefCell};
     use time::Duration;
 
@@ -397,9 +393,8 @@ permissions = { contents = "read" }
         wrapper_pid: u32,
         child_pid: Option<u32>,
         expiry: OffsetDateTime,
-    ) -> CacheEntry {
-        CacheEntry::Run(RunCacheEntry {
-            version: RUN_CACHE_SCHEMA_VERSION,
+    ) -> Record {
+        Record::Run(RunRecord {
             run_id: run_id.into(),
             state,
             wrapper_pid,
@@ -500,7 +495,7 @@ permissions = { contents = "read" }
             Some(i32::MAX as u32),
             now + Duration::hours(1),
         );
-        let CacheEntry::Run(entry) = &mut cached else {
+        let Record::Run(entry) = &mut cached else {
             unreachable!("run_entry returned a non-run entry")
         };
         entry.source_authority_fingerprint = authority_fingerprint("other-id", "different");
@@ -517,7 +512,7 @@ permissions = { contents = "read" }
         ));
         assert!(matches!(
             load_cache_entry(&cache_dir, &key).unwrap(),
-            Some(CacheEntry::Run(RunCacheEntry {
+            Some(Record::Run(RunRecord {
                 state: RunState::CleanupPending,
                 ..
             }))
@@ -555,7 +550,7 @@ permissions = { contents = "read" }
         assert_eq!(&*client.revoked.borrow(), &["token-failed-revocation"]);
         assert!(matches!(
             load_cache_entry(&cache_dir, &key).unwrap(),
-            Some(CacheEntry::Run(RunCacheEntry {
+            Some(Record::Run(RunRecord {
                 state: RunState::CleanupPending,
                 ..
             }))

@@ -258,11 +258,12 @@ fn attempt_remote_revocation<C: RevokeTokenClient>(
 mod tests {
     use super::*;
     use crate::cache::{
-        BaseCacheEntry, CACHE_SCHEMA_VERSION, CacheEntry, RUN_CACHE_SCHEMA_VERSION, RunCacheEntry,
-        RunState, ScopedCacheEntry, authority_fingerprint, compute_cache_key,
-        compute_run_cache_key, list_all_cache_entries, save_cache_entry,
+        Record, compute_cache_key, compute_run_cache_key, list_all_cache_entries, save_cache_entry,
     };
-    use crate::domain::credential::{AccessToken, TokenExpiry};
+    use crate::credential::{
+        AccessToken, BaseCredential, ScopedCredential, TokenExpiry, authority_fingerprint,
+    };
+    use crate::run::{RunRecord, RunState};
     use std::cell::{Cell, RefCell};
     use time::Duration;
 
@@ -318,8 +319,7 @@ mod tests {
     }
 
     fn cache_base(cache_dir: &Path, expiry: OffsetDateTime) {
-        let entry = CacheEntry::Base(BaseCacheEntry {
-            version: CACHE_SCHEMA_VERSION,
+        let entry = Record::Base(BaseCredential {
             profile: "developer".into(),
             authority_fingerprint: authority_fingerprint("id", "acme"),
             github_user: "octocat".into(),
@@ -383,8 +383,7 @@ mod tests {
         save_cache_entry(
             &cache_dir,
             &scoped_key,
-            &CacheEntry::Scoped(ScopedCacheEntry {
-                version: CACHE_SCHEMA_VERSION,
+            &Record::Scoped(ScopedCredential {
                 profile: "reader".into(),
                 source_profile: "developer".into(),
                 source_authority_fingerprint: authority_fingerprint("id", "acme"),
@@ -499,13 +498,12 @@ mod tests {
         }
     }
 
-    fn mismatched_entries(expiry: OffsetDateTime) -> [(String, crate::cache::CacheEntry); 3] {
+    fn mismatched_entries(expiry: OffsetDateTime) -> [(String, Record); 3] {
         let authority = authority_fingerprint("id", "acme");
         [
             (
                 crate::token::base_cache_key("developer"),
-                crate::cache::CacheEntry::Base(BaseCacheEntry {
-                    version: CACHE_SCHEMA_VERSION,
+                Record::Base(BaseCredential {
                     profile: "developer".into(),
                     authority_fingerprint: authority.clone(),
                     github_user: "octocat".into(),
@@ -515,8 +513,7 @@ mod tests {
             ),
             (
                 compute_cache_key("reader", "acme/api"),
-                crate::cache::CacheEntry::Scoped(ScopedCacheEntry {
-                    version: CACHE_SCHEMA_VERSION,
+                Record::Scoped(ScopedCredential {
                     profile: "reader".into(),
                     source_profile: "developer".into(),
                     source_authority_fingerprint: authority.clone(),
@@ -530,8 +527,7 @@ mod tests {
             ),
             (
                 compute_run_cache_key("run-1"),
-                crate::cache::CacheEntry::Run(RunCacheEntry {
-                    version: RUN_CACHE_SCHEMA_VERSION,
+                Record::Run(RunRecord {
                     run_id: "run-1".into(),
                     state: RunState::Running,
                     wrapper_pid: 100,

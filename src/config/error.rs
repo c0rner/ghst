@@ -38,6 +38,7 @@ pub enum ConfigError {
         profile: String,
         reason: String,
     },
+    Platform(&'static str),
 }
 
 impl fmt::Display for ConfigError {
@@ -89,6 +90,19 @@ impl fmt::Display for ConfigError {
             Self::InvalidScopedProfile { profile, reason } => {
                 write!(f, "invalid scoped profile '{profile}': {reason}")
             }
+            Self::Platform(reason) => write!(f, "configuration platform error: {reason}"),
+        }
+    }
+}
+
+impl From<crate::fs::FsError> for ConfigError {
+    fn from(source: crate::fs::FsError) -> Self {
+        match source {
+            crate::fs::FsError::Io { path, source } => Self::Io { path, source },
+            crate::fs::FsError::InsecurePath { path, reason } => {
+                Self::InsecurePath { path, reason }
+            }
+            crate::fs::FsError::Platform(reason) => Self::Platform(reason),
         }
     }
 }
@@ -109,7 +123,8 @@ impl std::error::Error for ConfigError {
             | Self::ScopedFromNonApp { .. }
             | Self::ScopedFromSecretlessApp { .. }
             | Self::InvalidAppProfile { .. }
-            | Self::InvalidScopedProfile { .. } => None,
+            | Self::InvalidScopedProfile { .. }
+            | Self::Platform(_) => None,
         }
     }
 }
@@ -140,6 +155,15 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "I/O error for '/tmp/profiles.toml': disk full"
+        );
+    }
+
+    #[test]
+    fn platform_errors_do_not_report_empty_path() {
+        let error = ConfigError::from(crate::fs::FsError::Platform("unsupported descriptor"));
+        assert_eq!(
+            error.to_string(),
+            "configuration platform error: unsupported descriptor"
         );
     }
 }

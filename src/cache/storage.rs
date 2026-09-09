@@ -1,18 +1,23 @@
 use crate::cache::error::CacheError;
-use crate::cache::fs::{
-    LockMode, cache_dir_exists, cache_file_path, create_private_tempfile, ensure_cache_dir,
-    increment_epoch, open_private_file, read_epoch, sync_cache_dir, validate_cache_file,
-    with_cache_lock, with_locked_file,
+use crate::cache::key::{
+    cache_file_path, compute_cache_key, compute_run_cache_key, validate_cache_key,
 };
-use crate::cache::key::{compute_cache_key, compute_run_cache_key, validate_cache_key};
-use crate::cache::types::{CacheEntry, ReplaceCacheEntry, RunCacheEntry, RunState, SaveCacheEntry};
+use crate::cache::lock::{
+    LockMode, cache_dir_exists, ensure_cache_dir, increment_epoch, read_epoch, with_cache_lock,
+    with_locked_file,
+};
+use crate::cache::types::{
+    CACHE_SCHEMA_VERSION, CacheEntryDto, RUN_CACHE_SCHEMA_VERSION, Record, RecordWriteView,
+    ReplaceCacheEntry, RunRecordWriteView, SaveCacheEntry,
+};
+use crate::run::RunRecord;
 use std::ffi::OsStr;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 pub enum CacheInspectionState {
-    Current(Box<CacheEntry>),
+    Current(Box<Record>),
     Invalid,
 }
 
@@ -76,7 +81,7 @@ pub fn revoke_transaction<T>(
         };
         let result = operation(&mut transaction);
         if transaction.deleted {
-            sync_cache_dir(cache_dir)?;
+            crate::fs::sync_private_dir(cache_dir).map_err(CacheError::from)?;
         }
         Ok(result)
     })
@@ -135,7 +140,7 @@ fn inspect_unlocked(cache_dir: &Path) -> Result<Vec<CacheInspection>, CacheError
     Ok(entries)
 }
 
-/// Saves a `CacheEntry` to `cache_dir/<hash_key>.json`.
+/// Saves a `Record` to `cache_dir/<hash_key>.json`.
 ///
 /// A compatible current entry is retained. An expired or same-kind
 /// stale-provenance entry is atomically replaced. Malformed, inconsistent,
@@ -144,11 +149,12 @@ fn inspect_unlocked(cache_dir: &Path) -> Result<Vec<CacheInspection>, CacheError
 pub fn save_cache_entry(
     cache_dir: &Path,
     hash_key: &str,
-    entry: &CacheEntry,
+    entry: &Record,
 ) -> Result<SaveCacheEntry, CacheError> {
     ensure_cache_dir(cache_dir)?;
     validate_entry_key(hash_key, entry)?;
-    let json_bytes = serde_json::to_vec_pretty(entry).map_err(CacheError::Json)?;
+    let write_view = RecordWriteView::from(entry);
+    let json_bytes = serde_json::to_vec_pretty(&write_view).map_err(CacheError::Json)?;
 
     with_cache_lock(cache_dir, LockMode::Exclusive, || {
         save_unlocked(cache_dir, hash_key, entry, &json_bytes)
@@ -158,13 +164,14 @@ pub fn save_cache_entry(
 pub fn save_cache_candidate(
     cache_dir: &Path,
     hash_key: &str,
-    entry: &CacheEntry,
+    entry: &Record,
     epoch: u64,
     expected_base: Option<(&str, &str)>,
 ) -> Result<SaveCacheEntry, CacheError> {
     ensure_cache_dir(cache_dir)?;
     validate_entry_key(hash_key, entry)?;
-    let json_bytes = serde_json::to_vec_pretty(entry).map_err(CacheError::Json)?;
+    let write_view = RecordWriteView::from(entry);
+    let json_bytes = serde_json::to_vec_pretty(&write_view).map_err(CacheError::Json)?;
     with_locked_file(cache_dir, LockMode::Exclusive, |lock| {
         let actual = read_epoch(lock)?;
         if actual != epoch {
@@ -175,7 +182,7 @@ pub fn save_cache_candidate(
         }
         if let Some((base_key, generation)) = expected_base {
             let base = read_cache_entry(&cache_file_path(cache_dir, base_key))?;
-            if !matches!(base, Some(CacheEntry::Base(ref base)) if base.generation_fingerprint() == generation)
+            if !matches!(base, Some(Record::Base(ref base)) if base.generation_fingerprint() == generation)
             {
                 return Err(CacheError::BaseGenerationChanged);
             }
@@ -191,8 +198,8 @@ pub fn save_cache_candidate(
 pub fn replace_cache_candidate(
     cache_dir: &Path,
     hash_key: &str,
-    expected: &CacheEntry,
-    candidate: &CacheEntry,
+    expected: &Record,
+    candidate: &Record,
     epoch: u64,
     expected_base: (&str, &str),
     now: time::OffsetDateTime,
@@ -200,13 +207,14 @@ pub fn replace_cache_candidate(
     ensure_cache_dir(cache_dir)?;
     validate_entry_key(hash_key, expected)?;
     validate_entry_key(hash_key, candidate)?;
-    if !matches!(expected, CacheEntry::Scoped(_)) || !matches!(candidate, CacheEntry::Scoped(_)) {
+    if !matches!(expected, Record::Scoped(_)) || !matches!(candidate, Record::Scoped(_)) {
         return Err(CacheError::UnexpectedKind {
             expected: "scoped",
             actual: candidate.kind_name(),
         });
     }
-    let json_bytes = serde_json::to_vec_pretty(candidate).map_err(CacheError::Json)?;
+    let write_view = RecordWriteView::from(candidate);
+    let json_bytes = serde_json::to_vec_pretty(&write_view).map_err(CacheError::Json)?;
     with_locked_file(cache_dir, LockMode::Exclusive, |lock| {
         let actual = read_epoch(lock)?;
         if actual != epoch {
@@ -217,7 +225,7 @@ pub fn replace_cache_candidate(
         }
         let (base_key, generation) = expected_base;
         let base = read_cache_entry(&cache_file_path(cache_dir, base_key))?;
-        if !matches!(base, Some(CacheEntry::Base(ref base)) if base.generation_fingerprint() == generation)
+        if !matches!(base, Some(Record::Base(ref base)) if base.generation_fingerprint() == generation)
         {
             return Err(CacheError::BaseGenerationChanged);
         }
@@ -239,13 +247,13 @@ pub fn replace_cache_candidate(
 fn save_unlocked(
     cache_dir: &Path,
     hash_key: &str,
-    entry: &CacheEntry,
+    entry: &Record,
     json_bytes: &[u8],
 ) -> Result<SaveCacheEntry, CacheError> {
     let cache_file = cache_file_path(cache_dir, hash_key);
     if let Some(existing) = read_cache_entry(&cache_file)? {
         validate_entry_key(hash_key, &existing)?;
-        if matches!(&existing, CacheEntry::Run(_)) {
+        if matches!(&existing, Record::Run(_)) {
             return Err(CacheError::RunCollision(hash_key.to_owned()));
         }
         if existing.kind_name() != entry.kind_name() {
@@ -263,31 +271,19 @@ fn save_unlocked(
 }
 
 fn persist_cache_file(
-    cache_dir: &Path,
+    _cache_dir: &Path,
     cache_file: &Path,
     json_bytes: &[u8],
 ) -> Result<(), CacheError> {
-    let mut temporary = create_private_tempfile(cache_dir)?;
-    temporary
-        .as_file_mut()
-        .write_all(json_bytes)
-        .map_err(CacheError::Io)?;
-    temporary.as_file_mut().sync_all().map_err(CacheError::Io)?;
-    temporary
-        .persist(cache_file)
-        .map_err(|error| CacheError::Io(error.error))?;
-    sync_cache_dir(cache_dir)?;
-
-    let metadata = fs::symlink_metadata(cache_file).map_err(CacheError::Io)?;
-    validate_cache_file(cache_file, &metadata)
+    crate::fs::publish_replacement(cache_file, json_bytes).map_err(CacheError::from)
 }
 
-fn validate_entry_key(hash_key: &str, entry: &CacheEntry) -> Result<(), CacheError> {
+fn validate_entry_key(hash_key: &str, entry: &Record) -> Result<(), CacheError> {
     let actual_key = match entry {
-        CacheEntry::Base(_) | CacheEntry::Scoped(_) => {
+        Record::Base(_) | Record::Scoped(_) => {
             compute_cache_key(entry.profile(), entry.repo_scope())
         }
-        CacheEntry::Run(entry) => compute_run_cache_key(&entry.run_id),
+        Record::Run(entry) => compute_run_cache_key(&entry.run_id),
     };
     if actual_key == hash_key {
         Ok(())
@@ -302,23 +298,17 @@ fn validate_entry_key(hash_key: &str, entry: &CacheEntry) -> Result<(), CacheErr
 pub fn claim_abandoned_run(
     cache_dir: &Path,
     cache_key: &str,
-    expected: &RunCacheEntry,
-) -> Result<RunCacheEntry, CacheError> {
+    expected: &RunRecord,
+) -> Result<RunRecord, CacheError> {
     update_run(cache_dir, cache_key, |entry| {
-        if entry != expected || !matches!(entry.state, RunState::Pending | RunState::Running) {
-            return Err(CacheError::InvalidRunTransition(
-                "abandoned run changed while checking liveness",
-            ));
-        }
-        entry.state = RunState::CleanupPending;
-        Ok(())
+        entry.claim_abandoned(expected).map_err(CacheError::from)
     })
 }
 
 pub fn delete_run_after_cleanup(
     cache_dir: &Path,
     cache_key: &str,
-    expected: &RunCacheEntry,
+    expected: &RunRecord,
 ) -> Result<bool, CacheError> {
     if !cache_dir_exists(cache_dir)? {
         return Ok(false);
@@ -331,16 +321,14 @@ pub fn delete_run_after_cleanup(
         };
         validate_entry_key(cache_key, &entry)?;
         match entry {
-            CacheEntry::Run(entry)
-                if entry == *expected && entry.state == RunState::CleanupPending =>
-            {
+            Record::Run(entry) => {
+                entry
+                    .validate_cleanup_deletion(expected)
+                    .map_err(CacheError::from)?;
                 fs::remove_file(path).map_err(CacheError::Io)?;
-                sync_cache_dir(cache_dir)?;
+                crate::fs::sync_private_dir(cache_dir).map_err(CacheError::from)?;
                 Ok(true)
             }
-            CacheEntry::Run(_) => Err(CacheError::InvalidRunTransition(
-                "cleanup deletion ownership did not match",
-            )),
             other => Err(CacheError::UnexpectedKind {
                 expected: "run",
                 actual: other.kind_name(),
@@ -352,7 +340,7 @@ pub fn delete_run_after_cleanup(
 pub fn delete_entry_if_unchanged(
     cache_dir: &Path,
     cache_key: &str,
-    expected: &CacheEntry,
+    expected: &Record,
 ) -> Result<bool, CacheError> {
     if !cache_dir_exists(cache_dir)? {
         return Ok(false);
@@ -368,7 +356,7 @@ pub fn delete_entry_if_unchanged(
             return Ok(false);
         }
         fs::remove_file(path).map_err(CacheError::Io)?;
-        sync_cache_dir(cache_dir)?;
+        crate::fs::sync_private_dir(cache_dir).map_err(CacheError::from)?;
         Ok(true)
     })
 }
@@ -389,12 +377,12 @@ pub fn delete_base_if_generation(
         };
         validate_entry_key(cache_key, &entry)?;
         match entry {
-            CacheEntry::Base(entry) if entry.generation_fingerprint() == expected_generation => {
+            Record::Base(entry) if entry.generation_fingerprint() == expected_generation => {
                 fs::remove_file(path).map_err(CacheError::Io)?;
-                sync_cache_dir(cache_dir)?;
+                crate::fs::sync_private_dir(cache_dir).map_err(CacheError::from)?;
                 Ok(DeleteBaseOutcome::Deleted)
             }
-            CacheEntry::Base(_) => Ok(DeleteBaseOutcome::Changed),
+            Record::Base(_) => Ok(DeleteBaseOutcome::Changed),
             other => Err(CacheError::UnexpectedKind {
                 expected: "base",
                 actual: other.kind_name(),
@@ -406,8 +394,8 @@ pub fn delete_base_if_generation(
 pub(super) fn update_run(
     cache_dir: &Path,
     cache_key: &str,
-    operation: impl FnOnce(&mut RunCacheEntry) -> Result<(), CacheError>,
-) -> Result<RunCacheEntry, CacheError> {
+    operation: impl FnOnce(&mut RunRecord) -> Result<(), CacheError>,
+) -> Result<RunRecord, CacheError> {
     ensure_cache_dir(cache_dir)?;
     validate_cache_key(cache_key)?;
     with_cache_lock(cache_dir, LockMode::Exclusive, || {
@@ -417,7 +405,7 @@ pub(super) fn update_run(
         ))?;
         validate_entry_key(cache_key, &entry)?;
         let mut entry = match entry {
-            CacheEntry::Run(entry) => entry,
+            Record::Run(entry) => entry,
             other => {
                 return Err(CacheError::UnexpectedKind {
                     expected: "run",
@@ -426,9 +414,10 @@ pub(super) fn update_run(
             }
         };
         operation(&mut entry)?;
-        let bytes = serde_json::to_vec_pretty(&CacheEntry::Run(entry)).map_err(CacheError::Json)?;
+        let write_view = RecordWriteView::Run(RunRecordWriteView::from(&entry));
+        let bytes = serde_json::to_vec_pretty(&write_view).map_err(CacheError::Json)?;
         persist_cache_file(cache_dir, &path, &bytes)?;
-        let CacheEntry::Run(entry) = read_cache_entry(&path)?.ok_or(
+        let Record::Run(entry) = read_cache_entry(&path)?.ok_or(
             CacheError::InvalidRunTransition("run recovery entry disappeared after transition"),
         )?
         else {
@@ -438,11 +427,8 @@ pub(super) fn update_run(
     })
 }
 
-/// Loads a `CacheEntry` from `cache_dir/<hash_key>.json`.
-pub fn load_cache_entry(
-    cache_dir: &Path,
-    hash_key: &str,
-) -> Result<Option<CacheEntry>, CacheError> {
+/// Loads a `Record` from `cache_dir/<hash_key>.json`.
+pub fn load_cache_entry(cache_dir: &Path, hash_key: &str) -> Result<Option<Record>, CacheError> {
     if !cache_dir_exists(cache_dir)? {
         return Ok(None);
     }
@@ -472,22 +458,26 @@ pub fn delete_cache_entry(cache_dir: &Path, hash_key: &str) -> Result<bool, Cach
     validate_cache_key(hash_key)?;
     with_cache_lock(cache_dir, LockMode::Exclusive, || {
         let cache_file = cache_file_path(cache_dir, hash_key);
-        match fs::symlink_metadata(&cache_file) {
-            Ok(metadata) => {
-                validate_cache_file(&cache_file, &metadata)?;
+        match crate::fs::open_private_file(&cache_file) {
+            Ok(_) => {
                 fs::remove_file(&cache_file).map_err(CacheError::Io)?;
+                crate::fs::sync_private_dir(cache_dir).map_err(CacheError::from)?;
                 Ok(true)
             }
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(err) => Err(CacheError::Io(err)),
+            Err(crate::fs::FsError::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                Ok(false)
+            }
+            Err(err) => Err(CacheError::from(err)),
         }
     })
 }
 
 #[cfg(test)]
-pub type CacheFileEntries = Vec<(String, Result<CacheEntry, CacheError>)>;
+pub type CacheFileEntries = Vec<(String, Result<Record, CacheError>)>;
 
-/// Lists all cache entry files in `cache_dir`, returning `(hash_key, Result<CacheEntry, CacheError>)`.
+/// Lists all cache entry files in `cache_dir`, returning `(hash_key, Result<Record, CacheError>)`.
 #[cfg(test)]
 pub fn list_all_cache_entries(cache_dir: &Path) -> Result<CacheFileEntries, CacheError> {
     if !cache_dir_exists(cache_dir)? {
@@ -524,43 +514,42 @@ pub fn list_all_cache_entries(cache_dir: &Path) -> Result<CacheFileEntries, Cach
     })
 }
 
-fn read_cache_entry(cache_file: &Path) -> Result<Option<CacheEntry>, CacheError> {
-    match fs::symlink_metadata(cache_file) {
-        Ok(metadata) => {
-            validate_cache_file(cache_file, &metadata)?;
-            let mut content = String::new();
-            open_private_file(cache_file, false)?
-                .read_to_string(&mut content)
-                .map_err(CacheError::Io)?;
-            let header: CacheSchemaHeader =
-                serde_json::from_str(&content).map_err(|error| {
-                    tracing::debug!(path = %cache_file.display(), error = %error, "failed to decode cache entry header");
-                    CacheError::Json(error)
-                })?;
-            let expected_version = match header.kind.as_str() {
-                "base" | "scoped" => Some(crate::cache::CACHE_SCHEMA_VERSION),
-                "run" => Some(crate::cache::RUN_CACHE_SCHEMA_VERSION),
-                _ => None,
-            };
-            if let Some(expected) = expected_version
-                && header.version != Some(expected)
-            {
-                return Err(CacheError::UnsupportedSchema {
-                    kind: header.kind,
-                    version: header.version,
-                    expected,
-                });
-            }
-            serde_json::from_str(&content)
-                .map(Some)
-                .map_err(|error| {
-                    tracing::debug!(path = %cache_file.display(), error = %error, "failed to decode current cache entry");
-                    CacheError::Json(error)
-                })
+fn read_cache_entry(cache_file: &Path) -> Result<Option<Record>, CacheError> {
+    let mut file = match crate::fs::open_private_file(cache_file) {
+        Ok(file) => file,
+        Err(crate::fs::FsError::Io { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            return Ok(None);
         }
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(CacheError::Io(err)),
+        Err(error) => return Err(CacheError::from(error)),
+    };
+    let mut content = String::new();
+    file.read_to_string(&mut content).map_err(CacheError::Io)?;
+    let header: CacheSchemaHeader =
+        serde_json::from_str(&content).map_err(|error| {
+            tracing::debug!(path = %cache_file.display(), error = %error, "failed to decode cache entry header");
+            CacheError::Json(error)
+        })?;
+    let expected_version = match header.kind.as_str() {
+        "base" | "scoped" => Some(CACHE_SCHEMA_VERSION),
+        "run" => Some(RUN_CACHE_SCHEMA_VERSION),
+        _ => None,
+    };
+    if let Some(expected) = expected_version
+        && header.version != Some(expected)
+    {
+        return Err(CacheError::UnsupportedSchema {
+            kind: header.kind,
+            version: header.version,
+            expected,
+        });
     }
+    let dto: CacheEntryDto = serde_json::from_str(&content).map_err(|error| {
+        tracing::debug!(path = %cache_file.display(), error = %error, "failed to decode current cache entry");
+        CacheError::Json(error)
+    })?;
+    Ok(Some(Record::try_from(dto)?))
 }
 
 #[derive(serde::Deserialize)]

@@ -18,7 +18,7 @@ use std::str::FromStr;
 use time::format_description::well_known::Rfc3339;
 use time::{OffsetDateTime, UtcOffset, error::IndeterminateOffset};
 
-use crate::domain::credential::TokenExpiry;
+use crate::credential::TokenExpiry;
 
 pub const GHST_VERSION: &str = env!("CARGO_PKG_VERSION");
 

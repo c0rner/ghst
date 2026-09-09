@@ -25,11 +25,14 @@ pub enum CacheError {
     InvalidRunTransition(&'static str),
     MalformedEpoch,
     EpochExhausted,
+    #[allow(dead_code)]
     EpochChanged {
         expected: u64,
         actual: u64,
     },
+    #[allow(dead_code)]
     BaseGenerationChanged,
+    #[allow(dead_code)]
     RenewalEntryChanged,
     UnsupportedSchema {
         kind: String,

@@ -800,3 +800,191 @@ fn concurrent_saves_retain_one_compatible_winner() {
         1
     );
 }
+
+#[test]
+fn epoch_advance_during_revocation_rejects_stale_issuance_and_renewal() {
+    use crate::cache::store::CacheStore;
+    use crate::credential::store::{
+        IssuanceGuardStore, ReplaceOutcome, SaveOutcome, SourceGuard, WriteCredentials,
+    };
+    use crate::run::store::{PendingRunOutcome, PendingRunStore};
+    use crate::token::store::{BeginRevocation, RevocationSelection};
+
+    let temp = cache_dir();
+    let directory = temp.path().join("cache");
+    let store = CacheStore::new(&directory);
+    let now = OffsetDateTime::now_utc();
+
+    let base = base_entry("base-token", now + Duration::hours(1), "authority");
+    let Record::Base(base_data) = &base else {
+        panic!("expected base")
+    };
+    let generation = base_data.generation_fingerprint();
+    save_cache_entry(&directory, &base_key(), &base).unwrap();
+
+    let scoped_key = compute_cache_key("reader", "acme/api");
+    let existing_scoped = scoped_entry("scoped-old", now + Duration::minutes(5), &generation);
+    save_cache_entry(&directory, &scoped_key, &existing_scoped).unwrap();
+    let Record::Scoped(existing_scoped_data) = &existing_scoped else {
+        panic!("expected scoped")
+    };
+
+    let guard = store.issuance_guard().unwrap();
+
+    let batch = store.begin_revocation(RevocationSelection::All).unwrap();
+    assert!(matches!(
+        batch,
+        crate::token::store::RevocationBatch::Selected(_)
+    ));
+
+    let new_base = BaseCredential {
+        profile: "developer".into(),
+        authority_fingerprint: "authority".into(),
+        github_user: "octocat".into(),
+        expires_at: TokenExpiry::new(now + Duration::hours(2)),
+        access_token: "new-base-token".into(),
+    };
+    let base_outcome = store.commit_base(&new_base, guard).unwrap();
+    assert_eq!(base_outcome, SaveOutcome::EpochChanged);
+    let on_disk_base = load_cache_entry(&directory, &base_key()).unwrap().unwrap();
+    assert_eq!(on_disk_base.access_token().as_ref(), "base-token");
+
+    let new_scoped = ScopedCredential {
+        profile: "reader".into(),
+        source_profile: "developer".into(),
+        source_authority_fingerprint: "authority".into(),
+        parent_generation: generation.clone(),
+        policy_fingerprint: "policy".into(),
+        github_user: "octocat".into(),
+        repo_scope: "acme/api".into(),
+        expires_at: TokenExpiry::new(now + Duration::hours(2)),
+        access_token: "new-scoped-token".into(),
+    };
+    let source_guard = SourceGuard {
+        source_profile: "developer",
+        expected_generation: &generation,
+    };
+    let scoped_outcome = store
+        .commit_scoped(&new_scoped, guard, &source_guard)
+        .unwrap();
+    assert_eq!(scoped_outcome, SaveOutcome::EpochChanged);
+
+    let renewal_outcome = store
+        .renew_scoped(existing_scoped_data, &new_scoped, guard, &source_guard, now)
+        .unwrap();
+    assert_eq!(renewal_outcome, ReplaceOutcome::EpochChanged);
+    let on_disk_scoped = load_cache_entry(&directory, &scoped_key).unwrap().unwrap();
+    assert_eq!(on_disk_scoped.access_token().as_ref(), "scoped-old");
+
+    let run = RunRecord {
+        run_id: "run-stale".into(),
+        state: RunState::Pending,
+        wrapper_pid: 100,
+        child_pid: None,
+        command: "true".into(),
+        profile: "reader".into(),
+        source_profile: "developer".into(),
+        source_authority_fingerprint: "authority".into(),
+        github_user: "octocat".into(),
+        repo_scope: "acme/api".into(),
+        expires_at: TokenExpiry::new(now + Duration::hours(1)),
+        access_token: "run-token".into(),
+    };
+    let run_outcome = store.commit_pending(&run, guard, &source_guard).unwrap();
+    assert_eq!(run_outcome, PendingRunOutcome::EpochChanged);
+    let run_key = compute_run_cache_key("run-stale");
+    assert!(load_cache_entry(&directory, &run_key).unwrap().is_none());
+}
+
+#[test]
+fn revocation_selection_behavior_and_epoch_advance() {
+    use crate::cache::store::CacheStore;
+    use crate::credential::store::IssuanceGuardStore;
+    use crate::token::store::{BeginRevocation, RevocationBatch, RevocationSelection};
+
+    let temp = cache_dir();
+    let directory = temp.path().join("cache");
+    let store = CacheStore::new(&directory);
+    let now = OffsetDateTime::now_utc();
+
+    let base = base_entry("base-token", now + Duration::hours(1), "authority");
+    save_cache_entry(&directory, &base_key(), &base).unwrap();
+
+    let initial_epoch = store.issuance_guard().unwrap();
+
+    let batch = store
+        .begin_revocation(RevocationSelection::One(
+            &base_key()[..crate::cache::MIN_CACHE_ID_LENGTH],
+        ))
+        .unwrap();
+    let RevocationBatch::Selected(items) = batch else {
+        panic!("expected selected")
+    };
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].slot_id.as_deref(), Some(base_key().as_str()));
+
+    let after_first_epoch = store.issuance_guard().unwrap();
+    assert!(after_first_epoch.value() > initial_epoch.value());
+
+    let batch = store
+        .begin_revocation(RevocationSelection::One("ffffffffffffffff"))
+        .unwrap();
+    assert!(matches!(batch, RevocationBatch::NotFound));
+
+    let after_second_epoch = store.issuance_guard().unwrap();
+    assert!(after_second_epoch.value() > after_first_epoch.value());
+
+    let first = format!("0123456{}", "a".repeat(57));
+    let second = format!("0123456{}", "b".repeat(57));
+    fs::write(
+        directory.join(format!("{first}.json")),
+        b"{\"invalid\": true}",
+    )
+    .unwrap();
+    fs::write(directory.join(format!("{second}.json")), b"corrupt").unwrap();
+
+    let batch = store
+        .begin_revocation(RevocationSelection::One("0123456"))
+        .unwrap();
+    assert!(matches!(batch, RevocationBatch::Ambiguous));
+    assert!(directory.join(format!("{first}.json")).exists());
+    assert!(directory.join(format!("{second}.json")).exists());
+
+    let after_third_epoch = store.issuance_guard().unwrap();
+    assert!(after_third_epoch.value() > after_second_epoch.value());
+}
+
+#[test]
+fn exact_record_deletion_distinguishes_deleted_missing_and_changed() {
+    use crate::cache::store::CacheStore;
+    use crate::token::store::{DeleteInspectedRecord, DeleteOutcome, Record as TokenRecord};
+
+    let temp = cache_dir();
+    let directory = temp.path().join("cache");
+    let store = CacheStore::new(&directory);
+    let now = OffsetDateTime::now_utc();
+
+    let entry = base_entry("token-1", now + Duration::hours(1), "authority");
+    save_cache_entry(&directory, &base_key(), &entry).unwrap();
+
+    let expected = TokenRecord::Base(BaseCredential {
+        profile: "developer".into(),
+        authority_fingerprint: "authority".into(),
+        github_user: "octocat".into(),
+        expires_at: TokenExpiry::new(now + Duration::hours(1)),
+        access_token: "token-1".into(),
+    });
+
+    let outcome = store.delete_exact_record(&base_key(), &expected).unwrap();
+    assert_eq!(outcome, DeleteOutcome::Deleted);
+
+    let outcome = store.delete_exact_record(&base_key(), &expected).unwrap();
+    assert_eq!(outcome, DeleteOutcome::Missing);
+
+    let new_entry = base_entry("token-2", now + Duration::hours(2), "authority");
+    save_cache_entry(&directory, &base_key(), &new_entry).unwrap();
+
+    let outcome = store.delete_exact_record(&base_key(), &expected).unwrap();
+    assert_eq!(outcome, DeleteOutcome::Changed);
+    assert!(load_cache_entry(&directory, &base_key()).unwrap().is_some());
+}

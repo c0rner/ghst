@@ -10,6 +10,7 @@ pub(super) const RUN_CACHE_SCHEMA_VERSION: u32 = 3;
 pub use crate::token::store::Record;
 
 /// Result of attempting to persist an immutable cache entry.
+#[cfg(test)]
 #[derive(Debug)]
 pub enum SaveCacheEntry {
     Saved,
@@ -17,6 +18,7 @@ pub enum SaveCacheEntry {
 }
 
 /// Result of atomically replacing the exact scoped entry selected for renewal.
+#[cfg(test)]
 #[derive(Debug)]
 pub enum ReplaceCacheEntry {
     Replaced(Box<Record>),

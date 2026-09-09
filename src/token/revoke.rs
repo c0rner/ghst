@@ -709,4 +709,268 @@ mod tests {
             ),
         ]
     }
+
+    struct ConcurrentPausingClient {
+        started_tx: std::sync::mpsc::Sender<()>,
+        proceed_rx: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+
+    impl RevokeTokenClient for ConcurrentPausingClient {
+        fn delete_token(
+            &self,
+            _client_id: &str,
+            _client_secret: &str,
+            _access_token: &str,
+        ) -> Result<(), RemoteError> {
+            self.started_tx.send(()).unwrap();
+            self.proceed_rx
+                .lock()
+                .unwrap()
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn revocation_does_not_hold_cache_lock_across_network() {
+        use std::sync::Arc;
+
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let now = OffsetDateTime::now_utc();
+        cache_base(&cache_dir, now + Duration::hours(1));
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (proceed_tx, proceed_rx) = std::sync::mpsc::channel();
+
+        let client = Arc::new(ConcurrentPausingClient {
+            started_tx,
+            proceed_rx: std::sync::Mutex::new(proceed_rx),
+        });
+
+        let client_clone = Arc::clone(&client);
+        let cache_dir_clone = cache_dir.clone();
+        let worker = std::thread::spawn(move || {
+            let store = CacheStore::new(&cache_dir_clone);
+            revoke_all(&*client_clone, &config(true), &store, now).unwrap()
+        });
+
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("worker did not start network call in time");
+
+        // While the worker is blocked in HTTP, another store instance acquires the cache lock.
+        // If the workflow held the lock across HTTP, this operation would block or deadlock.
+        let store2 = CacheStore::new(&cache_dir);
+        let batch = store2
+            .begin_revocation(crate::token::store::RevocationSelection::All)
+            .expect("second adapter must acquire exclusive lock while HTTP is paused");
+        assert!(matches!(
+            batch,
+            crate::token::store::RevocationBatch::Selected(_)
+        ));
+
+        proceed_tx.send(()).unwrap();
+        let report = worker.join().unwrap();
+        assert_eq!(report.remotely_inactive, 1);
+        assert!(report.failures.is_empty());
+    }
+
+    #[test]
+    fn concurrent_replacement_during_revocation_survives_exact_finalization() {
+        use std::sync::Arc;
+
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let now = OffsetDateTime::now_utc();
+        cache_base(&cache_dir, now + Duration::hours(1));
+
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (proceed_tx, proceed_rx) = std::sync::mpsc::channel();
+
+        let client = Arc::new(ConcurrentPausingClient {
+            started_tx,
+            proceed_rx: std::sync::Mutex::new(proceed_rx),
+        });
+
+        let client_clone = Arc::clone(&client);
+        let cache_dir_clone = cache_dir.clone();
+        let worker = std::thread::spawn(move || {
+            let store = CacheStore::new(&cache_dir_clone);
+            revoke_all(&*client_clone, &config(true), &store, now).unwrap()
+        });
+
+        started_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("worker did not start network call in time");
+
+        // While worker is paused in HTTP, replace the entry on disk
+        let key = crate::token::base_cache_key("developer");
+        let path = cache_dir.join(format!("{key}.json"));
+        let expiry = TokenExpiry::new(now + Duration::hours(2));
+        let json = format!(
+            r#"{{"version": 5, "kind": "base", "profile": "developer", "authority_fingerprint": "{}", "github_user": "octocat", "expires_at": "{expiry}", "access_token": "newer-base-token"}}"#,
+            authority_fingerprint("id", "acme")
+        );
+        std::fs::write(&path, json).unwrap();
+
+        proceed_tx.send(()).unwrap();
+        let report = worker.join().unwrap();
+
+        assert_eq!(report.remotely_inactive, 0);
+        assert_eq!(report.retained, 1);
+        assert!(matches!(
+            report.failures.as_slice(),
+            [RevokeFailure::DeletedRecordChanged { .. }]
+        ));
+
+        // The replacement survives intact
+        let on_disk =
+            crate::cache::load_cache_entry(&cache_dir, &crate::token::base_cache_key("developer"))
+                .unwrap()
+                .unwrap();
+        assert_eq!(on_disk.access_token().as_ref(), "newer-base-token");
+    }
+
+    #[test]
+    fn handoff_margin_exact_boundaries_inside_and_outside_30_seconds() {
+        let now = OffsetDateTime::now_utc();
+
+        // 1. Inside margin (29s remaining): deleted locally without remote call
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let cache_dir = temp.path().join("cache");
+            cache_base(&cache_dir, now + Duration::seconds(29));
+            let client = MockClient(Cell::new(0));
+            let store = CacheStore::new(&cache_dir);
+            let report = revoke_all(&client, &config(true), &store, now).unwrap();
+            assert_eq!(client.0.get(), 0, "must not call GitHub inside margin");
+            assert_eq!(report.local_only, 1);
+            assert_eq!(report.remotely_inactive, 0);
+            assert_eq!(report.retained, 0);
+            assert!(report.failures.is_empty());
+            assert!(list_all_cache_entries(&cache_dir).unwrap().is_empty());
+        }
+
+        // 2. Outside margin (31s remaining): remote revocation executed
+        {
+            let temp = tempfile::tempdir().unwrap();
+            let cache_dir = temp.path().join("cache");
+            cache_base(&cache_dir, now + Duration::seconds(31));
+            let client = MockClient(Cell::new(0));
+            let store = CacheStore::new(&cache_dir);
+            let report = revoke_all(&client, &config(true), &store, now).unwrap();
+            assert_eq!(client.0.get(), 1, "must call GitHub outside margin");
+            assert_eq!(report.remotely_inactive, 1);
+            assert_eq!(report.local_only, 0);
+            assert_eq!(report.retained, 0);
+            assert!(report.failures.is_empty());
+            assert!(list_all_cache_entries(&cache_dir).unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn active_run_revocation_deletes_exact_record() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let now = OffsetDateTime::now_utc();
+        let run_key = compute_run_cache_key("active-run-1");
+        let run = Record::Run(RunRecord {
+            run_id: "active-run-1".into(),
+            state: RunState::Running,
+            wrapper_pid: 100,
+            child_pid: Some(101),
+            command: "sleep 10".into(),
+            profile: "reader".into(),
+            source_profile: "developer".into(),
+            source_authority_fingerprint: authority_fingerprint("id", "acme"),
+            github_user: "octocat".into(),
+            repo_scope: "acme/api".into(),
+            expires_at: TokenExpiry::new(now + Duration::hours(1)),
+            access_token: AccessToken::from("active-run-token"),
+        });
+        save_cache_entry(&cache_dir, &run_key, &run).unwrap();
+
+        let client = RecordingClient {
+            revoked: RefCell::new(Vec::new()),
+            fails: false,
+        };
+        let store = CacheStore::new(&cache_dir);
+        let report = revoke_all(&client, &config(true), &store, now).unwrap();
+
+        assert_eq!(report.remotely_inactive, 1);
+        assert_eq!(report.failures.len(), 0);
+        assert_eq!(&*client.revoked.borrow(), &["active-run-token"]);
+        assert!(list_all_cache_entries(&cache_dir).unwrap().is_empty());
+    }
+
+    struct NotFoundClient;
+
+    impl RevokeTokenClient for NotFoundClient {
+        fn delete_token(
+            &self,
+            _client_id: &str,
+            _client_secret: &str,
+            _access_token: &str,
+        ) -> Result<(), RemoteError> {
+            Err(RemoteError::Http {
+                status: 404,
+                message: "Not Found".into(),
+            })
+        }
+    }
+
+    #[test]
+    fn github_404_already_inactive_is_treated_as_successful() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        let now = OffsetDateTime::now_utc();
+        cache_base(&cache_dir, now + Duration::hours(1));
+
+        let store = CacheStore::new(&cache_dir);
+        let report = revoke_all(&NotFoundClient, &config(true), &store, now).unwrap();
+        assert_eq!(report.remotely_inactive, 1);
+        assert_eq!(report.retained, 0);
+        assert!(report.failures.is_empty());
+        assert!(list_all_cache_entries(&cache_dir).unwrap().is_empty());
+    }
+
+    #[test]
+    fn unsupported_schema_and_inconsistent_metadata_are_retained() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_dir = temp.path().join("cache");
+        crate::cache::ensure_cache_dir(&cache_dir).unwrap();
+        let now = OffsetDateTime::now_utc();
+
+        let unsupported_path = cache_dir.join(format!("{}.json", compute_cache_key("dev1", "all")));
+        std::fs::write(
+            &unsupported_path,
+            r#"{"version": 99, "kind": "base", "profile": "dev1"}"#,
+        )
+        .unwrap();
+
+        let inconsistent_path =
+            cache_dir.join(format!("{}.json", compute_cache_key("dev2", "all")));
+        let json = format!(
+            r#"{{"version": 1, "kind": "base", "profile": "wrong_profile", "authority_fingerprint": "{}", "github_user": "octocat", "expires_at": "{}", "access_token": "token"}}"#,
+            authority_fingerprint("id", "acme"),
+            (now + Duration::hours(1))
+                .format(&time::format_description::well_known::Rfc3339)
+                .unwrap()
+        );
+        std::fs::write(&inconsistent_path, json).unwrap();
+
+        let client = MockClient(Cell::new(0));
+        let store = CacheStore::new(&cache_dir);
+        let report = revoke_all(&client, &config(true), &store, now).unwrap();
+
+        assert_eq!(client.0.get(), 0);
+        assert_eq!(report.remotely_inactive, 0);
+        assert_eq!(report.local_only, 0);
+        assert_eq!(report.retained, 2);
+        assert_eq!(report.failures.len(), 2);
+        assert!(unsupported_path.exists());
+        assert!(inconsistent_path.exists());
+    }
 }

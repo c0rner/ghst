@@ -56,6 +56,7 @@ impl Record {
         self.expires_at().is_safe_to_handoff_at(now)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn compatible_with(&self, candidate: &Self, now: OffsetDateTime) -> bool {
         match (self, candidate) {
             (Self::Base(existing), Self::Base(candidate)) => {

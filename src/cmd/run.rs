@@ -29,6 +29,7 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
     let profile_name = resolve_profile_name(cmd.profile.as_deref(), &config)?;
     let profile = config.resolve_token_profile(&profile_name)?;
     let cache_dir = crate::config::cache_dir()?;
+    let store = crate::cache::CacheStore::new(&cache_dir);
     let client = GitHubClient::new();
     let wrapper_pid = std::process::id();
     let command_line = render_command_line(&cmd.command);
@@ -40,18 +41,17 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
     );
     let request = prepare_mint_request(
         &profile,
-        &cache_dir,
         &cmd.repo,
         wrapper_pid,
         &command_line,
         crate::git::resolve_origin_repo,
     )?;
-    let pending = crate::token::run::mint(&client, &request)?;
+    let pending = crate::token::run::mint(&client, &store, &request)?;
     #[cfg(unix)]
     let signals = match Forwarder::prepare() {
         Ok(signals) => signals,
         Err(error) => {
-            cleanup_before_handoff(&client, &config, &cache_dir, pending, None);
+            cleanup_before_handoff(&client, &config, &store, pending, None);
             return Err(CmdError::Io(error));
         }
     };
@@ -60,7 +60,7 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
     let mut child = match spawn_command(cmd, pending.access_token()) {
         Ok(child) => child,
         Err(error) => {
-            cleanup_before_handoff(&client, &config, &cache_dir, pending, None);
+            cleanup_before_handoff(&client, &config, &store, pending, None);
             return Err(CmdError::Io(error));
         }
     };
@@ -72,12 +72,12 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
         Ok(forwarder) => forwarder,
         Err(error) => {
             terminate_and_wait(&mut child);
-            cleanup_before_handoff(&client, &config, &cache_dir, pending, Some(child_pid));
+            cleanup_before_handoff(&client, &config, &store, pending, Some(child_pid));
             return Err(CmdError::Io(error));
         }
     };
 
-    let active = match pending.activate(&cache_dir, child_pid) {
+    let active = match pending.activate(&store, child_pid) {
         Ok(active) => active,
         Err(error) => {
             let (source, pending) = error.into_parts();
@@ -85,7 +85,7 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
             #[cfg(unix)]
             forwarder.stop();
             terminate_and_wait(&mut child);
-            cleanup_before_handoff(&client, &config, &cache_dir, pending, Some(child_pid));
+            cleanup_before_handoff(&client, &config, &store, pending, Some(child_pid));
             return Err(CmdError::Cache(source));
         }
     };
@@ -105,14 +105,13 @@ fn execute(args: &GhstCli, cmd: &RunCmd) -> Result<i32, CmdError> {
             1
         }
     };
-    let report = active.finish(&client, &config, &cache_dir);
+    let report = active.finish(&client, &config, &store);
     report_cleanup(child_pid, report);
     Ok(code)
 }
 
 fn prepare_mint_request<'a>(
     profile: &'a crate::domain::profile::ResolvedTokenProfile<'a>,
-    cache_dir: &'a std::path::Path,
     cli_repositories: &[String],
     wrapper_pid: u32,
     command: &'a str,
@@ -141,7 +140,6 @@ fn prepare_mint_request<'a>(
         resolve_auto,
     )?;
     Ok(MintRunRequest {
-        cache_dir,
         profile_name,
         source_name,
         app: *app,
@@ -173,7 +171,10 @@ fn render_command_line(command: &[std::ffi::OsString]) -> String {
 
 fn report_cleanup(
     child_pid: u32,
-    report: Result<crate::token::cleanup::CleanupReport, crate::cache::CacheError>,
+    report: Result<
+        crate::token::cleanup::CleanupReport<crate::cache::CacheError>,
+        crate::cache::CacheError,
+    >,
 ) {
     match report {
         Ok(report) if report.is_complete() => {
@@ -211,11 +212,11 @@ fn spawn_command(cmd: &RunCmd, token: &str) -> std::io::Result<std::process::Chi
 fn cleanup_before_handoff(
     client: &GitHubClient,
     config: &crate::config::Config,
-    cache_dir: &std::path::Path,
+    store: &crate::cache::CacheStore,
     pending: PendingRun,
     child_pid: Option<u32>,
 ) {
-    let report = pending.abort(client, config, cache_dir, child_pid);
+    let report = pending.abort(client, config, store, child_pid);
     match report {
         Ok(report) if report.is_complete() => {
             tracing::debug!("pending run token was cleaned up before child handoff");
@@ -389,8 +390,7 @@ permissions = { contents = "read" }
     fn run_rejects_app_profiles_before_minting() {
         let config = test_config();
         let profile = config.resolve_token_profile("developer").unwrap();
-        let temp = tempfile::tempdir().unwrap();
-        let result = prepare_mint_request(&profile, temp.path(), &[], 100, "true", || {
+        let result = prepare_mint_request(&profile, &[], 100, "true", || {
             panic!("auto must not be called")
         });
         assert!(matches!(
@@ -403,15 +403,9 @@ permissions = { contents = "read" }
     fn run_returns_repository_resolution_failure_before_minting() {
         let config = test_config();
         let profile = config.resolve_token_profile("reader").unwrap();
-        let temp = tempfile::tempdir().unwrap();
-        let result = prepare_mint_request(
-            &profile,
-            temp.path(),
-            &["invalid-repo".into()],
-            100,
-            "true",
-            || panic!("auto must not be called"),
-        );
+        let result = prepare_mint_request(&profile, &["invalid-repo".into()], 100, "true", || {
+            panic!("auto must not be called")
+        });
         assert!(matches!(
             result,
             Err(CmdError::Repository(
@@ -424,15 +418,9 @@ permissions = { contents = "read" }
     fn auto_is_not_invoked_for_run_with_explicit_selection() {
         let config = test_config();
         let profile = config.resolve_token_profile("reader").unwrap();
-        let temp = tempfile::tempdir().unwrap();
-        let request = prepare_mint_request(
-            &profile,
-            temp.path(),
-            &["acme/other".into()],
-            100,
-            "true",
-            || panic!("auto must not be called"),
-        )
+        let request = prepare_mint_request(&profile, &["acme/other".into()], 100, "true", || {
+            panic!("auto must not be called")
+        })
         .unwrap();
         assert_eq!(request.profile_name, "reader");
         assert_eq!(request.repositories.canonical(), "acme/other");

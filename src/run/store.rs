@@ -2,7 +2,7 @@ use crate::credential::store::{IssuanceGuard, SourceGuard};
 use crate::run::RunRecord;
 
 /// Outcome of committing a pending run recovery record.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PendingRunOutcome {
     Saved,
     EpochChanged,

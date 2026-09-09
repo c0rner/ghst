@@ -49,12 +49,12 @@ impl RevokeTransaction {
         let path = &self.entries[index].path;
         match fs::symlink_metadata(path) {
             Ok(_) => {
-                fs::remove_file(path).map_err(CacheError::Io)?;
+                fs::remove_file(path).map_err(|err| CacheError::io(path, err))?;
                 self.deleted = true;
                 Ok(true)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
-            Err(error) => Err(CacheError::Io(error)),
+            Err(error) => Err(CacheError::io(path, error)),
         }
     }
 }
@@ -89,8 +89,8 @@ pub fn revoke_transaction<T>(
 
 fn inspect_unlocked(cache_dir: &Path) -> Result<Vec<CacheInspection>, CacheError> {
     let mut entries = Vec::new();
-    for item in fs::read_dir(cache_dir).map_err(CacheError::Io)? {
-        let item = item.map_err(CacheError::Io)?;
+    for item in fs::read_dir(cache_dir).map_err(|err| CacheError::io(cache_dir, err))? {
+        let item = item.map_err(|err| CacheError::io(cache_dir, err))?;
         let path = item.path();
         if path.extension() != Some(OsStr::new("json")) {
             continue;
@@ -325,7 +325,7 @@ pub fn delete_run_after_cleanup(
                 entry
                     .validate_cleanup_deletion(expected)
                     .map_err(CacheError::from)?;
-                fs::remove_file(path).map_err(CacheError::Io)?;
+                fs::remove_file(&path).map_err(|err| CacheError::io(&path, err))?;
                 crate::fs::sync_private_dir(cache_dir).map_err(CacheError::from)?;
                 Ok(true)
             }
@@ -355,7 +355,7 @@ pub fn delete_entry_if_unchanged(
         if &entry != expected {
             return Ok(false);
         }
-        fs::remove_file(path).map_err(CacheError::Io)?;
+        fs::remove_file(&path).map_err(|err| CacheError::io(&path, err))?;
         crate::fs::sync_private_dir(cache_dir).map_err(CacheError::from)?;
         Ok(true)
     })
@@ -378,7 +378,7 @@ pub fn delete_base_if_generation(
         validate_entry_key(cache_key, &entry)?;
         match entry {
             Record::Base(entry) if entry.generation_fingerprint() == expected_generation => {
-                fs::remove_file(path).map_err(CacheError::Io)?;
+                fs::remove_file(&path).map_err(|err| CacheError::io(&path, err))?;
                 crate::fs::sync_private_dir(cache_dir).map_err(CacheError::from)?;
                 Ok(DeleteBaseOutcome::Deleted)
             }
@@ -460,7 +460,7 @@ pub fn delete_cache_entry(cache_dir: &Path, hash_key: &str) -> Result<bool, Cach
         let cache_file = cache_file_path(cache_dir, hash_key);
         match crate::fs::open_private_file(&cache_file) {
             Ok(_) => {
-                fs::remove_file(&cache_file).map_err(CacheError::Io)?;
+                fs::remove_file(&cache_file).map_err(|err| CacheError::io(&cache_file, err))?;
                 crate::fs::sync_private_dir(cache_dir).map_err(CacheError::from)?;
                 Ok(true)
             }
@@ -486,9 +486,9 @@ pub fn list_all_cache_entries(cache_dir: &Path) -> Result<CacheFileEntries, Cach
 
     with_cache_lock(cache_dir, LockMode::Exclusive, || {
         let mut entries = Vec::new();
-        let read_dir = fs::read_dir(cache_dir).map_err(CacheError::Io)?;
+        let read_dir = fs::read_dir(cache_dir).map_err(|err| CacheError::io(cache_dir, err))?;
         for entry in read_dir {
-            let entry = entry.map_err(CacheError::Io)?;
+            let entry = entry.map_err(|err| CacheError::io(cache_dir, err))?;
             let path = entry.path();
             if path.extension() != Some(OsStr::new("json")) {
                 continue;
@@ -525,7 +525,8 @@ fn read_cache_entry(cache_file: &Path) -> Result<Option<Record>, CacheError> {
         Err(error) => return Err(CacheError::from(error)),
     };
     let mut content = String::new();
-    file.read_to_string(&mut content).map_err(CacheError::Io)?;
+    file.read_to_string(&mut content)
+        .map_err(|err| CacheError::io(cache_file, err))?;
     let header: CacheSchemaHeader =
         serde_json::from_str(&content).map_err(|error| {
             tracing::debug!(path = %cache_file.display(), error = %error, "failed to decode cache entry header");

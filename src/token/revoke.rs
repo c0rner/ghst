@@ -149,11 +149,14 @@ fn revoke_selected<C: RevokeTokenClient>(
                     tracing::debug!(entry = label, "deleted credential from local cache only");
                 }
                 Ok(false) => report.failures.push(RevokeFailure::CacheDeletion {
-                    entry: label,
-                    source: crate::cache::CacheError::Io(std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        "cache entry disappeared",
-                    )),
+                    entry: label.clone(),
+                    source: crate::cache::CacheError::io(
+                        &label,
+                        std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            "cache entry disappeared",
+                        ),
+                    ),
                 }),
                 Err(source) => {
                     tracing::debug!(entry = label, error = %source, "failed to delete credential from local cache");

@@ -47,16 +47,20 @@ pub(super) fn with_locked_file<T>(
     ensure_cache_dir(cache_dir)?;
     let mut file = open_cache_lock_file(cache_dir)?;
     match mode {
-        LockMode::Shared => fs2::FileExt::lock_shared(&file).map_err(CacheError::Io)?,
-        LockMode::Exclusive => fs2::FileExt::lock_exclusive(&file).map_err(CacheError::Io)?,
+        LockMode::Shared => fs2::FileExt::lock_shared(&file).map_err(CacheError::descriptor_io)?,
+        LockMode::Exclusive => {
+            fs2::FileExt::lock_exclusive(&file).map_err(CacheError::descriptor_io)?;
+        }
     }
     operation(&mut file)
 }
 
 pub(super) fn read_epoch(file: &mut File) -> Result<u64, CacheError> {
-    file.seek(SeekFrom::Start(0)).map_err(CacheError::Io)?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(CacheError::descriptor_io)?;
     let mut value = String::new();
-    file.read_to_string(&mut value).map_err(CacheError::Io)?;
+    file.read_to_string(&mut value)
+        .map_err(CacheError::descriptor_io)?;
     if value.is_empty() {
         return Ok(0);
     }
@@ -67,10 +71,11 @@ pub(super) fn increment_epoch(file: &mut File) -> Result<u64, CacheError> {
     let epoch = read_epoch(file)?
         .checked_add(1)
         .ok_or(CacheError::EpochExhausted)?;
-    file.set_len(0).map_err(CacheError::Io)?;
-    file.seek(SeekFrom::Start(0)).map_err(CacheError::Io)?;
-    writeln!(file, "{epoch}").map_err(CacheError::Io)?;
-    file.sync_all().map_err(CacheError::Io)?;
+    file.set_len(0).map_err(CacheError::descriptor_io)?;
+    file.seek(SeekFrom::Start(0))
+        .map_err(CacheError::descriptor_io)?;
+    writeln!(file, "{epoch}").map_err(CacheError::descriptor_io)?;
+    file.sync_all().map_err(CacheError::descriptor_io)?;
     Ok(epoch)
 }
 

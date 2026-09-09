@@ -8,6 +8,7 @@ mod provenance;
 pub mod revoke;
 pub mod run;
 mod scoped;
+pub mod store;
 mod types;
 mod validation;
 
@@ -23,6 +24,7 @@ pub use ports::{
     IssuedBaseToken, IssuedScopedToken, RemoteError, RevokeTokenClient, ScopedTokenClient,
     ScopedTokenRequest,
 };
+pub use store::Record;
 pub use types::{AcquireRequest, AcquiredToken, BasePersistence, BaseTokenStatus};
 pub use validation::{validate_base_expiry, validate_scoped_expiry};
 

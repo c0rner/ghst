@@ -3,14 +3,10 @@ use crate::cache::key::{
     cache_file_path, compute_cache_key, compute_run_cache_key, validate_cache_key,
 };
 use crate::cache::lock::{LockMode, cache_dir_exists, ensure_cache_dir, with_cache_lock};
-#[cfg(test)]
-use crate::cache::lock::{read_epoch, with_locked_file};
 use crate::cache::types::{
     CACHE_SCHEMA_VERSION, CacheEntryDto, RUN_CACHE_SCHEMA_VERSION, Record, RecordWriteView,
     RunRecordWriteView,
 };
-#[cfg(test)]
-use crate::cache::types::{ReplaceCacheEntry, SaveCacheEntry};
 use crate::run::RunRecord;
 use std::ffi::OsStr;
 use std::fs;
@@ -91,114 +87,20 @@ pub(super) fn inspect_unlocked(cache_dir: &Path) -> Result<Vec<CacheInspection>,
     Ok(entries)
 }
 
-/// Saves a `Record` to `cache_dir/<hash_key>.json`.
-///
-/// A compatible current entry is retained. An expired or same-kind
-/// stale-provenance entry is atomically replaced. Malformed, inconsistent,
-/// wrong-kind, and unsupported-schema entries fail closed and are retained.
+/// Test helper that directly writes a serialized `Record` to `cache_dir/<hash_key>.json`.
+/// Does not implement locking, epochs, or compatibility policy.
 #[cfg(test)]
-pub fn save_cache_entry(
+pub fn write_test_entry(
     cache_dir: &Path,
     hash_key: &str,
     entry: &Record,
-) -> Result<SaveCacheEntry, CacheError> {
+) -> Result<(), CacheError> {
     ensure_cache_dir(cache_dir)?;
     validate_entry_key(hash_key, entry)?;
     let write_view = RecordWriteView::from(entry);
     let json_bytes = serde_json::to_vec_pretty(&write_view).map_err(CacheError::Json)?;
-
-    with_cache_lock(cache_dir, LockMode::Exclusive, || {
-        save_unlocked(cache_dir, hash_key, entry, &json_bytes)
-    })
-}
-
-/// Replaces the exact scoped entry selected for renewal under the cache lock.
-///
-/// A compatible entry written by a concurrent renewal is retained instead. The
-/// caller owns cleanup of either the displaced token or its unused candidate.
-#[cfg(test)]
-pub fn replace_cache_candidate(
-    cache_dir: &Path,
-    hash_key: &str,
-    expected: &Record,
-    candidate: &Record,
-    epoch: u64,
-    expected_base: (&str, &str),
-    now: time::OffsetDateTime,
-) -> Result<ReplaceCacheEntry, CacheError> {
-    ensure_cache_dir(cache_dir)?;
-    validate_entry_key(hash_key, expected)?;
-    validate_entry_key(hash_key, candidate)?;
-    if !matches!(expected, Record::Scoped(_)) || !matches!(candidate, Record::Scoped(_)) {
-        return Err(CacheError::UnexpectedKind {
-            expected: "scoped",
-            actual: candidate.kind_name(),
-        });
-    }
-    let write_view = RecordWriteView::from(candidate);
-    let json_bytes = serde_json::to_vec_pretty(&write_view).map_err(CacheError::Json)?;
-    with_locked_file(cache_dir, LockMode::Exclusive, |lock| {
-        let actual = read_epoch(lock)?;
-        if actual != epoch {
-            return Err(CacheError::EpochChanged {
-                expected: epoch,
-                actual,
-            });
-        }
-        let (base_key, generation) = expected_base;
-        let base = read_cache_entry(&cache_file_path(cache_dir, base_key))?;
-        if !matches!(base, Some(Record::Base(ref base)) if base.generation_fingerprint() == generation)
-        {
-            return Err(CacheError::BaseGenerationChanged);
-        }
-
-        let cache_file = cache_file_path(cache_dir, hash_key);
-        let current = read_cache_entry(&cache_file)?.ok_or(CacheError::RenewalEntryChanged)?;
-        validate_entry_key(hash_key, &current)?;
-        if &current == expected {
-            persist_cache_file(cache_dir, &cache_file, &json_bytes)?;
-            return Ok(ReplaceCacheEntry::Replaced(Box::new(current)));
-        }
-        if current.compatible_with(candidate, now) {
-            return Ok(ReplaceCacheEntry::Retained(Box::new(current)));
-        }
-        Err(CacheError::RenewalEntryChanged)
-    })
-}
-
-#[cfg(test)]
-fn save_unlocked(
-    cache_dir: &Path,
-    hash_key: &str,
-    entry: &Record,
-    json_bytes: &[u8],
-) -> Result<SaveCacheEntry, CacheError> {
     let cache_file = cache_file_path(cache_dir, hash_key);
-    if let Some(existing) = read_cache_entry(&cache_file)? {
-        validate_entry_key(hash_key, &existing)?;
-        if matches!(&existing, Record::Run(_)) {
-            return Err(CacheError::RunCollision(hash_key.to_owned()));
-        }
-        if existing.kind_name() != entry.kind_name() {
-            return Err(CacheError::UnexpectedKind {
-                expected: entry.kind_name(),
-                actual: existing.kind_name(),
-            });
-        }
-        if existing.compatible_with(entry, time::OffsetDateTime::now_utc()) {
-            return Ok(SaveCacheEntry::Retained(Box::new(existing)));
-        }
-    }
-    persist_cache_file(cache_dir, &cache_file, json_bytes)?;
-    Ok(SaveCacheEntry::Saved)
-}
-
-fn persist_cache_file(
-    _cache_dir: &Path,
-    cache_file: &Path,
-    json_bytes: &[u8],
-) -> Result<(), CacheError> {
-    crate::fs::publish_replacement(cache_file, json_bytes).map_err(CacheError::from)
+    crate::fs::publish_replacement(&cache_file, &json_bytes).map_err(CacheError::from)
 }
 
 pub(super) fn validate_entry_key(hash_key: &str, entry: &Record) -> Result<(), CacheError> {
@@ -315,7 +217,7 @@ pub(super) fn update_run(
         operation(&mut entry)?;
         let write_view = RecordWriteView::Run(RunRecordWriteView::from(&entry));
         let bytes = serde_json::to_vec_pretty(&write_view).map_err(CacheError::Json)?;
-        persist_cache_file(cache_dir, &path, &bytes)?;
+        crate::fs::publish_replacement(&path, &bytes).map_err(CacheError::from)?;
         let Record::Run(entry) = read_cache_entry(&path)?.ok_or(
             CacheError::InvalidRunTransition("run recovery entry disappeared after transition"),
         )?
@@ -347,30 +249,19 @@ pub fn load_cache_entry(cache_dir: &Path, hash_key: &str) -> Result<Option<Recor
     result
 }
 
-/// Deletes a cache entry file `cache_dir/<hash_key>.json`.
+/// Test helper that deletes a cache entry file `cache_dir/<hash_key>.json`.
+/// Does not implement locking or directory synchronization.
 #[cfg(test)]
 pub fn delete_cache_entry(cache_dir: &Path, hash_key: &str) -> Result<bool, CacheError> {
     if !cache_dir_exists(cache_dir)? {
         return Ok(false);
     }
-
-    validate_cache_key(hash_key)?;
-    with_cache_lock(cache_dir, LockMode::Exclusive, || {
-        let cache_file = cache_file_path(cache_dir, hash_key);
-        match crate::fs::open_private_file(&cache_file) {
-            Ok(_) => {
-                fs::remove_file(&cache_file).map_err(|err| CacheError::io(&cache_file, err))?;
-                crate::fs::sync_private_dir(cache_dir).map_err(CacheError::from)?;
-                Ok(true)
-            }
-            Err(crate::fs::FsError::Io { source, .. })
-                if source.kind() == std::io::ErrorKind::NotFound =>
-            {
-                Ok(false)
-            }
-            Err(err) => Err(CacheError::from(err)),
-        }
-    })
+    let cache_file = cache_file_path(cache_dir, hash_key);
+    match fs::remove_file(&cache_file) {
+        Ok(()) => Ok(true),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(CacheError::io(&cache_file, err)),
+    }
 }
 
 #[cfg(test)]

@@ -55,19 +55,6 @@ impl Record {
     pub fn is_safe_to_handoff_at(&self, now: OffsetDateTime) -> bool {
         self.expires_at().is_safe_to_handoff_at(now)
     }
-
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn compatible_with(&self, candidate: &Self, now: OffsetDateTime) -> bool {
-        match (self, candidate) {
-            (Self::Base(existing), Self::Base(candidate)) => {
-                existing.compatible_with(candidate, now)
-            }
-            (Self::Scoped(existing), Self::Scoped(candidate)) => {
-                existing.compatible_with(candidate, now)
-            }
-            _ => false,
-        }
-    }
 }
 
 impl fmt::Debug for Record {

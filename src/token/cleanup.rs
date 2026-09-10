@@ -387,7 +387,7 @@ fn pid_is_alive(_pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::{Record, compute_run_cache_key, load_cache_entry, save_cache_entry};
+    use crate::cache::{Record, compute_run_cache_key, load_cache_entry, write_test_entry};
     use crate::credential::{TokenExpiry, authority_fingerprint};
     use crate::run::{RunRecord, RunState};
     use std::cell::{Cell, RefCell};
@@ -473,7 +473,7 @@ permissions = { contents = "read" }
             ("active", std::process::id()),
             ("abandoned", i32::MAX as u32),
         ] {
-            save_cache_entry(
+            write_test_entry(
                 &cache_dir,
                 &compute_run_cache_key(id),
                 &run_entry(
@@ -511,7 +511,7 @@ permissions = { contents = "read" }
         let cache_dir = temp.path().join("cache");
         let now = OffsetDateTime::now_utc();
         let key = compute_run_cache_key("expired");
-        save_cache_entry(
+        write_test_entry(
             &cache_dir,
             &key,
             &run_entry(
@@ -548,7 +548,7 @@ permissions = { contents = "read" }
             unreachable!("run_entry returned a non-run entry")
         };
         entry.source_authority_fingerprint = authority_fingerprint("other-id", "different");
-        save_cache_entry(&cache_dir, &key, &cached).unwrap();
+        write_test_entry(&cache_dir, &key, &cached).unwrap();
 
         let client = client();
         let store = crate::cache::CacheStore::new(&cache_dir);
@@ -575,7 +575,7 @@ permissions = { contents = "read" }
         let cache_dir = temp.path().join("cache");
         let now = OffsetDateTime::now_utc();
         let key = compute_run_cache_key("failed-revocation");
-        save_cache_entry(
+        write_test_entry(
             &cache_dir,
             &key,
             &run_entry(
@@ -626,39 +626,20 @@ permissions = { contents = "read" }
     impl RunLifecycleStore for PostUnlinkSyncFailingStore {
         type Error = crate::cache::CacheError;
 
-        fn activate(
-            &self,
-            run_id: &str,
-            wrapper_pid: u32,
-            child_pid: u32,
-        ) -> Result<RunRecord, Self::Error> {
-            self.inner.activate(run_id, wrapper_pid, child_pid)
+        fn activate(&self, _: &str, _: u32, _: u32) -> Result<RunRecord, Self::Error> {
+            unreachable!()
         }
-
-        fn abort(
-            &self,
-            run_id: &str,
-            wrapper_pid: u32,
-            child_pid: Option<u32>,
-        ) -> Result<RunRecord, Self::Error> {
-            self.inner.abort(run_id, wrapper_pid, child_pid)
+        fn abort(&self, _: &str, _: u32, _: Option<u32>) -> Result<RunRecord, Self::Error> {
+            unreachable!()
         }
-
-        fn finish(
-            &self,
-            run_id: &str,
-            wrapper_pid: u32,
-            child_pid: u32,
-        ) -> Result<RunRecord, Self::Error> {
-            self.inner.finish(run_id, wrapper_pid, child_pid)
+        fn finish(&self, _: &str, _: u32, _: u32) -> Result<RunRecord, Self::Error> {
+            unreachable!()
         }
-
-        fn claim_abandoned(&self, expected: &RunRecord) -> Result<RunRecord, Self::Error> {
-            self.inner.claim_abandoned(expected)
+        fn claim_abandoned(&self, _: &RunRecord) -> Result<RunRecord, Self::Error> {
+            unreachable!()
         }
-
-        fn delete_cleanup_pending(&self, expected: &RunRecord) -> Result<bool, Self::Error> {
-            self.inner.delete_cleanup_pending(expected)
+        fn delete_cleanup_pending(&self, _: &RunRecord) -> Result<bool, Self::Error> {
+            unreachable!()
         }
     }
 
@@ -687,7 +668,7 @@ permissions = { contents = "read" }
         let cache_dir = temp.path().join("cache");
         let now = OffsetDateTime::now_utc();
         let key = compute_run_cache_key("expired");
-        save_cache_entry(
+        write_test_entry(
             &cache_dir,
             &key,
             &run_entry(

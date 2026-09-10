@@ -15,8 +15,8 @@ use crate::cache::types::{
     BaseRecordWriteView, RecordWriteView, RunRecordWriteView, ScopedRecordWriteView,
 };
 use crate::credential::store::{
-    DeleteBaseOutcome, IssuanceGuard, IssuanceGuardStore, ReadCredentials, ReplaceOutcome,
-    SaveOutcome, SourceGuard, WriteCredentials,
+    CommitBaseOutcome, CommitScopedOutcome, DeleteBaseOutcome, IssuanceGuard, IssuanceGuardStore,
+    ReadCredentials, ReplaceOutcome, SourceGuard, WriteCredentials,
 };
 use crate::credential::{BaseCredential, ScopedCredential};
 use crate::run::RunRecord;
@@ -123,7 +123,7 @@ impl WriteCredentials for CacheStore {
         &self,
         candidate: &BaseCredential,
         guard: IssuanceGuard,
-    ) -> Result<SaveOutcome<BaseCredential>, Self::Error> {
+    ) -> Result<CommitBaseOutcome, Self::Error> {
         ensure_cache_dir(&self.path)?;
         let key = compute_cache_key(&candidate.profile, "all");
         let write_view = RecordWriteView::Base(BaseRecordWriteView::from(candidate));
@@ -132,7 +132,7 @@ impl WriteCredentials for CacheStore {
         with_locked_file(&self.path, LockMode::Exclusive, |lock| {
             let actual = read_epoch(lock)?;
             if actual != guard.value() {
-                return Ok(SaveOutcome::EpochChanged);
+                return Ok(CommitBaseOutcome::EpochChanged);
             }
             let cache_file = cache_file_path(&self.path, &key);
             if let Some(existing) = read_cache_entry(&cache_file)? {
@@ -140,7 +140,7 @@ impl WriteCredentials for CacheStore {
                 match existing {
                     Record::Base(b) => {
                         if b.compatible_with(candidate, OffsetDateTime::now_utc()) {
-                            return Ok(SaveOutcome::Retained(b));
+                            return Ok(CommitBaseOutcome::Retained(b));
                         }
                     }
                     other => {
@@ -152,7 +152,7 @@ impl WriteCredentials for CacheStore {
                 }
             }
             crate::fs::publish_replacement(&cache_file, &json_bytes).map_err(CacheError::from)?;
-            Ok(SaveOutcome::Saved)
+            Ok(CommitBaseOutcome::Saved)
         })
     }
 
@@ -161,7 +161,7 @@ impl WriteCredentials for CacheStore {
         candidate: &ScopedCredential,
         guard: IssuanceGuard,
         source_guard: &SourceGuard<'_>,
-    ) -> Result<SaveOutcome<ScopedCredential>, Self::Error> {
+    ) -> Result<CommitScopedOutcome, Self::Error> {
         ensure_cache_dir(&self.path)?;
         let key = compute_cache_key(&candidate.profile, &candidate.repo_scope);
         let write_view = RecordWriteView::Scoped(ScopedRecordWriteView::from(candidate));
@@ -170,10 +170,10 @@ impl WriteCredentials for CacheStore {
         with_locked_file(&self.path, LockMode::Exclusive, |lock| {
             let actual = read_epoch(lock)?;
             if actual != guard.value() {
-                return Ok(SaveOutcome::EpochChanged);
+                return Ok(CommitScopedOutcome::EpochChanged);
             }
             if !validate_source_base(&self.path, source_guard)? {
-                return Ok(SaveOutcome::BaseGenerationChanged);
+                return Ok(CommitScopedOutcome::BaseGenerationChanged);
             }
             let cache_file = cache_file_path(&self.path, &key);
             if let Some(existing) = read_cache_entry(&cache_file)? {
@@ -181,7 +181,7 @@ impl WriteCredentials for CacheStore {
                 match existing {
                     Record::Scoped(s) => {
                         if s.compatible_with(candidate, OffsetDateTime::now_utc()) {
-                            return Ok(SaveOutcome::Retained(s));
+                            return Ok(CommitScopedOutcome::Retained(Box::new(s)));
                         }
                     }
                     other => {
@@ -193,7 +193,7 @@ impl WriteCredentials for CacheStore {
                 }
             }
             crate::fs::publish_replacement(&cache_file, &json_bytes).map_err(CacheError::from)?;
-            Ok(SaveOutcome::Saved)
+            Ok(CommitScopedOutcome::Saved)
         })
     }
 

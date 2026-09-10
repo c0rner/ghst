@@ -313,7 +313,7 @@ fn generate_run_id<E>() -> Result<String, TokenError<E>> {
 mod tests {
     use super::*;
     use crate::cache::{
-        CacheError, CacheStore, Record, compute_cache_key, compute_run_cache_key, save_cache_entry,
+        CacheError, CacheStore, Record, compute_cache_key, compute_run_cache_key, write_test_entry,
     };
     use crate::credential::{
         BaseCredential, ScopedCredential, TokenExpiry, authority_fingerprint, policy_fingerprint,
@@ -420,7 +420,7 @@ permissions = { contents = "read" }
     }
 
     fn cache_base(cache_dir: &Path, now: OffsetDateTime) {
-        save_cache_entry(
+        write_test_entry(
             cache_dir,
             &compute_cache_key("developer", "all"),
             &Record::Base(BaseCredential {
@@ -436,7 +436,7 @@ permissions = { contents = "read" }
 
     fn pending_run(cache_dir: &Path, run_id: &str) -> PendingRun {
         let cache_key = compute_run_cache_key(run_id);
-        save_cache_entry(
+        write_test_entry(
             cache_dir,
             &cache_key,
             &Record::Run(RunRecord {
@@ -483,7 +483,7 @@ permissions = { contents = "read" }
         let now = OffsetDateTime::now_utc();
         cache_base(&cache_dir, now);
         let permissions = BTreeMap::from([("contents".into(), String::from("read"))]);
-        save_cache_entry(
+        write_test_entry(
             &cache_dir,
             &compute_cache_key("reader", "acme/api"),
             &Record::Scoped(ScopedCredential {

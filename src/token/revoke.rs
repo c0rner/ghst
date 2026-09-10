@@ -474,8 +474,9 @@ mod tests {
     use super::*;
     use crate::cache::{
         CacheStore, Record, compute_cache_key, compute_run_cache_key, list_all_cache_entries,
-        save_cache_entry,
+        write_test_entry,
     };
+    use crate::credential::store::{IssuanceGuardStore, WriteCredentials};
     use crate::credential::{
         AccessToken, BaseCredential, ScopedCredential, TokenExpiry, authority_fingerprint,
     };
@@ -484,40 +485,37 @@ mod tests {
     use std::path::Path;
     use time::Duration;
 
-    struct MockClient(Cell<usize>);
+    #[derive(Default)]
+    struct MockClient {
+        calls: Cell<usize>,
+        revoked: RefCell<Vec<String>>,
+        status: Cell<u16>,
+    }
+
+    impl MockClient {
+        fn with_status(status: u16) -> Self {
+            Self {
+                status: Cell::new(status),
+                ..Default::default()
+            }
+        }
+    }
 
     impl RevokeTokenClient for MockClient {
         fn delete_token(
             &self,
             _client_id: &str,
             _client_secret: &str,
-            _access_token: &str,
-        ) -> Result<(), RemoteError> {
-            self.0.set(self.0.get() + 1);
-            Ok(())
-        }
-    }
-
-    struct RecordingClient {
-        revoked: RefCell<Vec<String>>,
-        fails: bool,
-    }
-
-    impl RevokeTokenClient for RecordingClient {
-        fn delete_token(
-            &self,
-            _client_id: &str,
-            _client_secret: &str,
             access_token: &str,
         ) -> Result<(), RemoteError> {
+            self.calls.set(self.calls.get() + 1);
             self.revoked.borrow_mut().push(access_token.to_owned());
-            if self.fails {
-                Err(RemoteError::Http {
-                    status: 500,
-                    message: "revocation failed".into(),
-                })
-            } else {
-                Ok(())
+            match self.status.get() {
+                0 | 200 => Ok(()),
+                status => Err(RemoteError::Http {
+                    status,
+                    message: "http failure".into(),
+                }),
             }
         }
     }
@@ -543,7 +541,7 @@ mod tests {
             expires_at: TokenExpiry::new(expiry),
             access_token: AccessToken::from("base-token"),
         });
-        save_cache_entry(
+        write_test_entry(
             cache_dir,
             &crate::token::base_cache_key("developer"),
             &entry,
@@ -556,13 +554,13 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let cache_dir = temp.path().join("cache");
         cache_base(&cache_dir, OffsetDateTime::now_utc() + Duration::hours(1));
-        let client = MockClient(Cell::new(0));
+        let client = MockClient::default();
         let store = CacheStore::new(&cache_dir);
         let report =
             revoke_all(&client, &config(false), &store, OffsetDateTime::now_utc()).unwrap();
         assert_eq!(report.local_only, 1);
         assert_eq!(report.failures.len(), 1);
-        assert_eq!(client.0.get(), 0);
+        assert_eq!(client.calls.get(), 0);
         assert!(list_all_cache_entries(&cache_dir).unwrap().is_empty());
     }
 
@@ -572,35 +570,14 @@ mod tests {
             let temp = tempfile::tempdir().unwrap();
             let cache_dir = temp.path().join("cache");
             cache_base(&cache_dir, OffsetDateTime::now_utc() + offset);
-            let client = MockClient(Cell::new(0));
+            let client = MockClient::default();
             let store = CacheStore::new(&cache_dir);
             let report =
                 revoke_all(&client, &config(true), &store, OffsetDateTime::now_utc()).unwrap();
-            assert_eq!(client.0.get(), remote);
+            assert_eq!(client.calls.get(), remote);
             assert!(report.failures.is_empty());
             assert!(list_all_cache_entries(&cache_dir).unwrap().is_empty());
         }
-    }
-
-    #[test]
-    fn invalid_entry_is_retained_and_reported_as_failure() {
-        let temp = tempfile::tempdir().unwrap();
-        let cache_dir = temp.path().join("cache");
-        crate::cache::ensure_cache_dir(&cache_dir).unwrap();
-        let corrupt_path = cache_dir.join("corrupt.json");
-        std::fs::write(&corrupt_path, b"invalid json").unwrap();
-        let client = MockClient(Cell::new(0));
-        let store = CacheStore::new(&cache_dir);
-        let report = revoke_all(&client, &config(true), &store, OffsetDateTime::now_utc()).unwrap();
-        assert_eq!(report.remotely_inactive, 0);
-        assert_eq!(report.local_only, 0);
-        assert_eq!(report.retained, 1);
-        assert_eq!(client.0.get(), 0);
-        assert!(matches!(
-            report.failures.as_slice(),
-            [RevokeFailure::InvalidEntry { entry }] if entry == "corrupt.json"
-        ));
-        assert!(corrupt_path.exists());
     }
 
     #[test]
@@ -610,7 +587,7 @@ mod tests {
         let now = OffsetDateTime::now_utc();
         cache_base(&cache_dir, now + Duration::hours(1));
         let scoped_key = compute_cache_key("reader", "acme/api");
-        save_cache_entry(
+        write_test_entry(
             &cache_dir,
             &scoped_key,
             &Record::Scoped(ScopedCredential {
@@ -626,10 +603,7 @@ mod tests {
             }),
         )
         .unwrap();
-        let client = RecordingClient {
-            revoked: RefCell::new(Vec::new()),
-            fails: false,
-        };
+        let client = MockClient::default();
         let store = CacheStore::new(&cache_dir);
 
         let report = match revoke_one(
@@ -665,10 +639,7 @@ mod tests {
         let now = OffsetDateTime::now_utc();
         cache_base(&cache_dir, now + Duration::hours(1));
         let base_key = crate::token::base_cache_key("developer");
-        let client = RecordingClient {
-            revoked: RefCell::new(Vec::new()),
-            fails: true,
-        };
+        let client = MockClient::with_status(500);
         let store = CacheStore::new(&cache_dir);
 
         let report = match revoke_one(&client, &config(true), &store, &base_key, now).unwrap() {
@@ -702,10 +673,7 @@ mod tests {
             std::fs::set_permissions(&first_path, std::fs::Permissions::from_mode(0o600)).unwrap();
             std::fs::set_permissions(&second_path, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
-        let client = RecordingClient {
-            revoked: RefCell::new(Vec::new()),
-            fails: false,
-        };
+        let client = MockClient::default();
         let store = CacheStore::new(&cache_dir);
 
         let outcome = revoke_one(&client, &config(true), &store, "0123456", now).unwrap();
@@ -725,11 +693,11 @@ mod tests {
         for (key, entry) in mismatched_entries(now + Duration::hours(1)) {
             let temp = tempfile::tempdir().unwrap();
             let cache_dir = temp.path().join("cache");
-            save_cache_entry(&cache_dir, &key, &entry).unwrap();
-            let client = MockClient(Cell::new(0));
+            write_test_entry(&cache_dir, &key, &entry).unwrap();
+            let client = MockClient::default();
             let store = CacheStore::new(&cache_dir);
             let report = revoke_all(&client, &changed, &store, now).unwrap();
-            assert_eq!(client.0.get(), 0);
+            assert_eq!(client.calls.get(), 0);
             assert_eq!(report.remotely_inactive, 0);
             assert_eq!(report.local_only, 1);
             assert!(matches!(
@@ -892,15 +860,17 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("worker did not start network call in time");
 
-        // While worker is paused in HTTP, replace the entry on disk
-        let key = crate::token::base_cache_key("developer");
-        let path = cache_dir.join(format!("{key}.json"));
-        let expiry = TokenExpiry::new(now + Duration::hours(2));
-        let json = format!(
-            r#"{{"version": 5, "kind": "base", "profile": "developer", "authority_fingerprint": "{}", "github_user": "octocat", "expires_at": "{expiry}", "access_token": "newer-base-token"}}"#,
-            authority_fingerprint("id", "acme")
-        );
-        std::fs::write(&path, json).unwrap();
+        // While worker is paused in HTTP, replace the entry on disk using a second adapter
+        let store2 = CacheStore::new(&cache_dir);
+        let newer_base = BaseCredential {
+            profile: "developer".into(),
+            authority_fingerprint: authority_fingerprint("new-id", "acme"),
+            github_user: "octocat".into(),
+            expires_at: TokenExpiry::new(now + Duration::hours(2)),
+            access_token: AccessToken::from("newer-base-token"),
+        };
+        let guard = store2.issuance_guard().unwrap();
+        store2.commit_base(&newer_base, guard).unwrap();
 
         proceed_tx.send(()).unwrap();
         let report = worker.join().unwrap();
@@ -923,34 +893,16 @@ mod tests {
     #[test]
     fn handoff_margin_exact_boundaries_inside_and_outside_30_seconds() {
         let now = OffsetDateTime::now_utc();
-
-        // 1. Inside margin (29s remaining): deleted locally without remote call
-        {
+        for (secs, remote, local) in [(29, 0, 1), (31, 1, 0)] {
             let temp = tempfile::tempdir().unwrap();
             let cache_dir = temp.path().join("cache");
-            cache_base(&cache_dir, now + Duration::seconds(29));
-            let client = MockClient(Cell::new(0));
+            cache_base(&cache_dir, now + Duration::seconds(secs));
+            let client = MockClient::default();
             let store = CacheStore::new(&cache_dir);
             let report = revoke_all(&client, &config(true), &store, now).unwrap();
-            assert_eq!(client.0.get(), 0, "must not call GitHub inside margin");
-            assert_eq!(report.local_only, 1);
-            assert_eq!(report.remotely_inactive, 0);
-            assert_eq!(report.retained, 0);
-            assert!(report.failures.is_empty());
-            assert!(list_all_cache_entries(&cache_dir).unwrap().is_empty());
-        }
-
-        // 2. Outside margin (31s remaining): remote revocation executed
-        {
-            let temp = tempfile::tempdir().unwrap();
-            let cache_dir = temp.path().join("cache");
-            cache_base(&cache_dir, now + Duration::seconds(31));
-            let client = MockClient(Cell::new(0));
-            let store = CacheStore::new(&cache_dir);
-            let report = revoke_all(&client, &config(true), &store, now).unwrap();
-            assert_eq!(client.0.get(), 1, "must call GitHub outside margin");
-            assert_eq!(report.remotely_inactive, 1);
-            assert_eq!(report.local_only, 0);
+            assert_eq!(client.calls.get(), remote);
+            assert_eq!(report.local_only, local);
+            assert_eq!(report.remotely_inactive, remote);
             assert_eq!(report.retained, 0);
             assert!(report.failures.is_empty());
             assert!(list_all_cache_entries(&cache_dir).unwrap().is_empty());
@@ -977,12 +929,9 @@ mod tests {
             expires_at: TokenExpiry::new(now + Duration::hours(1)),
             access_token: AccessToken::from("active-run-token"),
         });
-        save_cache_entry(&cache_dir, &run_key, &run).unwrap();
+        write_test_entry(&cache_dir, &run_key, &run).unwrap();
 
-        let client = RecordingClient {
-            revoked: RefCell::new(Vec::new()),
-            fails: false,
-        };
+        let client = MockClient::default();
         let store = CacheStore::new(&cache_dir);
         let report = revoke_all(&client, &config(true), &store, now).unwrap();
 
@@ -990,22 +939,6 @@ mod tests {
         assert_eq!(report.failures.len(), 0);
         assert_eq!(&*client.revoked.borrow(), &["active-run-token"]);
         assert!(list_all_cache_entries(&cache_dir).unwrap().is_empty());
-    }
-
-    struct NotFoundClient;
-
-    impl RevokeTokenClient for NotFoundClient {
-        fn delete_token(
-            &self,
-            _client_id: &str,
-            _client_secret: &str,
-            _access_token: &str,
-        ) -> Result<(), RemoteError> {
-            Err(RemoteError::Http {
-                status: 404,
-                message: "Not Found".into(),
-            })
-        }
     }
 
     #[test]
@@ -1016,7 +949,7 @@ mod tests {
         cache_base(&cache_dir, now + Duration::hours(1));
 
         let store = CacheStore::new(&cache_dir);
-        let report = revoke_all(&NotFoundClient, &config(true), &store, now).unwrap();
+        let report = revoke_all(&MockClient::with_status(404), &config(true), &store, now).unwrap();
         assert_eq!(report.remotely_inactive, 1);
         assert_eq!(report.retained, 0);
         assert!(report.failures.is_empty());
@@ -1024,11 +957,14 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_schema_and_inconsistent_metadata_are_retained() {
+    fn invalid_and_unsupported_entries_are_retained_and_reported_as_failures() {
         let temp = tempfile::tempdir().unwrap();
         let cache_dir = temp.path().join("cache");
         crate::cache::ensure_cache_dir(&cache_dir).unwrap();
         let now = OffsetDateTime::now_utc();
+
+        let corrupt_path = cache_dir.join("corrupt.json");
+        std::fs::write(&corrupt_path, b"invalid json").unwrap();
 
         let unsupported_path = cache_dir.join(format!("{}.json", compute_cache_key("dev1", "all")));
         std::fs::write(
@@ -1056,35 +992,68 @@ mod tests {
                 .unwrap();
         }
 
-        let client = MockClient(Cell::new(0));
+        let client = MockClient::default();
         let store = CacheStore::new(&cache_dir);
         let report = revoke_all(&client, &config(true), &store, now).unwrap();
 
-        assert_eq!(client.0.get(), 0);
+        assert_eq!(client.calls.get(), 0);
         assert_eq!(report.remotely_inactive, 0);
         assert_eq!(report.local_only, 0);
-        assert_eq!(report.retained, 2);
-        assert_eq!(report.failures.len(), 2);
+        assert_eq!(report.retained, 3);
+        assert_eq!(report.failures.len(), 3);
+        let mut actual_labels: Vec<_> = report
+            .failures
+            .into_iter()
+            .map(|failure| match failure {
+                RevokeFailure::InvalidEntry { entry } => entry,
+                other => panic!("expected InvalidEntry, got {other:?}"),
+            })
+            .collect();
+        actual_labels.sort();
+        let mut expected_labels = vec![
+            "corrupt.json".to_owned(),
+            format!("{}.json", compute_cache_key("dev1", "all")),
+            format!("{}.json", compute_cache_key("dev2", "all")),
+        ];
+        expected_labels.sort();
+        assert_eq!(actual_labels, expected_labels);
+        assert!(corrupt_path.exists());
         assert!(unsupported_path.exists());
         assert!(inconsistent_path.exists());
     }
 
-    struct SequentialStatusClient {
-        calls: Cell<usize>,
+    struct ConcurrentRevocationClient {
+        calls: std::sync::atomic::AtomicUsize,
+        t1_in_http: std::sync::mpsc::Sender<()>,
+        t1_proceed: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+        t2_in_http: std::sync::mpsc::Sender<()>,
+        t2_proceed: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
     }
 
-    impl RevokeTokenClient for SequentialStatusClient {
+    impl RevokeTokenClient for ConcurrentRevocationClient {
         fn delete_token(
             &self,
             _client_id: &str,
             _client_secret: &str,
             _access_token: &str,
         ) -> Result<(), RemoteError> {
-            let count = self.calls.get();
-            self.calls.set(count + 1);
-            if count == 0 {
+            let timeout = std::time::Duration::from_secs(5);
+            let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if call == 0 {
+                self.t1_in_http.send(()).unwrap();
+                self.t1_proceed
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(timeout)
+                    .expect("timed out waiting for proceed signal in client (t1)");
                 Ok(())
             } else {
+                self.t2_in_http.send(()).unwrap();
+                self.t2_proceed
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(timeout)
+                    .expect("timed out waiting for proceed signal in client (t2)");
                 Err(RemoteError::Http {
                     status: 404,
                     message: "Not Found".into(),
@@ -1095,42 +1064,65 @@ mod tests {
 
     #[test]
     fn concurrent_revokers_select_same_token_and_second_reports_missing_with_no_loss() {
+        use std::sync::Arc;
+
         let temp = tempfile::tempdir().unwrap();
         let cache_dir = temp.path().join("cache");
         let now = OffsetDateTime::now_utc();
         cache_base(&cache_dir, now + Duration::hours(1));
 
-        let client = SequentialStatusClient {
-            calls: Cell::new(0),
-        };
-        let store = CacheStore::new(&cache_dir);
+        let (t1_in_http, t1_in_http_rx) = std::sync::mpsc::channel();
+        let (t1_proceed_tx, t1_proceed_rx) = std::sync::mpsc::channel();
+        let (t2_in_http, t2_in_http_rx) = std::sync::mpsc::channel();
+        let (t2_proceed_tx, t2_proceed_rx) = std::sync::mpsc::channel();
 
-        // Both revokers snapshot the same cache state before deletion begins
-        let batch1 = match store
-            .begin_revocation(crate::token::store::RevocationSelection::All)
-            .unwrap()
-        {
-            RevocationBatch::Selected(s) => s,
-            other => panic!("expected selected batch, got {other:?}"),
-        };
-        let batch2 = match store
-            .begin_revocation(crate::token::store::RevocationSelection::All)
-            .unwrap()
-        {
-            RevocationBatch::Selected(s) => s,
-            other => panic!("expected selected batch, got {other:?}"),
-        };
+        let client = Arc::new(ConcurrentRevocationClient {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            t1_in_http,
+            t1_proceed: std::sync::Mutex::new(t1_proceed_rx),
+            t2_in_http,
+            t2_proceed: std::sync::Mutex::new(t2_proceed_rx),
+        });
 
-        // Revoker 1 completes remote deletion and removes the exact record
-        let report1 = process_revocation_batch(&client, &config(true), &store, batch1, now);
+        let client1 = Arc::clone(&client);
+        let cfg1 = config(true);
+        let cache_dir1 = cache_dir.clone();
+        let worker1 = std::thread::spawn(move || {
+            let store1 = CacheStore::new(&cache_dir1);
+            revoke_all(&*client1, &cfg1, &store1, now).unwrap()
+        });
+
+        // Wait until revoker 1 has snapshotted the token and is paused in remote deletion
+        t1_in_http_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("revoker 1 did not reach remote deletion in time");
+
+        // Now start revoker 2; it will snapshot the same token because revoker 1 has not unlinked it
+        let client2 = Arc::clone(&client);
+        let cfg2 = config(true);
+        let cache_dir2 = cache_dir.clone();
+        let worker2 = std::thread::spawn(move || {
+            let store2 = CacheStore::new(&cache_dir2);
+            revoke_all(&*client2, &cfg2, &store2, now).unwrap()
+        });
+
+        // Wait until revoker 2 has also snapshotted and is paused in remote deletion
+        t2_in_http_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("revoker 2 did not reach remote deletion in time");
+
+        // Allow revoker 1 to finish remote deletion and finalize (unlink) the record
+        t1_proceed_tx.send(()).unwrap();
+        let report1 = worker1.join().unwrap();
         assert_eq!(report1.remotely_inactive, 1);
         assert_eq!(report1.local_only, 0);
         assert_eq!(report1.retained, 0);
         assert!(report1.failures.is_empty());
         assert!(list_all_cache_entries(&cache_dir).unwrap().is_empty());
 
-        // Revoker 2 completes remote deletion (404 already inactive) and finds the record missing locally
-        let report2 = process_revocation_batch(&client, &config(true), &store, batch2, now);
+        // Now allow revoker 2 to proceed; its remote call returns 404 and it finds the local file already unlinked
+        t2_proceed_tx.send(()).unwrap();
+        let report2 = worker2.join().unwrap();
         assert_eq!(
             report2.remotely_inactive, 0,
             "must not increment success count on missing finalization"
@@ -1148,15 +1140,22 @@ mod tests {
                 ..
             }]
         ));
-        assert_eq!(client.calls.get(), 2);
+        assert_eq!(client.calls.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
-    struct PostUnlinkSyncFailingStore {
+    type DeleteFn = fn(
+        &Path,
+        &str,
+    )
+        -> Result<DeleteOutcome<crate::cache::CacheError>, crate::cache::CacheError>;
+
+    struct FinalizationFailingStore<F> {
         inner: CacheStore,
         cache_dir: std::path::PathBuf,
+        delete_fn: F,
     }
 
-    impl BeginRevocation for PostUnlinkSyncFailingStore {
+    impl<F> BeginRevocation for FinalizationFailingStore<F> {
         type Error = crate::cache::CacheError;
 
         fn begin_revocation(
@@ -1167,7 +1166,13 @@ mod tests {
         }
     }
 
-    impl DeleteInspectedRecord for PostUnlinkSyncFailingStore {
+    impl<
+        F: Fn(
+            &Path,
+            &str,
+        ) -> Result<DeleteOutcome<crate::cache::CacheError>, crate::cache::CacheError>,
+    > DeleteInspectedRecord for FinalizationFailingStore<F>
+    {
         type Error = crate::cache::CacheError;
 
         fn delete_exact_record(
@@ -1175,49 +1180,85 @@ mod tests {
             slot_id: &str,
             _expected: &Record,
         ) -> Result<DeleteOutcome<Self::Error>, Self::Error> {
-            let path = self.cache_dir.join(format!("{slot_id}.json"));
-            std::fs::remove_file(&path).map_err(|err| crate::cache::CacheError::io(&path, err))?;
-            Ok(DeleteOutcome::UnlinkedSyncFailed(
-                crate::cache::CacheError::io(
-                    &self.cache_dir,
-                    std::io::Error::other("simulated sync failure"),
-                ),
-            ))
+            (self.delete_fn)(&self.cache_dir, slot_id)
         }
     }
 
     #[test]
-    fn post_unlink_directory_sync_failure_reports_durability_uncertainty_without_retention() {
-        let temp = tempfile::tempdir().unwrap();
-        let cache_dir = temp.path().join("cache");
+    fn finalization_failures_report_accurate_retention_and_failure_classification() {
         let now = OffsetDateTime::now_utc();
-        cache_base(&cache_dir, now + Duration::hours(1));
+        let cases: [(DeleteFn, usize, usize, bool); 2] = [
+            (
+                // 1. Post-unlink directory sync failure: unlinked, not retained, DirectorySyncFailed
+                |dir: &Path, slot: &str| {
+                    let path = dir.join(format!("{slot}.json"));
+                    if let Err(err) = std::fs::remove_file(&path) {
+                        return Err(crate::cache::CacheError::io(&path, err));
+                    }
+                    Ok(DeleteOutcome::UnlinkedSyncFailed(
+                        crate::cache::CacheError::io(
+                            dir,
+                            std::io::Error::other("simulated sync failure"),
+                        ),
+                    ))
+                },
+                0,
+                0,
+                true,
+            ),
+            (
+                // 2. Unlink failure: file retained, CacheDeletion
+                |dir: &Path, slot: &str| {
+                    let path = dir.join(format!("{slot}.json"));
+                    Err(crate::cache::CacheError::io(
+                        &path,
+                        std::io::Error::other("simulated unlink failure"),
+                    ))
+                },
+                1,
+                1,
+                false,
+            ),
+        ];
 
-        let store = PostUnlinkSyncFailingStore {
-            inner: CacheStore::new(&cache_dir),
-            cache_dir: cache_dir.clone(),
-        };
-        let client = MockClient(Cell::new(0));
-        let report = revoke_all(&client, &config(true), &store, now).unwrap();
+        for (delete_fn, expected_retained, expected_files, is_sync_failure) in cases {
+            let temp = tempfile::tempdir().unwrap();
+            let cache_dir = temp.path().join("cache");
+            cache_base(&cache_dir, now + Duration::hours(1));
 
-        // 1. No success count
-        assert_eq!(report.remotely_inactive, 0);
-        assert_eq!(report.local_only, 0);
+            let store = FinalizationFailingStore {
+                inner: CacheStore::new(&cache_dir),
+                cache_dir: cache_dir.clone(),
+                delete_fn,
+            };
+            let client = MockClient::default();
+            let report = revoke_all(&client, &config(true), &store, now).unwrap();
 
-        // 2. Not counted as retained (file has already been unlinked)
-        assert_eq!(report.retained, 0);
-
-        // 3. Accurate partial outcome: DirectorySyncFailed with source error and remote revocation status
-        assert_eq!(report.failures.len(), 1);
-        assert!(matches!(
-            report.failures.as_slice(),
-            [RevokeFailure::DirectorySyncFailed {
-                remotely_inactive: true,
-                ..
-            }]
-        ));
-
-        // 4. File was unlinked from disk
-        assert!(list_all_cache_entries(&cache_dir).unwrap().is_empty());
+            assert_eq!(report.remotely_inactive, 0);
+            assert_eq!(report.local_only, 0);
+            assert_eq!(report.retained, expected_retained);
+            assert_eq!(report.failures.len(), 1);
+            if is_sync_failure {
+                assert!(matches!(
+                    report.failures.as_slice(),
+                    [RevokeFailure::DirectorySyncFailed {
+                        remotely_inactive: true,
+                        ..
+                    }]
+                ));
+            } else {
+                assert!(matches!(
+                    report.failures.as_slice(),
+                    [RevokeFailure::CacheDeletion {
+                        remotely_inactive: true,
+                        ..
+                    }]
+                ));
+            }
+            assert_eq!(
+                list_all_cache_entries(&cache_dir).unwrap().len(),
+                expected_files
+            );
+        }
     }
 }

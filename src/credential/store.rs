@@ -33,11 +33,19 @@ impl<'a> SourceGuard<'a> {
     }
 }
 
-/// Outcome of persisting a candidate credential.
+/// Outcome of persisting a candidate base credential.
 #[derive(Debug, PartialEq, Eq)]
-pub enum SaveOutcome<T> {
+pub enum CommitBaseOutcome {
     Saved,
-    Retained(T),
+    Retained(BaseCredential),
+    EpochChanged,
+}
+
+/// Outcome of persisting a candidate scoped credential.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CommitScopedOutcome {
+    Saved,
+    Retained(Box<ScopedCredential>),
     EpochChanged,
     BaseGenerationChanged,
 }
@@ -87,14 +95,14 @@ pub trait WriteCredentials {
         &self,
         candidate: &BaseCredential,
         guard: IssuanceGuard,
-    ) -> Result<SaveOutcome<BaseCredential>, Self::Error>;
+    ) -> Result<CommitBaseOutcome, Self::Error>;
 
     fn commit_scoped(
         &self,
         candidate: &ScopedCredential,
         guard: IssuanceGuard,
         source_guard: &SourceGuard<'_>,
-    ) -> Result<SaveOutcome<ScopedCredential>, Self::Error>;
+    ) -> Result<CommitScopedOutcome, Self::Error>;
 
     fn renew_scoped(
         &self,

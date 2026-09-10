@@ -2,7 +2,7 @@ use super::CacheError;
 use crate::run::RunRecord;
 use std::path::Path;
 
-pub fn activate(
+pub(super) fn activate(
     cache_dir: &Path,
     cache_key: &str,
     run_id: &str,
@@ -16,7 +16,7 @@ pub fn activate(
     })
 }
 
-pub fn abort(
+pub(super) fn abort(
     cache_dir: &Path,
     cache_key: &str,
     run_id: &str,
@@ -30,7 +30,7 @@ pub fn abort(
     })
 }
 
-pub fn finish(
+pub(super) fn finish(
     cache_dir: &Path,
     cache_key: &str,
     run_id: &str,

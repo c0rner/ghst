@@ -174,6 +174,7 @@ fn write_report<E: std::fmt::Display>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::CacheError;
 
     #[test]
     fn selection_is_validated_before_loading_configuration() {
@@ -216,5 +217,113 @@ mod tests {
             }),
             Err(CmdError::RevokeSelectionConflict)
         ));
+    }
+
+    #[test]
+    fn write_report_success_summary() {
+        let report: RevokeReport<CacheError> = RevokeReport {
+            remotely_inactive: 2,
+            local_only: 1,
+            retained: 0,
+            failures: Vec::new(),
+        };
+        let mut output = Vec::new();
+        write_report(&mut output, &report).unwrap();
+        let text = String::from_utf8(output).unwrap();
+        assert_eq!(
+            text,
+            "Credential revocation report:\n  Remotely revoked or already inactive: 2\n  Deleted locally only: 1\n  Retained for retry: 0\n  Failures: 0\n"
+        );
+    }
+
+    #[test]
+    fn write_report_all_failure_variants() {
+        use crate::token::RemoteError;
+
+        let failures = vec![
+            RevokeFailure::InvalidEntry {
+                entry: "entry_invalid".into(),
+            },
+            RevokeFailure::MissingAppCredentials {
+                entry: "entry_missing_app".into(),
+            },
+            RevokeFailure::ClientSecretUnavailable {
+                entry: "entry_no_secret".into(),
+            },
+            RevokeFailure::AuthorityMismatch {
+                entry: "entry_auth_mismatch".into(),
+            },
+            RevokeFailure::GitHubRevocation {
+                entry: "entry_remote_fail".into(),
+                source: RemoteError::Http {
+                    status: 500,
+                    message: "server error".into(),
+                },
+            },
+            RevokeFailure::CacheDeletion {
+                entry: "entry_del_fail_remote_ok".into(),
+                source: CacheError::io("path1", std::io::Error::other("del error")),
+                remotely_inactive: true,
+            },
+            RevokeFailure::CacheDeletion {
+                entry: "entry_del_fail_local_only".into(),
+                source: CacheError::io("path2", std::io::Error::other("del error")),
+                remotely_inactive: false,
+            },
+            RevokeFailure::DirectorySyncFailed {
+                entry: "entry_sync_remote_ok".into(),
+                source: CacheError::io("path3", std::io::Error::other("sync error")),
+                remotely_inactive: true,
+            },
+            RevokeFailure::DirectorySyncFailed {
+                entry: "entry_sync_local_only".into(),
+                source: CacheError::io("path4", std::io::Error::other("sync error")),
+                remotely_inactive: false,
+            },
+            RevokeFailure::DeletedRecordChanged {
+                entry: "entry_changed_remote_ok".into(),
+                remotely_inactive: true,
+            },
+            RevokeFailure::DeletedRecordChanged {
+                entry: "entry_changed_local_only".into(),
+                remotely_inactive: false,
+            },
+            RevokeFailure::DeletedRecordMissing {
+                entry: "entry_missing_remote_ok".into(),
+                remotely_inactive: true,
+            },
+            RevokeFailure::DeletedRecordMissing {
+                entry: "entry_missing_local_only".into(),
+                remotely_inactive: false,
+            },
+        ];
+
+        let count = failures.len();
+        let report = RevokeReport {
+            remotely_inactive: 0,
+            local_only: 0,
+            retained: 4,
+            failures,
+        };
+        let mut output = Vec::new();
+        write_report(&mut output, &report).unwrap();
+        let text = String::from_utf8(output).unwrap();
+
+        assert!(text.starts_with(&format!(
+            "Credential revocation report:\n  Remotely revoked or already inactive: 0\n  Deleted locally only: 0\n  Retained for retry: 4\n  Failures: {count}\n"
+        )));
+        assert!(text.contains("  - entry_invalid: invalid or corrupt cache entry; retained without deletion or remote revocation\n"));
+        assert!(text.contains("  - entry_missing_app: configured app profile unavailable; deleted locally and token may remain active remotely\n"));
+        assert!(text.contains("  - entry_no_secret: client secret unavailable; deleted locally and token may remain active remotely\n"));
+        assert!(text.contains("  - entry_auth_mismatch: cached token authority does not match configuration; deleted locally and token may remain active remotely\n"));
+        assert!(text.contains("  - entry_remote_fail: remote revocation failed\n"));
+        assert!(text.contains("  - entry_del_fail_remote_ok: local deletion failed: cache IO error for 'path1': del error; selected token was revoked or confirmed inactive remotely, but cached file was retained\n"));
+        assert!(text.contains("  - entry_del_fail_local_only: local deletion failed: cache IO error for 'path2': del error; cached file was retained without remote revocation (token was not confirmed inactive remotely and may remain active)\n"));
+        assert!(text.contains("  - entry_sync_remote_ok: directory sync failed after local deletion: cache IO error for 'path3': sync error; selected token was revoked or confirmed inactive remotely, but local deletion durability is uncertain\n"));
+        assert!(text.contains("  - entry_sync_local_only: directory sync failed after local deletion: cache IO error for 'path4': sync error; local deletion durability is uncertain and token was not revoked or confirmed inactive remotely\n"));
+        assert!(text.contains("  - entry_changed_remote_ok: cache entry changed concurrently during revocation; selected token was revoked or confirmed inactive remotely, but newer entry was retained\n"));
+        assert!(text.contains("  - entry_changed_local_only: cache entry changed concurrently during revocation; retained without remote revocation (token was not confirmed inactive remotely and may remain active)\n"));
+        assert!(text.contains("  - entry_missing_remote_ok: cache entry disappeared during revocation; selected token was revoked or confirmed inactive remotely\n"));
+        assert!(text.contains("  - entry_missing_local_only: cache entry disappeared during revocation; token was not revoked or confirmed inactive remotely and may remain active\n"));
     }
 }

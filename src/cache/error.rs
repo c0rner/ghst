@@ -25,15 +25,6 @@ pub enum CacheError {
     InvalidRunTransition(&'static str),
     MalformedEpoch,
     EpochExhausted,
-    #[allow(dead_code)]
-    EpochChanged {
-        expected: u64,
-        actual: u64,
-    },
-    #[allow(dead_code)]
-    BaseGenerationChanged,
-    #[allow(dead_code)]
-    RenewalEntryChanged,
     UnsupportedSchema {
         kind: String,
         version: Option<u32>,
@@ -87,19 +78,6 @@ impl fmt::Display for CacheError {
             }
             Self::MalformedEpoch => write!(f, "cache lock contains a malformed epoch"),
             Self::EpochExhausted => write!(f, "cache epoch is exhausted"),
-            Self::EpochChanged { expected, actual } => write!(
-                f,
-                "cache epoch changed from {expected} to {actual} while issuing a token"
-            ),
-            Self::BaseGenerationChanged => {
-                write!(
-                    f,
-                    "source base token generation changed while issuing a token"
-                )
-            }
-            Self::RenewalEntryChanged => {
-                write!(f, "scoped cache entry changed while renewing a token")
-            }
             Self::UnsupportedSchema {
                 kind,
                 version: Some(version),
@@ -168,9 +146,6 @@ impl std::error::Error for CacheError {
             | Self::InvalidRunTransition(_)
             | Self::MalformedEpoch
             | Self::EpochExhausted
-            | Self::EpochChanged { .. }
-            | Self::BaseGenerationChanged
-            | Self::RenewalEntryChanged
             | Self::UnsupportedSchema { .. }
             | Self::Platform(_) => None,
         }

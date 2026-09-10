@@ -281,4 +281,68 @@ mod tests {
             "authorization request was denied by the user"
         );
     }
+
+    #[test]
+    fn known_path_storage_error_preserves_path_and_source_chain() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied");
+        let cache_err = CacheError::io("/var/run/ghst/entry.json", io_err);
+        let token_err = TokenError::Storage(cache_err);
+        let cmd_err = CmdError::from(token_err);
+
+        // Display check: mentions path and underlying error message, and contains no secret marker
+        let display = cmd_err.to_string();
+        assert!(display.contains("/var/run/ghst/entry.json"));
+        assert!(display.contains("permission denied"));
+        assert!(!display.contains("ghu_"));
+        assert!(!display.contains("ghs_"));
+        assert!(!display.contains("secret"));
+        assert!(!display.contains("[REDACTED]"));
+
+        // Error::source() chain: cmd -> token -> cache -> std::io::Error
+        let s1 = std::error::Error::source(&cmd_err).expect("cmd source");
+        assert!(s1.is::<TokenError<CacheError>>());
+        let s2 = s1.source().expect("token source");
+        assert!(s2.is::<CacheError>());
+        let s3 = s2.source().expect("cache source");
+        assert!(s3.is::<std::io::Error>());
+        assert_eq!(
+            s3.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn pathless_descriptor_error_formats_pathlessly_and_preserves_source_chain() {
+        let io_err = std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "resource temporarily unavailable",
+        );
+        let cache_err = CacheError::descriptor_io(io_err);
+        let token_err = TokenError::Storage(cache_err);
+        let cmd_err = CmdError::from(token_err);
+
+        // Display check: formats pathlessly without any path quotation, and contains no secret marker
+        let display = cmd_err.to_string();
+        assert_eq!(
+            display,
+            "storage error: cache IO error: resource temporarily unavailable"
+        );
+        assert!(!display.contains("for '"));
+        assert!(!display.contains("ghu_"));
+        assert!(!display.contains("ghs_"));
+        assert!(!display.contains("secret"));
+        assert!(!display.contains("[REDACTED]"));
+
+        // Error::source() chain: cmd -> token -> cache -> std::io::Error
+        let s1 = std::error::Error::source(&cmd_err).expect("cmd source");
+        assert!(s1.is::<TokenError<CacheError>>());
+        let s2 = s1.source().expect("token source");
+        assert!(s2.is::<CacheError>());
+        let s3 = s2.source().expect("cache source");
+        assert!(s3.is::<std::io::Error>());
+        assert_eq!(
+            s3.downcast_ref::<std::io::Error>().unwrap().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
+    }
 }

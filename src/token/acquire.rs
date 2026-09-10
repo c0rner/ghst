@@ -4,7 +4,8 @@ use super::{
     AcquireRequest, AcquiredToken, TokenError, load_valid_base_entry, revoke_with_context,
 };
 use crate::credential::store::{
-    IssuanceGuardStore, ReadCredentials, ReplaceOutcome, SaveOutcome, SourceGuard, WriteCredentials,
+    CommitScopedOutcome, IssuanceGuardStore, ReadCredentials, ReplaceOutcome, SourceGuard,
+    WriteCredentials,
 };
 use crate::credential::{AccessToken, ScopedCredential, authority_fingerprint, policy_fingerprint};
 use crate::domain::profile::AppAuthority;
@@ -367,12 +368,25 @@ where
     let secret = prepared.app.client_secret;
     let registration = prepared.app.as_registration();
     match saved {
-        PersistedCandidate::Saved(SaveOutcome::Saved) => {
+        PersistedCandidate::Saved(CommitScopedOutcome::Saved) => {
             tracing::debug!(profile = profile_name, "persisted new scoped token");
             Ok(acquired_scoped(candidate))
         }
-        PersistedCandidate::Saved(SaveOutcome::Retained(retained))
-        | PersistedCandidate::Renewed(ReplaceOutcome::Retained(retained)) => {
+        PersistedCandidate::Saved(CommitScopedOutcome::Retained(retained)) => {
+            tracing::debug!(
+                profile = profile_name,
+                "compatible concurrent scoped token won the cache race; revoking unused candidate"
+            );
+            revoke_candidate(
+                client,
+                profile_name,
+                client_id,
+                secret,
+                &candidate.access_token,
+            )?;
+            Ok(acquired_scoped(*retained))
+        }
+        PersistedCandidate::Renewed(ReplaceOutcome::Retained(retained)) => {
             tracing::debug!(
                 profile = profile_name,
                 "compatible concurrent scoped token won the cache race; revoking unused candidate"
@@ -401,7 +415,7 @@ where
             }
             Ok(acquired_scoped(candidate))
         }
-        PersistedCandidate::Saved(SaveOutcome::EpochChanged)
+        PersistedCandidate::Saved(CommitScopedOutcome::EpochChanged)
         | PersistedCandidate::Renewed(ReplaceOutcome::EpochChanged) => {
             tracing::debug!(
                 profile = profile_name,
@@ -414,7 +428,7 @@ where
                 TokenError::EpochChanged(profile_name.to_owned()),
             ))
         }
-        PersistedCandidate::Saved(SaveOutcome::BaseGenerationChanged)
+        PersistedCandidate::Saved(CommitScopedOutcome::BaseGenerationChanged)
         | PersistedCandidate::Renewed(ReplaceOutcome::BaseGenerationChanged) => {
             tracing::debug!(
                 profile = profile_name,
@@ -443,7 +457,7 @@ where
 }
 
 enum PersistedCandidate {
-    Saved(SaveOutcome<ScopedCredential>),
+    Saved(CommitScopedOutcome),
     Renewed(ReplaceOutcome<ScopedCredential>),
 }
 

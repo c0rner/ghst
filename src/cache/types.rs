@@ -9,22 +9,6 @@ pub(super) const RUN_CACHE_SCHEMA_VERSION: u32 = 3;
 
 pub use crate::token::store::Record;
 
-/// Result of attempting to persist an immutable cache entry.
-#[cfg(test)]
-#[derive(Debug)]
-pub enum SaveCacheEntry {
-    Saved,
-    Retained(Box<Record>),
-}
-
-/// Result of atomically replacing the exact scoped entry selected for renewal.
-#[cfg(test)]
-#[derive(Debug)]
-pub enum ReplaceCacheEntry {
-    Replaced(Box<Record>),
-    Retained(Box<Record>),
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum RunStateDto {

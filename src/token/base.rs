@@ -1,7 +1,9 @@
 use super::{
     BasePersistence, BaseTokenStatus, TokenError, revoke_with_context, validate_base_expiry,
 };
-use crate::credential::store::{IssuanceGuard, ReadCredentials, SaveOutcome, WriteCredentials};
+use crate::credential::store::{
+    CommitBaseOutcome, IssuanceGuard, ReadCredentials, WriteCredentials,
+};
 use crate::credential::{BaseCredential, authority_fingerprint};
 use crate::domain::profile::{AppAuthority, AppRegistration};
 use crate::token::{BaseTokenClient, IssuedBaseToken};
@@ -177,15 +179,15 @@ fn handle_save_outcome<C: BaseTokenClient, E>(
     client: &C,
     app: &AppRegistration<'_>,
     candidate: BaseCredential,
-    result: SaveOutcome<BaseCredential>,
+    result: CommitBaseOutcome,
 ) -> Result<BasePersistence, TokenError<E>> {
     let profile_name = &candidate.profile;
     match result {
-        SaveOutcome::Saved => {
+        CommitBaseOutcome::Saved => {
             tracing::debug!(profile = profile_name, "persisted issued base token");
             Ok(BasePersistence::Saved(base_status(candidate)))
         }
-        SaveOutcome::Retained(entry) => {
+        CommitBaseOutcome::Retained(entry) => {
             tracing::debug!(
                 profile = profile_name,
                 "a compatible concurrent base token won the cache race; revoking unused candidate"
@@ -205,7 +207,7 @@ fn handle_save_outcome<C: BaseTokenClient, E>(
                 Ok(BasePersistence::Retained(base_status(entry)))
             }
         }
-        SaveOutcome::EpochChanged => {
+        CommitBaseOutcome::EpochChanged => {
             tracing::debug!(
                 profile = profile_name,
                 "cache epoch changed while issuing base token; revoking unused candidate"
@@ -215,18 +217,6 @@ fn handle_save_outcome<C: BaseTokenClient, E>(
                 app,
                 &candidate.access_token,
                 TokenError::EpochChanged(profile_name.to_owned()),
-            ))
-        }
-        SaveOutcome::BaseGenerationChanged => {
-            tracing::debug!(
-                profile = profile_name,
-                "base generation changed while issuing base token; revoking unused candidate"
-            );
-            Err(revoke_with_context(
-                client,
-                app,
-                &candidate.access_token,
-                TokenError::BaseGenerationChanged(profile_name.to_owned()),
             ))
         }
     }

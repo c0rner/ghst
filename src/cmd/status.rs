@@ -143,7 +143,7 @@ fn write_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::{Record, compute_run_cache_key, save_cache_entry};
+    use crate::cache::{Record, compute_run_cache_key, write_test_entry};
     use crate::credential::{AccessToken, TokenExpiry, authority_fingerprint};
     use crate::run::{RunRecord, RunState};
     use time::Duration;
@@ -168,7 +168,7 @@ permissions = { contents = "read" }
         let cache_dir = temp.path().join("cache");
         let now = OffsetDateTime::now_utc();
         let run_id = "status-run";
-        save_cache_entry(
+        write_test_entry(
             &cache_dir,
             &compute_run_cache_key(run_id),
             &Record::Run(RunRecord {
@@ -187,7 +187,7 @@ permissions = { contents = "read" }
             }),
         )
         .unwrap();
-        save_cache_entry(
+        write_test_entry(
             &cache_dir,
             &compute_run_cache_key("second-status-run"),
             &Record::Run(RunRecord {

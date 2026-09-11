@@ -1,5 +1,5 @@
 use crate::credential::TokenExpiry;
-use crate::domain::profile::NamedAppRegistration;
+use crate::profile::NamedAppRegistration;
 use crate::run::cleanup::{
     CleanupAttempt, CleanupFailure, CleanupOutcome, CleanupReport, cleanup_marked_entry,
 };
@@ -181,7 +181,7 @@ mod tests {
     use super::*;
     use crate::cache::{compute_run_cache_key, load_cache_entry, write_test_entry};
     use crate::credential::{TokenExpiry, authority_fingerprint};
-    use crate::domain::profile::{AppAuthority, AppRegistration};
+    use crate::profile::{AppAuthority, AppRegistration};
     use crate::run::{RunRecord, RunState};
     use crate::token::RemoteError;
     use std::cell::{Cell, RefCell};

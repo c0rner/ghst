@@ -8,8 +8,8 @@ use crate::cache::types::{
 };
 use crate::cache::{cache_file_path, ensure_cache_dir};
 use crate::credential::store::{
-    CommitBaseOutcome, DeleteBaseOutcome, IssuanceGuard, IssuanceGuardStore, ReadCredentials,
-    ReplaceOutcome, SourceGuard, WriteCredentials,
+    CommitBaseOutcome, CommitScopedOutcome, DeleteBaseOutcome, IssuanceGuard, IssuanceGuardStore,
+    ReadCredentials, ReplaceOutcome, SourceGuard, WriteCredentials,
 };
 use crate::credential::{BaseCredential, ScopedCredential, TokenExpiry};
 use crate::fs::create_private_tempfile;
@@ -220,6 +220,43 @@ fn renewal_compare_and_replace_retains_a_compatible_concurrent_winner() {
         panic!("expected retained winner")
     };
     assert_eq!(retained.access_token.as_ref(), "winner");
+}
+
+#[test]
+fn renewal_compare_and_replace_yields_renewal_entry_changed_for_incompatible_or_unsafe_record() {
+    let temp = cache_dir();
+    let directory = temp.path().join("cache");
+    let store = CacheStore::new(&directory);
+    let now = OffsetDateTime::now_utc();
+    let base = base_entry("base", now + Duration::hours(1), "authority");
+    let Record::Base(base_data) = &base else {
+        panic!("expected base")
+    };
+    let generation = base_data.generation_fingerprint();
+    write_test_entry(&directory, &base_key(), &base).unwrap();
+    let key = compute_cache_key("reader", "acme/api");
+    let selected = scoped_credential("selected", now + Duration::minutes(5), &generation);
+    let candidate = scoped_credential("candidate", now + Duration::hours(1), &generation);
+    let source_guard = SourceGuard::new("developer", &generation);
+
+    // Case 1: concurrent changed entry is incompatible (different policy fingerprint)
+    let mut incompatible_entry = scoped_credential("other", now + Duration::hours(1), &generation);
+    incompatible_entry.policy_fingerprint = "different-policy".into();
+    write_test_entry(&directory, &key, &Record::Scoped(incompatible_entry)).unwrap();
+    let guard1 = store.issuance_guard().unwrap();
+    let result = store
+        .renew_scoped(&selected, &candidate, guard1, &source_guard, now)
+        .unwrap();
+    assert_eq!(result, ReplaceOutcome::RenewalEntryChanged);
+
+    // Case 2: concurrent changed entry is unsafe (within handoff margin)
+    let unsafe_entry = scoped_credential("unsafe", now + Duration::seconds(20), &generation);
+    write_test_entry(&directory, &key, &Record::Scoped(unsafe_entry)).unwrap();
+    let guard2 = store.issuance_guard().unwrap();
+    let result = store
+        .renew_scoped(&selected, &candidate, guard2, &source_guard, now)
+        .unwrap();
+    assert_eq!(result, ReplaceOutcome::RenewalEntryChanged);
 }
 
 #[test]
@@ -818,6 +855,131 @@ fn compatible_entry_is_retained_and_wrong_kind_fails_closed() {
         other_store.commit_base(&candidate, guard3),
         Err(CacheError::UnexpectedKind { .. })
     ));
+}
+
+#[test]
+fn commit_base_replaces_incompatible_or_unsafe_existing_record() {
+    let temp = cache_dir();
+    let directory = temp.path().join("cache");
+    let store = CacheStore::new(&directory);
+    let now = OffsetDateTime::now_utc();
+    let candidate = base_credential("candidate", now + Duration::hours(2), "authority");
+
+    // Case 1: existing record is unsafe (within 30s margin) -> replaced
+    let unsafe_existing = base_credential("unsafe", now + Duration::seconds(20), "authority");
+    let guard1 = store.issuance_guard().unwrap();
+    assert_eq!(
+        store.commit_base(&unsafe_existing, guard1).unwrap(),
+        CommitBaseOutcome::Saved
+    );
+    let guard2 = store.issuance_guard().unwrap();
+    assert_eq!(
+        store.commit_base(&candidate, guard2).unwrap(),
+        CommitBaseOutcome::Saved
+    );
+    assert_eq!(
+        store
+            .read_base("developer")
+            .unwrap()
+            .unwrap()
+            .access_token
+            .as_ref(),
+        "candidate"
+    );
+
+    // Case 2: existing record has different authority -> replaced
+    let diff_auth_existing =
+        base_credential("diff_auth", now + Duration::hours(1), "different_auth");
+    write_test_entry(&directory, &base_key(), &Record::Base(diff_auth_existing)).unwrap();
+    let guard3 = store.issuance_guard().unwrap();
+    assert_eq!(
+        store.commit_base(&candidate, guard3).unwrap(),
+        CommitBaseOutcome::Saved
+    );
+    assert_eq!(
+        store
+            .read_base("developer")
+            .unwrap()
+            .unwrap()
+            .access_token
+            .as_ref(),
+        "candidate"
+    );
+}
+
+#[test]
+fn commit_scoped_retains_compatible_safe_winner_and_replaces_incompatible_or_unsafe() {
+    let temp = cache_dir();
+    let directory = temp.path().join("cache");
+    let store = CacheStore::new(&directory);
+    let now = OffsetDateTime::now_utc();
+
+    let base = base_entry("base", now + Duration::hours(2), "authority");
+    let Record::Base(base_data) = &base else {
+        panic!("expected base")
+    };
+    let generation = base_data.generation_fingerprint();
+    write_test_entry(&directory, &base_key(), &base).unwrap();
+    let key = compute_cache_key("reader", "acme/api");
+
+    let source_guard = SourceGuard::new("developer", &generation);
+    let candidate = scoped_credential("candidate", now + Duration::hours(2), &generation);
+
+    // Case 1: compatible safe winner -> retained
+    let winner = scoped_credential("winner", now + Duration::hours(1), &generation);
+    write_test_entry(&directory, &key, &Record::Scoped(winner)).unwrap();
+    let guard1 = store.issuance_guard().unwrap();
+    let retained = store
+        .commit_scoped(&candidate, guard1, &source_guard)
+        .unwrap();
+    match retained {
+        CommitScopedOutcome::Retained(entry) => {
+            assert_eq!(entry.access_token.as_ref(), "winner");
+        }
+        other => panic!("expected compatible entry to be retained, got {other:?}"),
+    }
+
+    // Case 2: unsafe entry (within 30s margin) -> replaced
+    let unsafe_existing = scoped_credential("unsafe", now + Duration::seconds(20), &generation);
+    write_test_entry(&directory, &key, &Record::Scoped(unsafe_existing)).unwrap();
+    let guard2 = store.issuance_guard().unwrap();
+    assert_eq!(
+        store
+            .commit_scoped(&candidate, guard2, &source_guard)
+            .unwrap(),
+        CommitScopedOutcome::Saved
+    );
+    assert_eq!(
+        store
+            .read_scoped("reader", "acme/api")
+            .unwrap()
+            .unwrap()
+            .access_token
+            .as_ref(),
+        "candidate"
+    );
+
+    // Case 3: incompatible entry (different policy fingerprint) -> replaced
+    let mut incompatible_existing =
+        scoped_credential("incompatible", now + Duration::hours(1), &generation);
+    incompatible_existing.policy_fingerprint = "different-policy".into();
+    write_test_entry(&directory, &key, &Record::Scoped(incompatible_existing)).unwrap();
+    let guard3 = store.issuance_guard().unwrap();
+    assert_eq!(
+        store
+            .commit_scoped(&candidate, guard3, &source_guard)
+            .unwrap(),
+        CommitScopedOutcome::Saved
+    );
+    assert_eq!(
+        store
+            .read_scoped("reader", "acme/api")
+            .unwrap()
+            .unwrap()
+            .access_token
+            .as_ref(),
+        "candidate"
+    );
 }
 
 #[test]

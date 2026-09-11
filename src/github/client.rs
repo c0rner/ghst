@@ -477,7 +477,7 @@ mod tests {
 
     #[test]
     fn scoped_token_request_serialization_is_exact() {
-        use crate::domain::profile::PermissionLevel;
+        use crate::profile::PermissionLevel;
 
         let repositories = vec!["api".into(), "web".into()];
         let permissions = BTreeMap::from([

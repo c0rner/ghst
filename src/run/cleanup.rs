@@ -1,7 +1,7 @@
 use std::fmt;
 
 use crate::credential::authority_fingerprint;
-use crate::domain::profile::{AppCredentials, NamedAppRegistration};
+use crate::profile::{AppCredentials, NamedAppRegistration};
 use crate::run::store::RunLifecycleStore;
 use crate::run::{RunRecord, RunState};
 use crate::token::{RemoteError, RevokeTokenClient};
@@ -281,7 +281,7 @@ where
 fn validated_app<'a>(
     apps: &[NamedAppRegistration<'a>],
     entry: &RunRecord,
-) -> Option<crate::domain::profile::AppRegistration<'a>> {
+) -> Option<crate::profile::AppRegistration<'a>> {
     match crate::token::provenance::for_source(
         apps,
         &entry.source_profile,
@@ -297,7 +297,7 @@ fn validated_app<'a>(
 mod tests {
     use super::*;
     use crate::credential::{AccessToken, TokenExpiry};
-    use crate::domain::profile::AppAuthority;
+    use crate::profile::AppAuthority;
     use crate::token::RemoteError;
     use std::cell::RefCell;
 

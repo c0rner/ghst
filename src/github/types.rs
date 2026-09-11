@@ -4,7 +4,7 @@ use std::fmt;
 use zeroize::Zeroizing;
 
 use crate::credential::AccessToken;
-use crate::domain::profile::PermissionLevel;
+use crate::profile::PermissionLevel;
 
 /// Response from `POST /login/device/code`
 #[derive(Deserialize)]

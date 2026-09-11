@@ -3,7 +3,7 @@ mod types;
 mod validation;
 
 pub use error::ConfigError;
-pub use types::{AppProfile, Config, GitHubAppConfig, ProfileConfig};
+pub use types::{Config, ProfileConfig};
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -976,5 +976,55 @@ permissions = {}
                 ref source
             } if profile == "reader" && source == "developer"
         ));
+    }
+
+    #[test]
+    fn test_app_registrations_translation() {
+        let secret_marker = "top_secret_token_value_xyz";
+        let config_toml = format!(
+            r#"
+version = 1
+default_profile = "scoped-reader"
+
+[profile.z-base-with-secret]
+github_app.account = "acme-corp"
+github_app.client_id = "Iv1.with-secret"
+github_app.client_secret = "{secret_marker}"
+
+[profile.a-secretless-base]
+github_app.account = "octo-org"
+github_app.client_id = "Iv1.secretless"
+
+[profile.scoped-reader]
+source = "z-base-with-secret"
+permissions = {{ contents = "read" }}
+"#
+        );
+
+        let config: Config = config_toml.parse().unwrap();
+        let apps = config.app_registrations();
+
+        // 1. Only base profiles appear (scoped-reader is omitted)
+        assert_eq!(apps.len(), 2);
+
+        // 2. Order is stable (alphabetical by BTreeMap profile name)
+        assert_eq!(apps[0].profile_name, "a-secretless-base");
+        assert_eq!(apps[1].profile_name, "z-base-with-secret");
+
+        // 3. Exact authority values survive
+        assert_eq!(apps[0].app.authority.account, "octo-org");
+        assert_eq!(apps[0].app.authority.client_id, "Iv1.secretless");
+        assert_eq!(apps[0].app.client_secret, None);
+
+        assert_eq!(apps[1].app.authority.account, "acme-corp");
+        assert_eq!(apps[1].app.authority.client_id, "Iv1.with-secret");
+        assert_eq!(apps[1].app.client_secret, Some(secret_marker));
+
+        // 4. Debug output contains no secret marker and redacts secrets
+        let debug_str = format!("{apps:?}");
+        assert!(!debug_str.contains(secret_marker));
+        assert!(debug_str.contains("[REDACTED]"));
+        assert!(debug_str.contains("a-secretless-base"));
+        assert!(debug_str.contains("z-base-with-secret"));
     }
 }

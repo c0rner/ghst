@@ -1,12 +1,10 @@
 mod acquire;
 mod base;
-pub mod cleanup;
 mod device_flow;
 mod error;
 mod ports;
-mod provenance;
+pub mod provenance;
 pub mod revoke;
-pub mod run;
 mod scoped;
 pub mod store;
 mod types;
@@ -25,12 +23,13 @@ pub use ports::{
     IssuedBaseToken, IssuedScopedToken, RemoteError, RevokeTokenClient, ScopedTokenClient,
     ScopedTokenRequest,
 };
+pub use scoped::{FreshScopedTokenRequest, issue_fresh_scoped};
 pub use types::{AcquireRequest, AcquiredToken, BasePersistence, BaseTokenStatus};
 pub use validation::{validate_base_expiry, validate_scoped_expiry};
 
 use crate::domain::profile::AppRegistration;
 
-fn revoke_with_context<C: RevokeTokenClient + ?Sized, E>(
+pub fn revoke_with_context<C: RevokeTokenClient + ?Sized, E>(
     client: &C,
     app: &AppRegistration<'_>,
     token: &crate::credential::AccessToken,

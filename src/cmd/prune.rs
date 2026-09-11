@@ -1,17 +1,21 @@
 use crate::cmd::{CmdError, GhstCli, PruneCmd};
 use crate::github::GitHubClient;
-use crate::token::cleanup::{CleanupFailure, CleanupReport};
+use crate::run::cleanup::{CleanupFailure, CleanupReport};
+use crate::run::process::OsProcess;
 use std::io::{self, Write};
 
 pub fn run_prune(args: &GhstCli, _cmd: &PruneCmd) -> Result<(), CmdError> {
     let config = crate::config::load(args.config.as_deref())?;
+    let apps = config.app_registrations();
     let cache_dir = crate::config::cache_dir()?;
     let store = crate::cache::CacheStore::new(&cache_dir);
+    let liveness = OsProcess;
     tracing::debug!(cache_dir = %cache_dir.display(), "pruning expired and abandoned cache entries");
-    let report = crate::token::cleanup::prune(
+    let report = crate::run::recovery::prune(
         &GitHubClient::new(),
-        &config,
+        &apps,
         &store,
+        &liveness,
         time::OffsetDateTime::now_utc(),
     )?;
     tracing::debug!(

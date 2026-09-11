@@ -1381,6 +1381,33 @@ mod tests {
     }
 
     #[test]
+    fn run_ids_are_unique_random_and_domain_separated() {
+        use crate::cache::{compute_cache_key, compute_run_cache_key};
+        let first = generate_run_id::<crate::cache::CacheError>().unwrap();
+        let second = generate_run_id::<crate::cache::CacheError>().unwrap();
+        assert_eq!(first.len(), 64, "run ID must be 64 hex characters");
+        assert_ne!(first, second, "run IDs must be unique across calls");
+        assert_ne!(
+            compute_run_cache_key(&first),
+            compute_cache_key("run", &first),
+            "run cache key must be domain-separated from the generic cache key scheme"
+        );
+    }
+
+    #[test]
+    fn rendered_command_line_cannot_inject_status_lines() {
+        let command = [
+            OsString::from("printf"),
+            OsString::from("first\n    Lifetime: Fake"),
+        ];
+        assert_eq!(
+            render_command_line(&command),
+            r#"printf "first\n    Lifetime: Fake""#,
+            "newlines in arguments must be escaped to prevent status-line injection"
+        );
+    }
+
+    #[test]
     fn test_commit_pending_base_generation_changed_revokes_candidate_without_spawning() {
         let trace = ExecutionTrace::new();
         let client = FakeWorkflowClient::new(trace.clone());

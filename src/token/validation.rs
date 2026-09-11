@@ -2,10 +2,10 @@ use super::TokenError;
 use crate::credential::TokenExpiry;
 use time::{Duration, OffsetDateTime};
 
-pub fn validate_base_expiry(
+pub fn validate_base_expiry<E>(
     expires_in: Option<u64>,
     now: OffsetDateTime,
-) -> Result<TokenExpiry, TokenError> {
+) -> Result<TokenExpiry, TokenError<E>> {
     let seconds = expires_in.ok_or_else(|| TokenError::InvalidLifetime {
         token_kind: "base",
         reason: "response did not contain expires_in".into(),
@@ -31,10 +31,10 @@ pub fn validate_base_expiry(
     Ok(expiry)
 }
 
-pub fn validate_scoped_expiry(
+pub fn validate_scoped_expiry<E>(
     value: Option<&str>,
     now: OffsetDateTime,
-) -> Result<TokenExpiry, TokenError> {
+) -> Result<TokenExpiry, TokenError<E>> {
     let value = value.ok_or_else(|| TokenError::InvalidLifetime {
         token_kind: "scoped",
         reason: "response did not contain expires_at".into(),

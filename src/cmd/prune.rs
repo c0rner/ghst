@@ -6,11 +6,12 @@ use std::io::{self, Write};
 pub fn run_prune(args: &GhstCli, _cmd: &PruneCmd) -> Result<(), CmdError> {
     let config = crate::config::load(args.config.as_deref())?;
     let cache_dir = crate::config::cache_dir()?;
+    let store = crate::cache::CacheStore::new(&cache_dir);
     tracing::debug!(cache_dir = %cache_dir.display(), "pruning expired and abandoned cache entries");
     let report = crate::token::cleanup::prune(
         &GitHubClient::new(),
         &config,
-        &cache_dir,
+        &store,
         time::OffsetDateTime::now_utc(),
     )?;
     tracing::debug!(
@@ -31,7 +32,10 @@ pub fn run_prune(args: &GhstCli, _cmd: &PruneCmd) -> Result<(), CmdError> {
     }
 }
 
-fn write_report(writer: &mut impl Write, report: &CleanupReport) -> io::Result<()> {
+fn write_report(
+    writer: &mut impl Write,
+    report: &CleanupReport<crate::cache::CacheError>,
+) -> io::Result<()> {
     writeln!(writer, "Cache prune report:")?;
     writeln!(
         writer,
@@ -72,6 +76,12 @@ fn write_report(writer: &mut impl Write, report: &CleanupReport) -> io::Result<(
             }
             CleanupFailure::CacheDeletion { entry, source } => {
                 writeln!(writer, "  - {entry}: local deletion failed: {source}")?;
+            }
+            CleanupFailure::DirectorySyncFailed { entry, source } => {
+                writeln!(
+                    writer,
+                    "  - {entry}: directory sync failed after local deletion: {source}; local deletion durability is uncertain"
+                )?;
             }
         }
     }

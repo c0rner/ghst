@@ -2,8 +2,8 @@ use crate::token::RemoteError;
 use std::fmt;
 
 #[derive(Debug)]
-pub enum TokenError {
-    Cache(crate::cache::CacheError),
+pub enum TokenError<E> {
+    Storage(E),
     GitHub(RemoteError),
     ScopedTokenForbidden {
         profile: String,
@@ -13,11 +13,6 @@ pub enum TokenError {
     NoBaseTokenCached(String),
     NoSourceBaseTokenCached(String),
     Random(getrandom::Error),
-    UnexpectedCacheKind {
-        profile: String,
-        expected: &'static str,
-        actual: &'static str,
-    },
     InconsistentCacheMetadata {
         profile: String,
         found: String,
@@ -27,6 +22,8 @@ pub enum TokenError {
         reason: &'static str,
     },
     BaseGenerationChanged(String),
+    EpochChanged(String),
+    RenewalEntryChanged(String),
     RenewalPersisted(String),
     InvalidLifetime {
         token_kind: &'static str,
@@ -38,10 +35,10 @@ pub enum TokenError {
     },
 }
 
-impl fmt::Display for TokenError {
+impl<E: fmt::Display> fmt::Display for TokenError<E> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Cache(error) => write!(f, "cache error: {error}"),
+            Self::Storage(error) => write!(f, "storage error: {error}"),
             Self::GitHub(error) => write!(f, "github error: {error}"),
             Self::ScopedTokenForbidden {
                 profile,
@@ -61,14 +58,6 @@ impl fmt::Display for TokenError {
                 )
             }
             Self::Random(error) => write!(f, "operating-system randomness unavailable: {error}"),
-            Self::UnexpectedCacheKind {
-                profile,
-                expected,
-                actual,
-            } => write!(
-                f,
-                "cache entry for profile '{profile}' has kind '{actual}', expected '{expected}'"
-            ),
             Self::InconsistentCacheMetadata { profile, found } => write!(
                 f,
                 "cache entry for profile '{profile}' contains inconsistent profile metadata '{found}'"
@@ -80,6 +69,14 @@ impl fmt::Display for TokenError {
             Self::BaseGenerationChanged(profile) => write!(
                 f,
                 "base token for profile '{profile}' changed while minting; retry the token request"
+            ),
+            Self::EpochChanged(profile) => write!(
+                f,
+                "cache epoch changed while issuing token for profile '{profile}'; retry the token request"
+            ),
+            Self::RenewalEntryChanged(profile) => write!(
+                f,
+                "cached scoped token for profile '{profile}' changed while renewing; retry the token request"
             ),
             Self::RenewalPersisted(profile) => write!(
                 f,
@@ -96,10 +93,10 @@ impl fmt::Display for TokenError {
     }
 }
 
-impl std::error::Error for TokenError {
+impl<E: std::error::Error + 'static> std::error::Error for TokenError<E> {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Cache(error) => Some(error),
+            Self::Storage(error) => Some(error),
             Self::GitHub(error) => Some(error),
             Self::Random(error) => Some(error),
             Self::ScopedTokenForbidden { source, .. } | Self::RevocationFailed { source, .. } => {
@@ -110,19 +107,13 @@ impl std::error::Error for TokenError {
     }
 }
 
-impl From<crate::cache::CacheError> for TokenError {
-    fn from(error: crate::cache::CacheError) -> Self {
-        Self::Cache(error)
-    }
-}
-
-impl From<RemoteError> for TokenError {
+impl<E> From<RemoteError> for TokenError<E> {
     fn from(error: RemoteError) -> Self {
         Self::GitHub(error)
     }
 }
 
-impl From<getrandom::Error> for TokenError {
+impl<E> From<getrandom::Error> for TokenError<E> {
     fn from(error: getrandom::Error) -> Self {
         Self::Random(error)
     }
@@ -135,8 +126,8 @@ mod error_tests {
     #[test]
     fn domain_errors_do_not_name_cli_commands_or_options() {
         for error in [
-            TokenError::NoBaseTokenCached("developer".into()),
-            TokenError::NoSourceBaseTokenCached("developer".into()),
+            TokenError::<crate::cache::CacheError>::NoBaseTokenCached("developer".into()),
+            TokenError::<crate::cache::CacheError>::NoSourceBaseTokenCached("developer".into()),
         ] {
             let message = error.to_string();
             assert!(!message.contains("ghst"));
@@ -147,7 +138,7 @@ mod error_tests {
     #[test]
     fn random_error_exposes_its_source() {
         let random = getrandom::Error::UNSUPPORTED;
-        let error = TokenError::from(random);
+        let error: TokenError<std::io::Error> = TokenError::from(random);
 
         let source = std::error::Error::source(&error).expect("random error should have a source");
         assert_eq!(source.downcast_ref::<getrandom::Error>(), Some(&random));

@@ -3,100 +3,11 @@ use crate::credential::{AccessToken, BaseCredential, ScopedCredential, TokenExpi
 use crate::run::{RunRecord, RunState};
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use time::OffsetDateTime;
 
 pub(super) const CACHE_SCHEMA_VERSION: u32 = 5;
 pub(super) const RUN_CACHE_SCHEMA_VERSION: u32 = 3;
 
-/// Non-serializable adapter result containing feature models.
-#[derive(PartialEq, Eq)]
-pub enum Record {
-    Base(BaseCredential),
-    Scoped(ScopedCredential),
-    Run(RunRecord),
-}
-
-impl Record {
-    pub const fn kind_name(&self) -> &'static str {
-        match self {
-            Self::Base(_) => "base",
-            Self::Scoped(_) => "scoped",
-            Self::Run(_) => "run",
-        }
-    }
-
-    pub fn profile(&self) -> &str {
-        match self {
-            Self::Base(entry) => &entry.profile,
-            Self::Scoped(entry) => &entry.profile,
-            Self::Run(entry) => &entry.profile,
-        }
-    }
-
-    pub fn repo_scope(&self) -> &str {
-        match self {
-            Self::Base(_) => "all",
-            Self::Scoped(entry) => &entry.repo_scope,
-            Self::Run(entry) => &entry.repo_scope,
-        }
-    }
-
-    pub const fn access_token(&self) -> &AccessToken {
-        match self {
-            Self::Base(entry) => &entry.access_token,
-            Self::Scoped(entry) => &entry.access_token,
-            Self::Run(entry) => &entry.access_token,
-        }
-    }
-
-    pub const fn expires_at(&self) -> TokenExpiry {
-        match self {
-            Self::Base(entry) => entry.expires_at,
-            Self::Scoped(entry) => entry.expires_at,
-            Self::Run(entry) => entry.expires_at,
-        }
-    }
-
-    pub fn is_safe_to_handoff_at(&self, now: OffsetDateTime) -> bool {
-        self.expires_at().is_safe_to_handoff_at(now)
-    }
-
-    pub fn compatible_with(&self, candidate: &Self, now: OffsetDateTime) -> bool {
-        match (self, candidate) {
-            (Self::Base(existing), Self::Base(candidate)) => {
-                existing.compatible_with(candidate, now)
-            }
-            (Self::Scoped(existing), Self::Scoped(candidate)) => {
-                existing.compatible_with(candidate, now)
-            }
-            _ => false,
-        }
-    }
-}
-
-impl fmt::Debug for Record {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Base(entry) => f.debug_tuple("Base").field(entry).finish(),
-            Self::Scoped(entry) => f.debug_tuple("Scoped").field(entry).finish(),
-            Self::Run(entry) => f.debug_tuple("Run").field(entry).finish(),
-        }
-    }
-}
-
-/// Result of attempting to persist an immutable cache entry.
-#[derive(Debug)]
-pub enum SaveCacheEntry {
-    Saved,
-    Retained(Box<Record>),
-}
-
-/// Result of atomically replacing the exact scoped entry selected for renewal.
-#[derive(Debug)]
-pub enum ReplaceCacheEntry {
-    Replaced(Box<Record>),
-    Retained(Box<Record>),
-}
+pub use crate::token::store::Record;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

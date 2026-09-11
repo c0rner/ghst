@@ -1,10 +1,15 @@
 use super::*;
 use crate::cache::{
-    Record, cache_epoch, compute_cache_key, delete_cache_entry, load_cache_entry, save_cache_entry,
+    CacheStore, Record, compute_cache_key, delete_cache_entry, load_cache_entry, write_test_entry,
 };
 use crate::config::Config;
+use crate::credential::store::{
+    CommitBaseOutcome, CommitScopedOutcome, DeleteBaseOutcome, IssuanceGuard, IssuanceGuardStore,
+    ReadCredentials, ReplaceOutcome, SourceGuard, WriteCredentials,
+};
 use crate::credential::{
-    BaseCredential, ScopedCredential, TokenExpiry, authority_fingerprint, policy_fingerprint,
+    AccessToken, BaseCredential, ScopedCredential, TokenExpiry, authority_fingerprint,
+    policy_fingerprint,
 };
 use crate::domain::profile::{AppAuthority, ResolvedTokenProfile};
 use std::cell::RefCell;
@@ -95,7 +100,7 @@ fn cache_base(cache_dir: &Path, now: OffsetDateTime, token: &str) {
         expires_at: TokenExpiry::new(now + Duration::hours(2)),
         access_token: token.into(),
     });
-    save_cache_entry(cache_dir, &base_cache_key("developer"), &entry).unwrap();
+    write_test_entry(cache_dir, &base_cache_key("developer"), &entry).unwrap();
 }
 
 fn cache_scoped(cache_dir: &Path, expiry: OffsetDateTime, token: &str) -> String {
@@ -119,7 +124,7 @@ fn cache_scoped(cache_dir: &Path, expiry: OffsetDateTime, token: &str) -> String
         expires_at: TokenExpiry::new(expiry),
         access_token: token.into(),
     });
-    save_cache_entry(cache_dir, &cache_key, &entry).unwrap();
+    write_test_entry(cache_dir, &cache_key, &entry).unwrap();
     cache_key
 }
 
@@ -144,13 +149,9 @@ fn failing_scoped_client(status: u16) -> MockClient {
     }
 }
 
-fn base_request<'a>(
-    cache_dir: &'a Path,
-    profile: &'a ResolvedTokenProfile<'a>,
-) -> AcquireRequest<'a> {
+fn base_request<'a>(profile: &'a ResolvedTokenProfile<'a>) -> AcquireRequest<'a> {
     match profile {
         ResolvedTokenProfile::Base { name, app } => AcquireRequest::Base {
-            cache_dir,
             profile_name: name,
             authority: app.authority,
         },
@@ -158,10 +159,7 @@ fn base_request<'a>(
     }
 }
 
-fn scoped_request<'a>(
-    cache_dir: &'a Path,
-    profile: &'a ResolvedTokenProfile<'a>,
-) -> AcquireRequest<'a> {
+fn scoped_request<'a>(profile: &'a ResolvedTokenProfile<'a>) -> AcquireRequest<'a> {
     match profile {
         ResolvedTokenProfile::Scoped {
             name,
@@ -170,7 +168,6 @@ fn scoped_request<'a>(
             repository_scope,
             permissions,
         } => AcquireRequest::Scoped {
-            cache_dir,
             profile_name: name,
             source_name,
             app: *app,
@@ -195,12 +192,14 @@ fn base_lifetime_requires_a_representable_value_beyond_the_margin() {
         .unwrap();
     for value in [None, Some(0), Some(30), Some(u64::MAX)] {
         assert!(matches!(
-            validate_base_expiry(value, now),
+            validate_base_expiry::<crate::cache::CacheError>(value, now),
             Err(TokenError::InvalidLifetime { .. })
         ));
     }
     let lifetime = 24 * 60 * 60;
-    let expiry = validate_base_expiry(Some(lifetime), now).unwrap().value();
+    let expiry = validate_base_expiry::<crate::cache::CacheError>(Some(lifetime), now)
+        .unwrap()
+        .value();
     assert_eq!(expiry.nanosecond(), 0);
     assert_eq!(
         expiry,
@@ -216,13 +215,13 @@ fn scoped_lifetime_requires_a_valid_timestamp_beyond_the_margin() {
         Some(TokenExpiry::new(now + Duration::seconds(30)).to_string()),
     ] {
         assert!(matches!(
-            validate_scoped_expiry(value.as_deref(), now),
+            validate_scoped_expiry::<crate::cache::CacheError>(value.as_deref(), now),
             Err(TokenError::InvalidLifetime { .. })
         ));
     }
     let expiry = TokenExpiry::new(now + Duration::hours(24));
     assert_eq!(
-        validate_scoped_expiry(Some(&expiry.to_string()), now).unwrap(),
+        validate_scoped_expiry::<crate::cache::CacheError>(Some(&expiry.to_string()), now).unwrap(),
         expiry
     );
 }
@@ -241,10 +240,12 @@ fn response_receipt_time_rejects_latency_crossing_the_handoff_margin() {
     let profile = config.resolve_token_profile("reader").unwrap();
     let mut times = [now, now, now + Duration::seconds(15)].into_iter();
 
-    let result =
-        super::acquire::acquire_with_clock(&client, scoped_request(&cache_dir, &profile), || {
-            times.next().unwrap()
-        });
+    let result = super::acquire::acquire_with_clock(
+        &client,
+        &CacheStore::new(&cache_dir),
+        scoped_request(&profile),
+        || times.next().unwrap(),
+    );
 
     assert!(matches!(result, Err(TokenError::InvalidLifetime { .. })));
     assert_eq!(&*client.revoked.borrow(), &["too-late"]);
@@ -262,7 +263,7 @@ fn base_authority_and_kind_are_validated() {
         panic!("expected base profile");
     };
     assert!(
-        load_current_base_entry(&cache_dir, "developer", &app.authority)
+        load_current_base_entry(&CacheStore::new(&cache_dir), "developer", &app.authority)
             .unwrap()
             .is_some()
     );
@@ -271,7 +272,7 @@ fn base_authority_and_kind_are_validated() {
         client_id: "id",
     };
     assert!(
-        load_current_base_entry(&cache_dir, "developer", &mismatched)
+        load_current_base_entry(&CacheStore::new(&cache_dir), "developer", &mismatched)
             .unwrap()
             .is_none()
     );
@@ -289,7 +290,12 @@ fn base_acquisition_returns_cached_token() {
         access_token: "unused".into(),
         expires_at: None,
     });
-    let acquired = acquire(&client, base_request(&cache_dir, &profile)).unwrap();
+    let acquired = acquire(
+        &client,
+        &CacheStore::new(&cache_dir),
+        base_request(&profile),
+    )
+    .unwrap();
     assert_eq!(acquired.access_token.as_ref(), "base-token");
     assert_eq!(acquired.repo_scope, "all");
 }
@@ -311,15 +317,17 @@ fn invalid_base_response_is_revoked_and_not_persisted() {
         access_token: "bad-base".into(),
         expires_in: None,
     };
+    let store = CacheStore::new(&cache_dir);
+    let guard = store.issuance_guard().unwrap();
     assert!(matches!(
         persist_base_response(
             &client,
             &app,
             "developer",
-            &cache_dir,
+            &store,
             response,
             OffsetDateTime::now_utc(),
-            cache_epoch(&cache_dir).unwrap(),
+            guard,
         ),
         Err(TokenError::InvalidLifetime { .. })
     ));
@@ -350,7 +358,12 @@ fn scoped_acquisition_sends_exact_narrowing_request() {
         .parse()
         .unwrap();
     let profile = config.resolve_token_profile("reader").unwrap();
-    let acquired = acquire(&client, scoped_request(&cache_dir, &profile)).unwrap();
+    let acquired = acquire(
+        &client,
+        &CacheStore::new(&cache_dir),
+        scoped_request(&profile),
+    )
+    .unwrap();
     assert_eq!(acquired.access_token.as_ref(), "child-token");
     assert_eq!(acquired.expires_at, exact_expiry);
     assert_eq!(acquired.repo_scope, "acme/api,acme/web");
@@ -387,7 +400,8 @@ fn permanent_scoped_rejection_evicts_the_rejected_base() {
         cache_base(&cache_dir, now, "rejected-base");
         let result = acquire(
             &failing_scoped_client(status),
-            scoped_request(&cache_dir, &profile),
+            &CacheStore::new(&cache_dir),
+            scoped_request(&profile),
         );
 
         assert!(
@@ -412,7 +426,8 @@ fn scoped_policy_and_transient_rejections_retain_the_base() {
         cache_base(&cache_dir, now, "retained-base");
         let result = acquire(
             &failing_scoped_client(status),
-            scoped_request(&cache_dir, &profile),
+            &CacheStore::new(&cache_dir),
+            scoped_request(&profile),
         );
 
         match status {
@@ -450,7 +465,11 @@ fn invalid_scoped_response_is_revoked_without_cache_entry() {
     let config: Config = CONFIG.parse().unwrap();
     let profile = config.resolve_token_profile("reader").unwrap();
     assert!(matches!(
-        acquire(&client, scoped_request(&cache_dir, &profile)),
+        acquire(
+            &client,
+            &CacheStore::new(&cache_dir),
+            scoped_request(&profile)
+        ),
         Err(TokenError::InvalidLifetime { .. })
     ));
     assert_eq!(&*client.revoked.borrow(), &["bad-child"]);
@@ -511,7 +530,11 @@ fn permanent_rejection_preserves_a_concurrent_base_replacement() {
     let config: Config = CONFIG.parse().unwrap();
     let profile = config.resolve_token_profile("reader").unwrap();
 
-    let result = acquire(&client, scoped_request(&cache_dir, &profile));
+    let result = acquire(
+        &client,
+        &CacheStore::new(&cache_dir),
+        scoped_request(&profile),
+    );
 
     assert!(
         matches!(result, Err(TokenError::BaseGenerationChanged(profile)) if profile == "developer")
@@ -571,7 +594,8 @@ fn base_generation_change_revokes_candidate_and_requests_retry() {
     assert!(matches!(
         acquire(
             &client,
-            scoped_request(&cache_dir, &profile),
+            &CacheStore::new(&cache_dir),
+            scoped_request(&profile),
         ),
         Err(TokenError::BaseGenerationChanged(profile)) if profile == "developer"
     ));
@@ -592,7 +616,12 @@ fn cached_scoped_token_remains_usable_after_base_expiry() {
             TokenExpiry::new(OffsetDateTime::now_utc() + Duration::hours(6)).to_string(),
         ),
     });
-    acquire(&first_client, scoped_request(&cache_dir, &profile)).unwrap();
+    acquire(
+        &first_client,
+        &CacheStore::new(&cache_dir),
+        scoped_request(&profile),
+    )
+    .unwrap();
 
     let base_key = base_cache_key("developer");
     let Record::Base(mut base) = load_cache_entry(&cache_dir, &base_key).unwrap().unwrap() else {
@@ -600,7 +629,7 @@ fn cached_scoped_token_remains_usable_after_base_expiry() {
     };
     delete_cache_entry(&cache_dir, &base_key).unwrap();
     base.expires_at = TokenExpiry::new(now - Duration::minutes(1));
-    save_cache_entry(&cache_dir, &base_key, &Record::Base(base)).unwrap();
+    write_test_entry(&cache_dir, &base_key, &Record::Base(base)).unwrap();
 
     let unused_client = MockClient {
         scoped: RefCell::new(None),
@@ -608,7 +637,12 @@ fn cached_scoped_token_remains_usable_after_base_expiry() {
         revoked: RefCell::new(Vec::new()),
         revoke_fails: false,
     };
-    let acquired = acquire(&unused_client, scoped_request(&cache_dir, &profile)).unwrap();
+    let acquired = acquire(
+        &unused_client,
+        &CacheStore::new(&cache_dir),
+        scoped_request(&profile),
+    )
+    .unwrap();
     assert_eq!(acquired.access_token.as_ref(), "child-token");
     assert!(unused_client.request.borrow().is_none());
 }
@@ -629,11 +663,13 @@ fn renewable_scoped_token_is_replaced_and_displaced_token_is_revoked() {
     let profile = config.resolve_token_profile("reader").unwrap();
     let mut times = [now, now, now].into_iter();
 
-    let acquired =
-        super::acquire::acquire_with_clock(&client, scoped_request(&cache_dir, &profile), || {
-            times.next().unwrap()
-        })
-        .unwrap();
+    let acquired = super::acquire::acquire_with_clock(
+        &client,
+        &CacheStore::new(&cache_dir),
+        scoped_request(&profile),
+        || times.next().unwrap(),
+    )
+    .unwrap();
 
     assert_eq!(acquired.access_token.as_ref(), "renewed-child");
     assert_eq!(&*client.revoked.borrow(), &["renewable-child"]);
@@ -657,17 +693,19 @@ fn renewable_scoped_token_falls_back_when_base_is_not_usable() {
     };
     delete_cache_entry(&cache_dir, &base_key).unwrap();
     base.expires_at = TokenExpiry::new(now + Duration::seconds(30));
-    save_cache_entry(&cache_dir, &base_key, &Record::Base(base)).unwrap();
+    write_test_entry(&cache_dir, &base_key, &Record::Base(base)).unwrap();
     let client = no_response_client();
     let config: Config = CONFIG.parse().unwrap();
     let profile = config.resolve_token_profile("reader").unwrap();
     let mut times = [now, now].into_iter();
 
-    let acquired =
-        super::acquire::acquire_with_clock(&client, scoped_request(&cache_dir, &profile), || {
-            times.next().unwrap()
-        })
-        .unwrap();
+    let acquired = super::acquire::acquire_with_clock(
+        &client,
+        &CacheStore::new(&cache_dir),
+        scoped_request(&profile),
+        || times.next().unwrap(),
+    )
+    .unwrap();
 
     assert_eq!(acquired.access_token.as_ref(), "renewable-child");
     assert!(client.request.borrow().is_none());
@@ -686,16 +724,18 @@ fn fallback_child_inside_handoff_margin_is_rejected_when_base_cannot_mint() {
     };
     delete_cache_entry(&cache_dir, &base_key).unwrap();
     base.expires_at = TokenExpiry::new(now + Duration::seconds(30));
-    save_cache_entry(&cache_dir, &base_key, &Record::Base(base)).unwrap();
+    write_test_entry(&cache_dir, &base_key, &Record::Base(base)).unwrap();
     let client = no_response_client();
     let config: Config = CONFIG.parse().unwrap();
     let profile = config.resolve_token_profile("reader").unwrap();
     let mut times = [now, now + Duration::seconds(2)].into_iter();
 
-    let result =
-        super::acquire::acquire_with_clock(&client, scoped_request(&cache_dir, &profile), || {
-            times.next().unwrap()
-        });
+    let result = super::acquire::acquire_with_clock(
+        &client,
+        &CacheStore::new(&cache_dir),
+        scoped_request(&profile),
+        || times.next().unwrap(),
+    );
 
     assert!(matches!(
         result,
@@ -717,17 +757,19 @@ fn fallback_child_on_valid_side_of_handoff_margin_is_returned_when_base_cannot_m
     };
     delete_cache_entry(&cache_dir, &base_key).unwrap();
     base.expires_at = TokenExpiry::new(now + Duration::seconds(30));
-    save_cache_entry(&cache_dir, &base_key, &Record::Base(base)).unwrap();
+    write_test_entry(&cache_dir, &base_key, &Record::Base(base)).unwrap();
     let client = no_response_client();
     let config: Config = CONFIG.parse().unwrap();
     let profile = config.resolve_token_profile("reader").unwrap();
     let mut times = [now, now + Duration::seconds(2)].into_iter();
 
-    let acquired =
-        super::acquire::acquire_with_clock(&client, scoped_request(&cache_dir, &profile), || {
-            times.next().unwrap()
-        })
-        .unwrap();
+    let acquired = super::acquire::acquire_with_clock(
+        &client,
+        &CacheStore::new(&cache_dir),
+        scoped_request(&profile),
+        || times.next().unwrap(),
+    )
+    .unwrap();
 
     assert_eq!(acquired.access_token.as_ref(), "renewable-child");
     assert!(client.request.borrow().is_none());
@@ -746,16 +788,18 @@ fn token_inside_handoff_margin_is_never_returned() {
     };
     delete_cache_entry(&cache_dir, &base_key).unwrap();
     base.expires_at = TokenExpiry::new(now + Duration::seconds(30));
-    save_cache_entry(&cache_dir, &base_key, &Record::Base(base)).unwrap();
+    write_test_entry(&cache_dir, &base_key, &Record::Base(base)).unwrap();
     let client = no_response_client();
     let config: Config = CONFIG.parse().unwrap();
     let profile = config.resolve_token_profile("reader").unwrap();
     let mut times = [now, now].into_iter();
 
-    let result =
-        super::acquire::acquire_with_clock(&client, scoped_request(&cache_dir, &profile), || {
-            times.next().unwrap()
-        });
+    let result = super::acquire::acquire_with_clock(
+        &client,
+        &CacheStore::new(&cache_dir),
+        scoped_request(&profile),
+        || times.next().unwrap(),
+    );
 
     assert!(matches!(
         result,
@@ -776,10 +820,12 @@ fn cached_child_is_not_returned_when_base_provenance_is_missing() {
     let config: Config = CONFIG.parse().unwrap();
     let profile = config.resolve_token_profile("reader").unwrap();
 
-    let result =
-        super::acquire::acquire_with_clock(&client, scoped_request(&cache_dir, &profile), || {
-            panic!("clock is not sampled before base provenance is established")
-        });
+    let result = super::acquire::acquire_with_clock(
+        &client,
+        &CacheStore::new(&cache_dir),
+        scoped_request(&profile),
+        || panic!("clock is not sampled before base provenance is established"),
+    );
 
     assert!(matches!(
         result,
@@ -806,7 +852,8 @@ fn failed_displaced_revocation_leaves_the_renewed_token_persisted() {
 
     let result = super::acquire::acquire_with_clock(
         &failing_client,
-        scoped_request(&cache_dir, &profile),
+        &CacheStore::new(&cache_dir),
+        scoped_request(&profile),
         || times.next().unwrap(),
     );
 
@@ -820,4 +867,248 @@ fn failed_displaced_revocation_leaves_the_renewed_token_persisted() {
         panic!("expected scoped entry")
     };
     assert_eq!(cached.access_token.as_ref(), "persisted-child");
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct MockStoreError;
+
+impl std::fmt::Display for MockStoreError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "simulated store failure")
+    }
+}
+
+impl std::error::Error for MockStoreError {}
+
+fn fake_base(now: OffsetDateTime) -> BaseCredential {
+    BaseCredential {
+        profile: "developer".into(),
+        authority_fingerprint: authority_fingerprint("id", "acme"),
+        github_user: "octocat".into(),
+        expires_at: TokenExpiry::new(now + Duration::hours(2)),
+        access_token: AccessToken::from("base-token"),
+    }
+}
+
+fn fake_scoped(now: OffsetDateTime, token: &str, expiry: OffsetDateTime) -> ScopedCredential {
+    let permissions = BTreeMap::from([
+        ("contents".to_owned(), "read".to_owned()),
+        ("pull_requests".to_owned(), "write".to_owned()),
+    ]);
+    ScopedCredential {
+        profile: "reader".into(),
+        source_profile: "developer".into(),
+        source_authority_fingerprint: authority_fingerprint("id", "acme"),
+        parent_generation: fake_base(now).generation_fingerprint(),
+        policy_fingerprint: policy_fingerprint("acme", "acme/api", &permissions),
+        github_user: "octocat".into(),
+        repo_scope: "acme/api".into(),
+        expires_at: TokenExpiry::new(expiry),
+        access_token: AccessToken::from(token),
+    }
+}
+
+struct FakeCredentialsStore {
+    now: OffsetDateTime,
+    renewable: bool,
+    commit_scoped_result: RefCell<Option<Result<CommitScopedOutcome, MockStoreError>>>,
+    renew_scoped_result: RefCell<Option<Result<ReplaceOutcome<ScopedCredential>, MockStoreError>>>,
+}
+
+impl FakeCredentialsStore {
+    fn new(now: OffsetDateTime) -> Self {
+        Self {
+            now,
+            renewable: false,
+            commit_scoped_result: RefCell::new(None),
+            renew_scoped_result: RefCell::new(None),
+        }
+    }
+}
+
+impl ReadCredentials for FakeCredentialsStore {
+    type Error = MockStoreError;
+
+    fn read_base(&self, profile: &str) -> Result<Option<BaseCredential>, Self::Error> {
+        Ok(
+            (self.now > OffsetDateTime::UNIX_EPOCH && profile == "developer")
+                .then(|| fake_base(self.now)),
+        )
+    }
+
+    fn read_scoped(
+        &self,
+        profile: &str,
+        repo_scope: &str,
+    ) -> Result<Option<ScopedCredential>, Self::Error> {
+        Ok(
+            (self.renewable && profile == "reader" && repo_scope == "acme/api")
+                .then(|| fake_scoped(self.now, "renewable-token", self.now + Duration::minutes(5))),
+        )
+    }
+}
+
+impl IssuanceGuardStore for FakeCredentialsStore {
+    type Error = MockStoreError;
+
+    fn issuance_guard(&self) -> Result<IssuanceGuard, Self::Error> {
+        Ok(IssuanceGuard::new(1))
+    }
+}
+
+impl WriteCredentials for FakeCredentialsStore {
+    type Error = MockStoreError;
+
+    fn commit_base(
+        &self,
+        _candidate: &BaseCredential,
+        _guard: IssuanceGuard,
+    ) -> Result<CommitBaseOutcome, Self::Error> {
+        Ok(CommitBaseOutcome::Saved)
+    }
+
+    fn commit_scoped(
+        &self,
+        _entry: &ScopedCredential,
+        _guard: IssuanceGuard,
+        _source: &SourceGuard<'_>,
+    ) -> Result<CommitScopedOutcome, Self::Error> {
+        self.commit_scoped_result
+            .borrow_mut()
+            .take()
+            .unwrap_or(Ok(CommitScopedOutcome::Saved))
+    }
+
+    fn renew_scoped(
+        &self,
+        _expected: &ScopedCredential,
+        _entry: &ScopedCredential,
+        _guard: IssuanceGuard,
+        _source: &SourceGuard<'_>,
+        _observed_at: OffsetDateTime,
+    ) -> Result<ReplaceOutcome<ScopedCredential>, Self::Error> {
+        self.renew_scoped_result.borrow_mut().take().unwrap()
+    }
+
+    fn delete_base_if_generation(
+        &self,
+        _profile: &str,
+        _expected_generation: &str,
+    ) -> Result<DeleteBaseOutcome, Self::Error> {
+        Ok(DeleteBaseOutcome::Deleted)
+    }
+}
+
+fn candidate_client(token: &str, now: OffsetDateTime) -> MockClient {
+    client(IssuedScopedToken {
+        access_token: token.into(),
+        expires_at: Some(TokenExpiry::new(now + Duration::hours(1)).to_string()),
+    })
+}
+
+enum FakeAcquireInjection {
+    Commit(Result<CommitScopedOutcome, MockStoreError>),
+    Renew(Result<ReplaceOutcome<ScopedCredential>, MockStoreError>),
+}
+
+enum FakeAcquireExpected {
+    StorageError,
+    EpochChanged,
+    BaseGenChanged,
+    Winner(&'static str),
+}
+
+#[test]
+fn fake_storage_workflow_injection_and_candidate_cleanup() {
+    let now = OffsetDateTime::now_utc();
+    let cases =
+        [
+            (
+                "cand-commit-err",
+                FakeAcquireInjection::Commit(Err(MockStoreError)),
+                FakeAcquireExpected::StorageError,
+            ),
+            (
+                "cand-commit-epoch",
+                FakeAcquireInjection::Commit(Ok(CommitScopedOutcome::EpochChanged)),
+                FakeAcquireExpected::EpochChanged,
+            ),
+            (
+                "cand-commit-gen",
+                FakeAcquireInjection::Commit(Ok(CommitScopedOutcome::BaseGenerationChanged)),
+                FakeAcquireExpected::BaseGenChanged,
+            ),
+            (
+                "cand-commit-winner",
+                FakeAcquireInjection::Commit(Ok(CommitScopedOutcome::Retained(Box::new(
+                    fake_scoped(now, "winner-token", now + Duration::hours(1)),
+                )))),
+                FakeAcquireExpected::Winner("winner-token"),
+            ),
+            (
+                "cand-renew-err",
+                FakeAcquireInjection::Renew(Err(MockStoreError)),
+                FakeAcquireExpected::StorageError,
+            ),
+            (
+                "cand-renew-epoch",
+                FakeAcquireInjection::Renew(Ok(ReplaceOutcome::EpochChanged)),
+                FakeAcquireExpected::EpochChanged,
+            ),
+            (
+                "cand-renew-gen",
+                FakeAcquireInjection::Renew(Ok(ReplaceOutcome::BaseGenerationChanged)),
+                FakeAcquireExpected::BaseGenChanged,
+            ),
+            (
+                "cand-renew-winner",
+                FakeAcquireInjection::Renew(Ok(ReplaceOutcome::Retained(fake_scoped(
+                    now,
+                    "winner-token",
+                    now + Duration::hours(1),
+                )))),
+                FakeAcquireExpected::Winner("winner-token"),
+            ),
+        ];
+
+    let config: Config = CONFIG.parse().unwrap();
+    let profile = config.resolve_token_profile("reader").unwrap();
+
+    for (cand_token, injection, expected) in cases {
+        let mut store = FakeCredentialsStore::new(now);
+        let client = candidate_client(cand_token, now);
+        match injection {
+            FakeAcquireInjection::Commit(res) => {
+                *store.commit_scoped_result.borrow_mut() = Some(res);
+            }
+            FakeAcquireInjection::Renew(res) => {
+                store.renewable = true;
+                *store.renew_scoped_result.borrow_mut() = Some(res);
+            }
+        }
+        let result =
+            super::acquire::acquire_with_clock(&client, &store, scoped_request(&profile), || now);
+        assert_eq!(
+            &*client.revoked.borrow(),
+            &[cand_token],
+            "candidate must be revoked on error/conflict/retention"
+        );
+
+        match expected {
+            FakeAcquireExpected::StorageError => {
+                assert!(matches!(result, Err(TokenError::Storage(MockStoreError))));
+            }
+            FakeAcquireExpected::EpochChanged => {
+                assert!(matches!(result, Err(TokenError::EpochChanged(ref p)) if p == "reader"));
+            }
+            FakeAcquireExpected::BaseGenChanged => {
+                assert!(
+                    matches!(result, Err(TokenError::BaseGenerationChanged(ref s)) if s == "developer")
+                );
+            }
+            FakeAcquireExpected::Winner(token) => {
+                assert_eq!(result.unwrap().access_token.as_ref(), token);
+            }
+        }
+    }
 }

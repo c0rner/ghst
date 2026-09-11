@@ -1,36 +1,44 @@
-use crate::cache::{CacheInspectionState, Record, abbreviate_cache_key, inspect_cache};
+use crate::cache::{CacheStore, abbreviate_cache_key};
 use crate::cmd::{CmdError, GhstCli, StatusCmd, format_human_expiry};
 use crate::config::Config;
 use crate::run::RunState;
+use crate::token::store::{InspectRecords, InspectionState, Record, RecordInspection};
 use std::collections::BTreeMap;
 use std::io::{self, Write};
-use std::path::Path;
 use time::OffsetDateTime;
 use tracing::{debug, info};
 
 pub fn run_status(args: &GhstCli, _cmd: &StatusCmd) -> Result<(), CmdError> {
     let config = crate::config::load(args.config.as_deref())?;
     let cache_dir = crate::config::cache_dir()?;
+    let store = CacheStore::new(&cache_dir);
     print_status(
         &mut io::stdout().lock(),
         &config,
-        &cache_dir,
+        &store,
         OffsetDateTime::now_utc(),
     )
 }
 
-pub fn print_status<W: Write>(
+pub fn print_status<W: Write, S, E>(
     writer: &mut W,
     config: &Config,
-    cache_dir: &Path,
+    store: &S,
     now: OffsetDateTime,
-) -> Result<(), CmdError> {
-    let inspections = inspect_cache(cache_dir)?;
+) -> Result<(), CmdError>
+where
+    S: InspectRecords<Error = E>,
+    CmdError: From<E>,
+{
+    let inspections = store.inspect_records()?;
     let cache_keys: Vec<_> = inspections
         .iter()
-        .filter_map(|inspection| inspection.cache_key.as_deref())
+        .filter_map(|inspection| inspection.slot_id.as_deref())
         .collect();
-    debug!(cache_dir = %cache_dir.display(), entries = inspections.len(), "inspected token cache for status");
+    debug!(
+        entries = inspections.len(),
+        "inspected token cache for status"
+    );
     if inspections.is_empty() {
         writeln!(writer, "No cached tokens.")?;
         return Ok(());
@@ -39,9 +47,7 @@ pub fn print_status<W: Write>(
     let mut unmatched = Vec::new();
     for (index, inspection) in inspections.iter().enumerate() {
         match &inspection.state {
-            CacheInspectionState::Current(entry)
-                if config.profiles.contains_key(entry.profile()) =>
-            {
+            InspectionState::Current(entry) if config.profiles.contains_key(entry.profile()) => {
                 grouped.entry(entry.profile()).or_default().push(index);
             }
             _ => unmatched.push(index),
@@ -91,11 +97,11 @@ pub fn print_status<W: Write>(
 
 fn write_entry(
     writer: &mut impl Write,
-    inspection: &crate::cache::CacheInspection,
+    inspection: &RecordInspection,
     cache_keys: &[&str],
     now: OffsetDateTime,
 ) -> io::Result<()> {
-    if let Some(id) = &inspection.cache_key {
+    if let Some(id) = &inspection.slot_id {
         writeln!(
             writer,
             "    ID:          {}",
@@ -103,8 +109,8 @@ fn write_entry(
         )?;
     }
     match &inspection.state {
-        CacheInspectionState::Invalid => writeln!(writer, "    Lifetime:    Invalid"),
-        CacheInspectionState::Current(entry) => {
+        InspectionState::Invalid => writeln!(writer, "    Lifetime:    Invalid"),
+        InspectionState::Current(entry) => {
             let expiry = entry.expires_at();
             let state = if expiry.value() <= now {
                 "Expired"
@@ -137,7 +143,7 @@ fn write_entry(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cache::{Record, compute_run_cache_key, save_cache_entry};
+    use crate::cache::{Record, compute_run_cache_key, write_test_entry};
     use crate::credential::{AccessToken, TokenExpiry, authority_fingerprint};
     use crate::run::{RunRecord, RunState};
     use time::Duration;
@@ -162,7 +168,7 @@ permissions = { contents = "read" }
         let cache_dir = temp.path().join("cache");
         let now = OffsetDateTime::now_utc();
         let run_id = "status-run";
-        save_cache_entry(
+        write_test_entry(
             &cache_dir,
             &compute_run_cache_key(run_id),
             &Record::Run(RunRecord {
@@ -181,7 +187,7 @@ permissions = { contents = "read" }
             }),
         )
         .unwrap();
-        save_cache_entry(
+        write_test_entry(
             &cache_dir,
             &compute_run_cache_key("second-status-run"),
             &Record::Run(RunRecord {
@@ -202,7 +208,8 @@ permissions = { contents = "read" }
         .unwrap();
         std::fs::write(cache_dir.join("malformed.json"), "{}").unwrap();
         let mut output = Vec::new();
-        print_status(&mut output, &config, &cache_dir, now).unwrap();
+        let store = CacheStore::new(&cache_dir);
+        print_status(&mut output, &config, &store, now).unwrap();
         let output = String::from_utf8(output).unwrap();
         assert!(!output.contains("developer [app]"));
         assert!(output.contains("* reader [scoped]"));
@@ -237,14 +244,9 @@ github_app.client_id = "id"
         .unwrap();
         let temp = tempfile::tempdir().unwrap();
         let mut output = Vec::new();
+        let store = CacheStore::new(temp.path().join("missing-cache"));
 
-        print_status(
-            &mut output,
-            &config,
-            &temp.path().join("missing-cache"),
-            OffsetDateTime::now_utc(),
-        )
-        .unwrap();
+        print_status(&mut output, &config, &store, OffsetDateTime::now_utc()).unwrap();
 
         assert_eq!(String::from_utf8(output).unwrap(), "No cached tokens.\n");
     }

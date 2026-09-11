@@ -3,7 +3,10 @@ use std::path::PathBuf;
 
 #[derive(Debug)]
 pub enum CacheError {
-    Io(std::io::Error),
+    Io {
+        path: Option<PathBuf>,
+        source: std::io::Error,
+    },
     Json(serde_json::Error),
     InsecurePath {
         path: PathBuf,
@@ -22,12 +25,6 @@ pub enum CacheError {
     InvalidRunTransition(&'static str),
     MalformedEpoch,
     EpochExhausted,
-    EpochChanged {
-        expected: u64,
-        actual: u64,
-    },
-    BaseGenerationChanged,
-    RenewalEntryChanged,
     UnsupportedSchema {
         kind: String,
         version: Option<u32>,
@@ -36,10 +33,27 @@ pub enum CacheError {
     Platform(&'static str),
 }
 
+impl CacheError {
+    pub fn io(path: impl Into<PathBuf>, source: std::io::Error) -> Self {
+        Self::Io {
+            path: Some(path.into()),
+            source,
+        }
+    }
+
+    pub const fn descriptor_io(source: std::io::Error) -> Self {
+        Self::Io { path: None, source }
+    }
+}
+
 impl fmt::Display for CacheError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Io(err) => write!(f, "cache IO error: {err}"),
+            Self::Io {
+                path: Some(path),
+                source,
+            } => write!(f, "cache IO error for '{}': {source}", path.display()),
+            Self::Io { path: None, source } => write!(f, "cache IO error: {source}"),
             Self::Json(err) => write!(f, "cache JSON error: {err}"),
             Self::InsecurePath { path, reason } => {
                 write!(f, "insecure cache path '{}': {reason}", path.display())
@@ -64,19 +78,6 @@ impl fmt::Display for CacheError {
             }
             Self::MalformedEpoch => write!(f, "cache lock contains a malformed epoch"),
             Self::EpochExhausted => write!(f, "cache epoch is exhausted"),
-            Self::EpochChanged { expected, actual } => write!(
-                f,
-                "cache epoch changed from {expected} to {actual} while issuing a token"
-            ),
-            Self::BaseGenerationChanged => {
-                write!(
-                    f,
-                    "source base token generation changed while issuing a token"
-                )
-            }
-            Self::RenewalEntryChanged => {
-                write!(f, "scoped cache entry changed while renewing a token")
-            }
             Self::UnsupportedSchema {
                 kind,
                 version: Some(version),
@@ -101,7 +102,10 @@ impl fmt::Display for CacheError {
 impl From<crate::fs::FsError> for CacheError {
     fn from(source: crate::fs::FsError) -> Self {
         match source {
-            crate::fs::FsError::Io { source, .. } => Self::Io(source),
+            crate::fs::FsError::Io { path, source } => Self::Io {
+                path: Some(path),
+                source,
+            },
             crate::fs::FsError::InsecurePath { path, reason } => {
                 Self::InsecurePath { path, reason }
             }
@@ -132,7 +136,7 @@ impl From<crate::run::RunTransitionError> for CacheError {
 impl std::error::Error for CacheError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::Io(err) => Some(err),
+            Self::Io { source, .. } => Some(source),
             Self::Json(err) => Some(err),
             Self::InsecurePath { .. }
             | Self::InvalidKey(_)
@@ -142,9 +146,6 @@ impl std::error::Error for CacheError {
             | Self::InvalidRunTransition(_)
             | Self::MalformedEpoch
             | Self::EpochExhausted
-            | Self::EpochChanged { .. }
-            | Self::BaseGenerationChanged
-            | Self::RenewalEntryChanged
             | Self::UnsupportedSchema { .. }
             | Self::Platform(_) => None,
         }

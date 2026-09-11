@@ -8,13 +8,15 @@ mod provenance;
 pub mod revoke;
 pub mod run;
 mod scoped;
+pub mod store;
 mod types;
 mod validation;
 
 pub use acquire::acquire;
+#[cfg(test)]
+pub use base::base_cache_key;
 pub use base::{
-    base_cache_key, load_current_base_entry, load_valid_base_entry, load_valid_base_status,
-    persist_base_response,
+    load_current_base_entry, load_valid_base_entry, load_valid_base_status, persist_base_response,
 };
 pub use device_flow::{DeviceFlow, DeviceFlowError};
 pub use error::TokenError;
@@ -28,12 +30,12 @@ pub use validation::{validate_base_expiry, validate_scoped_expiry};
 
 use crate::domain::profile::AppRegistration;
 
-fn revoke_with_context<C: RevokeTokenClient + ?Sized>(
+fn revoke_with_context<C: RevokeTokenClient + ?Sized, E>(
     client: &C,
     app: &AppRegistration<'_>,
     token: &crate::credential::AccessToken,
-    context: TokenError,
-) -> TokenError {
+    context: TokenError<E>,
+) -> TokenError<E> {
     let Some(secret) = app.client_secret else {
         tracing::warn!(
             "client secret unavailable; unused remote token could not be revoked and may remain active until GitHub invalidates it or it is manually revoked"

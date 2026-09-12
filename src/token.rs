@@ -27,7 +27,7 @@ pub use scoped::{FreshScopedTokenRequest, issue_fresh_scoped};
 pub use types::{AcquireRequest, AcquiredToken, BasePersistence, BaseTokenStatus};
 pub use validation::{validate_base_expiry, validate_scoped_expiry};
 
-use crate::domain::profile::AppRegistration;
+use crate::profile::AppRegistration;
 
 pub fn revoke_with_context<C: RevokeTokenClient + ?Sized, E>(
     client: &C,

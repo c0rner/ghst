@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use crate::credential::{AccessToken, TokenExpiry};
-use crate::domain::profile::{AppAuthority, AppCredentials, PermissionLevel};
+use crate::profile::{AppAuthority, AppCredentials, PermissionLevel};
 use crate::repository::RepositorySelection;
 
 pub struct AcquiredToken {

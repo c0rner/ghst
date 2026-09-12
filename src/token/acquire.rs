@@ -7,8 +7,11 @@ use crate::credential::store::{
     CommitScopedOutcome, IssuanceGuardStore, ReadCredentials, ReplaceOutcome, SourceGuard,
     WriteCredentials,
 };
-use crate::credential::{AccessToken, ScopedCredential, authority_fingerprint, policy_fingerprint};
-use crate::domain::profile::AppAuthority;
+use crate::credential::{
+    AccessToken, ExpectedScopedProvenance, ScopedCredential, ScopedProvenanceMismatch,
+    authority_fingerprint, policy_fingerprint,
+};
+use crate::profile::AppAuthority;
 use crate::token::ScopedTokenClient;
 
 pub fn acquire<C, S, E>(
@@ -124,15 +127,20 @@ where
         permissions = ?prepared.permissions,
         "prepared scoped token acquisition"
     );
-    let provenance = ScopedProvenance {
-        profile_name: prepared.profile_name,
-        source_name: prepared.source_name,
-        canonical_scope: &prepared.scope,
-        policy: &policy,
-        parent_generation: &prepared.base.generation_fingerprint(),
-        source_authority: &prepared.app.authority,
+    let source_authority_fingerprint = authority_fingerprint(
+        prepared.app.authority.client_id,
+        prepared.app.authority.account,
+    );
+    let parent_generation = prepared.base.generation_fingerprint();
+    let expected = ExpectedScopedProvenance {
+        profile: prepared.profile_name,
+        source_profile: prepared.source_name,
+        source_authority_fingerprint: &source_authority_fingerprint,
+        parent_generation: &parent_generation,
+        policy_fingerprint: &policy,
+        repo_scope: &prepared.scope,
     };
-    let renewal = match classify_scoped_entry(store, &provenance, now())? {
+    let renewal = match classify_scoped_entry(store, &expected, now())? {
         CachedScoped::Fresh(entry) => {
             tracing::debug!(
                 profile = prepared.profile_name,
@@ -169,15 +177,6 @@ where
     )
 }
 
-struct ScopedProvenance<'a> {
-    profile_name: &'a str,
-    source_name: &'a str,
-    canonical_scope: &'a str,
-    policy: &'a str,
-    parent_generation: &'a str,
-    source_authority: &'a AppAuthority<'a>,
-}
-
 enum CachedScoped {
     Fresh(ScopedCredential),
     Renewable(ScopedCredential),
@@ -186,7 +185,7 @@ enum CachedScoped {
 
 fn classify_scoped_entry<S, E>(
     store: &S,
-    provenance: &ScopedProvenance<'_>,
+    expected: &ExpectedScopedProvenance<'_>,
     now: OffsetDateTime,
 ) -> Result<CachedScoped, TokenError<E>>
 where
@@ -194,46 +193,38 @@ where
     E: std::error::Error + 'static,
 {
     let Some(entry) = store
-        .read_scoped(provenance.profile_name, provenance.canonical_scope)
+        .read_scoped(expected.profile, expected.repo_scope)
         .map_err(TokenError::Storage)?
     else {
         tracing::debug!(
-            profile = provenance.profile_name,
-            repo_scope = provenance.canonical_scope,
+            profile = expected.profile,
+            repo_scope = expected.repo_scope,
             "scoped token cache miss"
         );
         return Ok(CachedScoped::MissingOrUnsafe);
     };
-    if entry.profile != provenance.profile_name {
-        return Err(TokenError::InconsistentCacheMetadata {
-            profile: provenance.profile_name.to_owned(),
-            found: entry.profile,
-        });
-    }
-    let rejection = if entry.source_profile != provenance.source_name {
-        Some("source profile changed")
-    } else if !super::provenance::matches_authority(
-        provenance.source_authority,
-        &entry.source_authority_fingerprint,
-    ) {
-        Some("source GitHub App authority changed")
-    } else if entry.repo_scope != provenance.canonical_scope {
-        Some("repository scope changed")
-    } else if entry.policy_fingerprint != provenance.policy {
-        Some("permissions or target account changed")
-    } else if entry.parent_generation != provenance.parent_generation {
-        Some("parent base token generation changed")
-    } else if !entry.expires_at.is_safe_to_handoff_at(now) {
-        Some("token is expired or inside the handoff safety margin")
-    } else {
-        None
-    };
-    if let Some(reason) = rejection {
+    if let Err(mismatch) = entry.check_provenance(expected) {
+        if mismatch == ScopedProvenanceMismatch::Profile {
+            return Err(TokenError::InconsistentCacheMetadata {
+                profile: expected.profile.to_owned(),
+                found: entry.profile,
+            });
+        }
         tracing::debug!(
-            profile = provenance.profile_name,
-            repo_scope = provenance.canonical_scope,
+            profile = expected.profile,
+            repo_scope = expected.repo_scope,
             expires_at = %entry.expires_at,
-            reason,
+            reason = mismatch.description(),
+            "cached scoped token was rejected"
+        );
+        return Ok(CachedScoped::MissingOrUnsafe);
+    }
+    if !entry.expires_at.is_safe_to_handoff_at(now) {
+        tracing::debug!(
+            profile = expected.profile,
+            repo_scope = expected.repo_scope,
+            expires_at = %entry.expires_at,
+            reason = "token is expired or inside the handoff safety margin",
             "cached scoped token was rejected"
         );
         Ok(CachedScoped::MissingOrUnsafe)

@@ -14,7 +14,7 @@ use crate::credential::AccessToken;
 use crate::credential::store::{
     IssuanceGuardStore, ReadCredentials, SourceGuard, WriteCredentials,
 };
-use crate::domain::profile::{AppCredentials, PermissionLevel};
+use crate::profile::{AppCredentials, PermissionLevel};
 use crate::repository::RepositorySelection;
 use crate::token::{
     FreshScopedTokenRequest, RevokeTokenClient, ScopedTokenClient, TokenError, issue_fresh_scoped,
@@ -522,7 +522,7 @@ mod tests {
         CommitBaseOutcome, CommitScopedOutcome, DeleteBaseOutcome, IssuanceGuard, ReplaceOutcome,
     };
     use crate::credential::{BaseCredential, ScopedCredential, TokenExpiry, authority_fingerprint};
-    use crate::domain::profile::AppAuthority;
+    use crate::profile::AppAuthority;
     use crate::token::{IssuedScopedToken, RemoteError, ScopedTokenRequest};
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1023,7 +1023,7 @@ mod tests {
     fn sample_repos() -> RepositorySelection {
         RepositorySelection::resolve(
             &[],
-            &crate::domain::profile::RepoScope::All,
+            &crate::profile::RepoScope::All,
             "acme",
             || unreachable!(),
         )

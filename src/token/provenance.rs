@@ -1,5 +1,5 @@
-use crate::credential::authority_fingerprint;
-use crate::domain::profile::{AppAuthority, AppRegistration, NamedAppRegistration};
+use crate::credential::matches_authority_fingerprint;
+use crate::profile::{AppAuthority, AppRegistration, NamedAppRegistration};
 use crate::token::store::Record;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -10,7 +10,7 @@ pub enum ConfiguredAuthority<'a> {
 }
 
 pub fn matches_authority(authority: &AppAuthority<'_>, cached_fingerprint: &str) -> bool {
-    authority_fingerprint(authority.client_id, authority.account) == cached_fingerprint
+    matches_authority_fingerprint(authority.client_id, authority.account, cached_fingerprint)
 }
 
 pub fn for_entry<'a>(
@@ -56,6 +56,7 @@ pub fn for_source<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credential::authority_fingerprint;
 
     #[test]
     fn test_provenance_resolution_without_config_types() {

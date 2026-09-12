@@ -1,4 +1,4 @@
-use crate::domain::profile::{AppRegistration, NamedAppRegistration};
+use crate::profile::{AppRegistration, NamedAppRegistration};
 use crate::token::store::{
     BeginRevocation, DeleteInspectedRecord, DeleteOutcome, InspectionState, Record,
     RecordInspection, RevocationBatch, RevocationSelection,
@@ -480,7 +480,7 @@ mod tests {
     use crate::credential::{
         AccessToken, BaseCredential, ScopedCredential, TokenExpiry, authority_fingerprint,
     };
-    use crate::domain::profile::AppAuthority;
+    use crate::profile::AppAuthority;
     use crate::run::{RunRecord, RunState};
     use std::cell::{Cell, RefCell};
     use std::path::Path;

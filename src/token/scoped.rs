@@ -10,7 +10,7 @@ use crate::credential::store::{
     DeleteBaseOutcome, IssuanceGuard, IssuanceGuardStore, ReadCredentials, WriteCredentials,
 };
 use crate::credential::{AccessToken, BaseCredential, TokenExpiry, authority_fingerprint};
-use crate::domain::profile::{AppCredentials, PermissionLevel};
+use crate::profile::{AppCredentials, PermissionLevel};
 use crate::repository::RepositorySelection;
 
 pub struct FreshScopedTokenRequest<'a> {
@@ -308,7 +308,7 @@ mod tests {
     use crate::credential::{
         AccessToken, BaseCredential, ScopedCredential, TokenExpiry, authority_fingerprint,
     };
-    use crate::domain::profile::AppAuthority;
+    use crate::profile::AppAuthority;
     use crate::repository::RepositorySelection;
     use crate::token::{IssuedScopedToken, RemoteError, RevokeTokenClient, ScopedTokenClient};
     use std::cell::RefCell;
@@ -483,7 +483,7 @@ mod tests {
     fn repos_all() -> RepositorySelection {
         RepositorySelection::resolve(
             &[],
-            &crate::domain::profile::RepoScope::All,
+            &crate::profile::RepoScope::All,
             "acme-corp",
             || unreachable!(),
         )

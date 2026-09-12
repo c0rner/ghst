@@ -33,18 +33,18 @@ pub fn run_token(args: &GhstCli, cmd: &TokenCmd) -> Result<(), CmdError> {
 }
 
 struct TokenContext<'a, C> {
-    profile: &'a crate::domain::profile::ResolvedTokenProfile<'a>,
+    profile: &'a crate::profile::ResolvedTokenProfile<'a>,
     cache_dir: &'a Path,
     client: &'a C,
 }
 
 fn prepare_acquire_request<'a>(
-    profile: &'a crate::domain::profile::ResolvedTokenProfile<'a>,
+    profile: &'a crate::profile::ResolvedTokenProfile<'a>,
     cli_repositories: &[String],
     resolve_auto: impl FnMut() -> Result<String, RepositoryError>,
 ) -> Result<AcquireRequest<'a>, CmdError> {
     match profile {
-        crate::domain::profile::ResolvedTokenProfile::Base { name, app } => {
+        crate::profile::ResolvedTokenProfile::Base { name, app } => {
             if !cli_repositories.is_empty() {
                 return Err(CmdError::AppScopeRejected((*name).to_owned()));
             }
@@ -53,7 +53,7 @@ fn prepare_acquire_request<'a>(
                 authority: app.authority,
             })
         }
-        crate::domain::profile::ResolvedTokenProfile::Scoped {
+        crate::profile::ResolvedTokenProfile::Scoped {
             name,
             source_name,
             app,

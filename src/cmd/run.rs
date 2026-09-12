@@ -86,17 +86,17 @@ fn map_execute_error(error: ExecuteError<crate::cache::CacheError, std::io::Erro
 
 struct RunParameters<'a> {
     source_name: &'a str,
-    app: crate::domain::profile::AppCredentials<'a>,
-    permissions: &'a std::collections::BTreeMap<String, crate::domain::profile::PermissionLevel>,
+    app: crate::profile::AppCredentials<'a>,
+    permissions: &'a std::collections::BTreeMap<String, crate::profile::PermissionLevel>,
     repositories: crate::repository::RepositorySelection,
 }
 
 fn prepare_run_parameters<'a>(
-    profile: &'a crate::domain::profile::ResolvedTokenProfile<'a>,
+    profile: &'a crate::profile::ResolvedTokenProfile<'a>,
     cli_repositories: &[String],
     resolve_auto: impl FnMut() -> Result<String, crate::repository::RepositoryError>,
 ) -> Result<RunParameters<'a>, CmdError> {
-    let crate::domain::profile::ResolvedTokenProfile::Scoped {
+    let crate::profile::ResolvedTokenProfile::Scoped {
         source_name,
         app,
         repository_scope,
@@ -105,10 +105,8 @@ fn prepare_run_parameters<'a>(
     } = profile
     else {
         let name = match profile {
-            crate::domain::profile::ResolvedTokenProfile::Base { name, .. }
-            | crate::domain::profile::ResolvedTokenProfile::Scoped { name, .. } => {
-                (*name).to_owned()
-            }
+            crate::profile::ResolvedTokenProfile::Base { name, .. }
+            | crate::profile::ResolvedTokenProfile::Scoped { name, .. } => (*name).to_owned(),
         };
         return Err(CmdError::RunRequiresScoped(name));
     };

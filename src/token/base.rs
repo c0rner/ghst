@@ -4,8 +4,10 @@ use super::{
 use crate::credential::store::{
     CommitBaseOutcome, IssuanceGuard, ReadCredentials, WriteCredentials,
 };
-use crate::credential::{BaseCredential, authority_fingerprint};
-use crate::domain::profile::{AppAuthority, AppRegistration};
+use crate::credential::{
+    BaseCredential, BaseProvenanceMismatch, ExpectedBaseProvenance, authority_fingerprint,
+};
+use crate::profile::{AppAuthority, AppRegistration};
 use crate::token::{BaseTokenClient, IssuedBaseToken};
 use time::OffsetDateTime;
 
@@ -72,20 +74,29 @@ where
         tracing::debug!(profile = profile_name, "base token cache miss");
         return Ok(None);
     };
-    if entry.profile != profile_name {
-        return Err(TokenError::InconsistentCacheMetadata {
-            profile: profile_name.to_owned(),
-            found: entry.profile,
-        });
-    }
-    if !super::provenance::matches_authority(authority, &entry.authority_fingerprint) {
-        tracing::debug!(
-            profile = profile_name,
-            account = authority.account,
-            client_id = authority.client_id,
-            "cached base token was rejected because its configured authority changed"
-        );
-        return Ok(None);
+    let authority_fingerprint = authority_fingerprint(authority.client_id, authority.account);
+    let expected = ExpectedBaseProvenance {
+        profile: profile_name,
+        authority_fingerprint: &authority_fingerprint,
+    };
+    if let Err(mismatch) = entry.check_provenance(&expected) {
+        match mismatch {
+            BaseProvenanceMismatch::Profile => {
+                return Err(TokenError::InconsistentCacheMetadata {
+                    profile: profile_name.to_owned(),
+                    found: entry.profile,
+                });
+            }
+            BaseProvenanceMismatch::Authority => {
+                tracing::debug!(
+                    profile = profile_name,
+                    account = authority.account,
+                    client_id = authority.client_id,
+                    "cached base token was rejected because its configured authority changed"
+                );
+                return Ok(None);
+            }
+        }
     }
     tracing::debug!(
         profile = profile_name,

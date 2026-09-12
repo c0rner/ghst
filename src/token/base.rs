@@ -1,6 +1,5 @@
-use super::{
-    BasePersistence, BaseTokenStatus, TokenError, revoke_with_context, validate_base_expiry,
-};
+use super::types::BasePersistence;
+use super::{BaseTokenStatus, TokenError, revoke_with_context, validate_base_expiry};
 use crate::credential::store::{
     CommitBaseOutcome, IssuanceGuard, ReadCredentials, WriteCredentials,
 };

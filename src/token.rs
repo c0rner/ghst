@@ -2,6 +2,7 @@ mod acquire;
 mod base;
 mod device_flow;
 mod error;
+mod login;
 mod ports;
 pub mod provenance;
 pub mod revoke;
@@ -13,18 +14,18 @@ mod validation;
 pub use acquire::acquire;
 #[cfg(test)]
 pub use base::base_cache_key;
-pub use base::{
-    load_current_base_entry, load_valid_base_entry, load_valid_base_status, persist_base_response,
-};
-pub use device_flow::{DeviceFlow, DeviceFlowError};
+pub use base::{load_current_base_entry, load_valid_base_entry};
 pub use error::TokenError;
+pub use login::{
+    AuthorizationPrompt, LoginError, LoginOutcome, PresentAuthorization, authenticate,
+};
 pub use ports::{
     BaseTokenClient, DeviceAuthorization, DeviceFlowClient, DeviceFlowPoll, GitHubUser,
     IssuedBaseToken, IssuedScopedToken, RemoteError, RevokeTokenClient, ScopedTokenClient,
     ScopedTokenRequest,
 };
 pub use scoped::{FreshScopedTokenRequest, issue_fresh_scoped};
-pub use types::{AcquireRequest, AcquiredToken, BasePersistence, BaseTokenStatus};
+pub use types::{AcquireRequest, AcquiredToken, BaseTokenStatus};
 pub use validation::{validate_base_expiry, validate_scoped_expiry};
 
 use crate::profile::AppRegistration;

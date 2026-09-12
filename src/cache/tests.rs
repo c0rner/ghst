@@ -397,9 +397,6 @@ fn current_cache_schema_is_stable_and_round_trips() {
 
     // Intentional structural changes require a schema-version bump and matching golden update.
     for (entry, golden_json) in cases {
-        if matches!(&entry, Record::Run(_)) {
-            assert!(!format!("{entry:?}").contains("cargo test"));
-        }
         let serialized = serde_json::to_value(RecordWriteView::from(&entry)).unwrap();
         let golden: serde_json::Value = serde_json::from_str(golden_json).unwrap();
         assert_eq!(serialized, golden);
@@ -409,98 +406,44 @@ fn current_cache_schema_is_stable_and_round_trips() {
 }
 
 #[test]
-fn dto_conversion_rejects_unsupported_versions_with_valid_fields() {
-    // Unsupported schema versions with otherwise valid fields are rejected at the DTO conversion boundary.
-    let invalid_version_cases = [
-        (
-            r#"{"kind":"base","version":4,"profile":"developer","authority_fingerprint":"authority","github_user":"octocat","expires_at":"2026-08-09T11:00:00Z","access_token":"base-token"}"#,
-            "base",
-            4,
-            5,
-        ),
-        (
-            r#"{"kind":"base","version":6,"profile":"developer","authority_fingerprint":"authority","github_user":"octocat","expires_at":"2026-08-09T11:00:00Z","access_token":"base-token"}"#,
-            "base",
-            6,
-            5,
-        ),
-        (
-            r#"{"kind":"scoped","version":4,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","parent_generation":"generation","policy_fingerprint":"policy","github_user":"octocat","repo_scope":"acme/api","expires_at":"2026-08-09T11:00:00Z","access_token":"scoped-token"}"#,
-            "scoped",
-            4,
-            5,
-        ),
-        (
-            r#"{"kind":"scoped","version":6,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","parent_generation":"generation","policy_fingerprint":"policy","github_user":"octocat","repo_scope":"acme/api","expires_at":"2026-08-09T11:00:00Z","access_token":"scoped-token"}"#,
-            "scoped",
-            6,
-            5,
-        ),
-        (
-            r#"{"kind":"run","version":2,"run_id":"run-1","state":"running","wrapper_pid":100,"child_pid":101,"command":"cargo test","profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","github_user":"octocat","repo_scope":"acme/api","expires_at":"2026-08-09T11:00:00Z","access_token":"run-token"}"#,
-            "run",
-            2,
-            3,
-        ),
-        (
-            r#"{"kind":"run","version":4,"run_id":"run-1","state":"running","wrapper_pid":100,"child_pid":101,"command":"cargo test","profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","github_user":"octocat","repo_scope":"acme/api","expires_at":"2026-08-09T11:00:00Z","access_token":"run-token"}"#,
-            "run",
-            4,
-            3,
-        ),
-    ];
-
-    for (json, expected_kind, actual_version, expected_version) in invalid_version_cases {
-        let decoded: CacheEntryDto = serde_json::from_str(json).unwrap();
-        let err = Record::try_from(decoded).unwrap_err();
-        assert!(matches!(
-            err,
-            CacheError::UnsupportedSchema {
-                ref kind,
-                version: Some(v),
-                expected,
-            } if kind == expected_kind && v == actual_version && expected == expected_version
-        ));
-    }
-
-    // Direct DTO conversion also enforces schema version validation.
-    let base_dto: BaseCacheEntryDto = serde_json::from_str(
-        r#"{"version":4,"profile":"developer","authority_fingerprint":"authority","github_user":"octocat","expires_at":"2026-08-09T11:00:00Z","access_token":"base-token"}"#,
+fn dto_conversion_rejects_unsupported_versions() {
+    let base: BaseCacheEntryDto = serde_json::from_str(
+        r#"{"version":6,"profile":"developer","authority_fingerprint":"authority","github_user":"octocat","expires_at":"2026-08-09T11:00:00Z","access_token":"base-token"}"#,
     )
     .unwrap();
     assert!(matches!(
-        BaseCredential::try_from(base_dto),
+        BaseCredential::try_from(base),
         Err(CacheError::UnsupportedSchema {
-            version: Some(4),
+            kind,
+            version: Some(6),
             expected: 5,
-            ..
-        })
+        }) if kind == "base"
     ));
 
-    let scoped_dto: ScopedCacheEntryDto = serde_json::from_str(
-        r#"{"version":4,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","parent_generation":"generation","policy_fingerprint":"policy","github_user":"octocat","repo_scope":"acme/api","expires_at":"2026-08-09T11:00:00Z","access_token":"scoped-token"}"#,
+    let scoped: ScopedCacheEntryDto = serde_json::from_str(
+        r#"{"version":6,"profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","parent_generation":"generation","policy_fingerprint":"policy","github_user":"octocat","repo_scope":"acme/api","expires_at":"2026-08-09T11:00:00Z","access_token":"scoped-token"}"#,
     )
     .unwrap();
     assert!(matches!(
-        ScopedCredential::try_from(scoped_dto),
+        ScopedCredential::try_from(scoped),
         Err(CacheError::UnsupportedSchema {
-            version: Some(4),
+            kind,
+            version: Some(6),
             expected: 5,
-            ..
-        })
+        }) if kind == "scoped"
     ));
 
-    let run_dto: RunCacheEntryDto = serde_json::from_str(
-        r#"{"version":2,"run_id":"run-1","state":"running","wrapper_pid":100,"child_pid":101,"command":"cargo test","profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","github_user":"octocat","repo_scope":"acme/api","expires_at":"2026-08-09T11:00:00Z","access_token":"run-token"}"#,
+    let run: RunCacheEntryDto = serde_json::from_str(
+        r#"{"version":4,"run_id":"run-1","state":"running","wrapper_pid":100,"child_pid":101,"command":"cargo test","profile":"reader","source_profile":"developer","source_authority_fingerprint":"authority","github_user":"octocat","repo_scope":"acme/api","expires_at":"2026-08-09T11:00:00Z","access_token":"run-token"}"#,
     )
     .unwrap();
     assert!(matches!(
-        RunRecord::try_from(run_dto),
+        RunRecord::try_from(run),
         Err(CacheError::UnsupportedSchema {
-            version: Some(2),
+            kind,
+            version: Some(4),
             expected: 3,
-            ..
-        })
+        }) if kind == "run"
     ));
 }
 

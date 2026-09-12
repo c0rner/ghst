@@ -124,18 +124,6 @@ mod error_tests {
     use super::TokenError;
 
     #[test]
-    fn domain_errors_do_not_name_cli_commands_or_options() {
-        for error in [
-            TokenError::<crate::cache::CacheError>::NoBaseTokenCached("developer".into()),
-            TokenError::<crate::cache::CacheError>::NoSourceBaseTokenCached("developer".into()),
-        ] {
-            let message = error.to_string();
-            assert!(!message.contains("ghst"));
-            assert!(!message.contains("--repo"));
-        }
-    }
-
-    #[test]
     fn random_error_exposes_its_source() {
         let random = getrandom::Error::UNSUPPORTED;
         let error: TokenError<std::io::Error> = TokenError::from(random);

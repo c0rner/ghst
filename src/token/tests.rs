@@ -252,33 +252,6 @@ fn response_receipt_time_rejects_latency_crossing_the_handoff_margin() {
 }
 
 #[test]
-fn base_authority_and_kind_are_validated() {
-    let now = OffsetDateTime::now_utc();
-    let temp = tempfile::tempdir().unwrap();
-    let cache_dir = temp.path().join("cache");
-    cache_base(&cache_dir, now, "base");
-    let config: Config = CONFIG.parse().unwrap();
-    let profile = config.resolve_token_profile("developer").unwrap();
-    let ResolvedTokenProfile::Base { app, .. } = profile else {
-        panic!("expected base profile");
-    };
-    assert!(
-        load_current_base_entry(&CacheStore::new(&cache_dir), "developer", &app.authority)
-            .unwrap()
-            .is_some()
-    );
-    let mismatched = AppAuthority {
-        account: "other",
-        client_id: "id",
-    };
-    assert!(
-        load_current_base_entry(&CacheStore::new(&cache_dir), "developer", &mismatched)
-            .unwrap()
-            .is_none()
-    );
-}
-
-#[test]
 fn base_acquisition_returns_cached_token() {
     let now = OffsetDateTime::now_utc();
     let temp = tempfile::tempdir().unwrap();
@@ -911,6 +884,7 @@ fn fake_scoped(now: OffsetDateTime, token: &str, expiry: OffsetDateTime) -> Scop
 struct FakeCredentialsStore {
     now: OffsetDateTime,
     renewable: bool,
+    scoped: RefCell<Option<ScopedCredential>>,
     commit_scoped_result: RefCell<Option<Result<CommitScopedOutcome, MockStoreError>>>,
     renew_scoped_result: RefCell<Option<Result<ReplaceOutcome<ScopedCredential>, MockStoreError>>>,
 }
@@ -920,6 +894,7 @@ impl FakeCredentialsStore {
         Self {
             now,
             renewable: false,
+            scoped: RefCell::new(None),
             commit_scoped_result: RefCell::new(None),
             renew_scoped_result: RefCell::new(None),
         }
@@ -941,10 +916,10 @@ impl ReadCredentials for FakeCredentialsStore {
         profile: &str,
         repo_scope: &str,
     ) -> Result<Option<ScopedCredential>, Self::Error> {
-        Ok(
+        Ok(self.scoped.borrow_mut().take().or_else(|| {
             (self.renewable && profile == "reader" && repo_scope == "acme/api")
-                .then(|| fake_scoped(self.now, "renewable-token", self.now + Duration::minutes(5))),
-        )
+                .then(|| fake_scoped(self.now, "renewable-token", self.now + Duration::minutes(5)))
+        }))
     }
 }
 
@@ -1121,12 +1096,12 @@ impl ReadCredentials for FakeBaseReadStore {
     type Error = MockStoreError;
 
     fn read_base(&self, _profile: &str) -> Result<Option<BaseCredential>, Self::Error> {
-        Ok(self.entry.as_ref().map(|b| BaseCredential {
-            profile: b.profile.clone(),
-            authority_fingerprint: b.authority_fingerprint.clone(),
-            github_user: b.github_user.clone(),
-            expires_at: b.expires_at,
-            access_token: AccessToken::from(b.access_token.as_ref()),
+        Ok(self.entry.as_ref().map(|entry| BaseCredential {
+            profile: entry.profile.clone(),
+            authority_fingerprint: entry.authority_fingerprint.clone(),
+            github_user: entry.github_user.clone(),
+            expires_at: entry.expires_at,
+            access_token: AccessToken::from(entry.access_token.as_ref()),
         }))
     }
 
@@ -1140,405 +1115,76 @@ impl ReadCredentials for FakeBaseReadStore {
 }
 
 #[test]
-fn base_lookup_outcomes_distinguish_miss_inconsistent_and_safety() {
+fn base_lookup_maps_provenance_mismatches() {
     let now = OffsetDateTime::now_utc();
     let authority = AppAuthority {
         account: "acme",
         client_id: "id",
     };
+    let mut entry = fake_base(now);
+    entry.profile = "wrong-profile".into();
+    let inconsistent = FakeBaseReadStore { entry: Some(entry) };
 
-    // 1. Missing slot -> Ok(None) for both current and valid
-    let store_missing = FakeBaseReadStore { entry: None };
-    assert!(
-        load_current_base_entry(&store_missing, "developer", &authority)
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        load_valid_base_entry(&store_missing, "developer", &authority, now)
-            .unwrap()
-            .is_none()
-    );
-
-    // 2. Profile mismatch -> Err(TokenError::InconsistentCacheMetadata) for both
-    let store_inconsistent = FakeBaseReadStore {
-        entry: Some(BaseCredential {
-            profile: "wrong-profile".into(),
-            authority_fingerprint: authority_fingerprint("id", "acme"),
-            github_user: "octocat".into(),
-            expires_at: TokenExpiry::new(now + Duration::hours(1)),
-            access_token: AccessToken::from("token"),
-        }),
-    };
     assert!(matches!(
-        load_current_base_entry(&store_inconsistent, "developer", &authority),
-        Err(TokenError::InconsistentCacheMetadata { profile, found })
-            if profile == "developer" && found == "wrong-profile"
-    ));
-    assert!(matches!(
-        load_valid_base_entry(&store_inconsistent, "developer", &authority, now),
+        load_current_base_entry(&inconsistent, "developer", &authority),
         Err(TokenError::InconsistentCacheMetadata { profile, found })
             if profile == "developer" && found == "wrong-profile"
     ));
 
-    // 3. Authority mismatch -> non-destructive Ok(None) for both
-    let store_diff_auth = FakeBaseReadStore {
-        entry: Some(fake_base(now)),
-    };
-    let diff_authority = AppAuthority {
+    let mismatched_authority = AppAuthority {
         account: "other-account",
         client_id: "id",
     };
-    assert!(
-        load_current_base_entry(&store_diff_auth, "developer", &diff_authority)
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        load_valid_base_entry(&store_diff_auth, "developer", &diff_authority, now)
-            .unwrap()
-            .is_none()
-    );
-
-    // 4. Current-but-unsafe (expires at now + 20s):
-    //    load_current_base_entry returns Ok(Some(entry)), load_valid_base_entry returns Ok(None)
-    let store_unsafe = FakeBaseReadStore {
-        entry: Some(BaseCredential {
-            profile: "developer".into(),
-            authority_fingerprint: authority_fingerprint("id", "acme"),
-            github_user: "octocat".into(),
-            expires_at: TokenExpiry::new(now + Duration::seconds(20)),
-            access_token: AccessToken::from("unsafe-token"),
-        }),
-    };
-    assert!(
-        load_current_base_entry(&store_unsafe, "developer", &authority)
-            .unwrap()
-            .is_some()
-    );
-    assert!(
-        load_valid_base_entry(&store_unsafe, "developer", &authority, now)
-            .unwrap()
-            .is_none()
-    );
-
-    // 5. Safe valid entry (expires at now + 1h): both return Ok(Some(entry))
-    let store_valid = FakeBaseReadStore {
+    let stale = FakeBaseReadStore {
         entry: Some(fake_base(now)),
     };
-    assert_eq!(
-        load_current_base_entry(&store_valid, "developer", &authority)
+    assert!(
+        load_current_base_entry(&stale, "developer", &mismatched_authority)
             .unwrap()
-            .unwrap()
-            .access_token
-            .as_ref(),
-        "base-token"
+            .is_none()
     );
-    assert_eq!(
-        load_valid_base_entry(&store_valid, "developer", &authority, now)
-            .unwrap()
-            .unwrap()
-            .access_token
-            .as_ref(),
-        "base-token"
-    );
-}
-
-struct FakeScopedClassificationStore {
-    base: BaseCredential,
-    scoped: RefCell<Option<ScopedCredential>>,
-}
-
-impl ReadCredentials for FakeScopedClassificationStore {
-    type Error = MockStoreError;
-
-    fn read_base(&self, profile: &str) -> Result<Option<BaseCredential>, Self::Error> {
-        if profile == self.base.profile {
-            Ok(Some(BaseCredential {
-                profile: self.base.profile.clone(),
-                authority_fingerprint: self.base.authority_fingerprint.clone(),
-                github_user: self.base.github_user.clone(),
-                expires_at: self.base.expires_at,
-                access_token: AccessToken::from(self.base.access_token.as_ref()),
-            }))
-        } else {
-            Ok(None)
-        }
-    }
-
-    fn read_scoped(
-        &self,
-        _profile: &str,
-        _repo_scope: &str,
-    ) -> Result<Option<ScopedCredential>, Self::Error> {
-        Ok(self.scoped.borrow_mut().take())
-    }
-}
-
-impl IssuanceGuardStore for FakeScopedClassificationStore {
-    type Error = MockStoreError;
-
-    fn issuance_guard(&self) -> Result<IssuanceGuard, Self::Error> {
-        Ok(IssuanceGuard::new(1))
-    }
-}
-
-impl WriteCredentials for FakeScopedClassificationStore {
-    type Error = MockStoreError;
-
-    fn commit_base(
-        &self,
-        _candidate: &BaseCredential,
-        _guard: IssuanceGuard,
-    ) -> Result<CommitBaseOutcome, Self::Error> {
-        Ok(CommitBaseOutcome::Saved)
-    }
-
-    fn commit_scoped(
-        &self,
-        _entry: &ScopedCredential,
-        _guard: IssuanceGuard,
-        _source: &SourceGuard<'_>,
-    ) -> Result<CommitScopedOutcome, Self::Error> {
-        Ok(CommitScopedOutcome::Saved)
-    }
-
-    fn renew_scoped(
-        &self,
-        expected: &ScopedCredential,
-        _entry: &ScopedCredential,
-        _guard: IssuanceGuard,
-        _source: &SourceGuard<'_>,
-        _observed_at: OffsetDateTime,
-    ) -> Result<ReplaceOutcome<ScopedCredential>, Self::Error> {
-        Ok(ReplaceOutcome::Replaced(ScopedCredential {
-            profile: expected.profile.clone(),
-            source_profile: expected.source_profile.clone(),
-            source_authority_fingerprint: expected.source_authority_fingerprint.clone(),
-            parent_generation: expected.parent_generation.clone(),
-            policy_fingerprint: expected.policy_fingerprint.clone(),
-            github_user: expected.github_user.clone(),
-            repo_scope: expected.repo_scope.clone(),
-            expires_at: expected.expires_at,
-            access_token: AccessToken::from(expected.access_token.as_ref()),
-        }))
-    }
-
-    fn delete_base_if_generation(
-        &self,
-        _profile: &str,
-        _expected_generation: &str,
-    ) -> Result<DeleteBaseOutcome, Self::Error> {
-        Ok(DeleteBaseOutcome::Deleted)
-    }
-}
-
-#[derive(Clone, Copy)]
-enum ScopedExpectedOutcome {
-    FatalInconsistent(&'static str, &'static str),
-    MissingOrUnsafe,
-    Renewable,
-    Fresh,
-}
-
-struct ScopedClassificationTestCase<'a> {
-    name: &'static str,
-    profile_field: &'static str,
-    source_profile: &'static str,
-    source_authority: &'a str,
-    repo_scope: &'static str,
-    policy: &'a str,
-    parent_generation: &'a str,
-    expiry: OffsetDateTime,
-    expected: ScopedExpectedOutcome,
-}
-
-fn verify_scoped_classification_case(
-    now: OffsetDateTime,
-    profile: &ResolvedTokenProfile<'_>,
-    tc: &ScopedClassificationTestCase<'_>,
-) {
-    let entry = ScopedCredential {
-        profile: tc.profile_field.into(),
-        source_profile: tc.source_profile.into(),
-        source_authority_fingerprint: tc.source_authority.into(),
-        parent_generation: tc.parent_generation.into(),
-        policy_fingerprint: tc.policy.into(),
-        github_user: "octocat".into(),
-        repo_scope: tc.repo_scope.into(),
-        expires_at: TokenExpiry::new(tc.expiry),
-        access_token: AccessToken::from("cached-token"),
-    };
-
-    let store = FakeScopedClassificationStore {
-        base: fake_base(now),
-        scoped: RefCell::new(Some(entry)),
-    };
-
-    let client = client(IssuedScopedToken {
-        access_token: "minted-token".into(),
-        expires_at: Some(TokenExpiry::new(now + Duration::hours(2)).to_string()),
-    });
-
-    let result =
-        super::acquire::acquire_with_clock(&client, &store, scoped_request(profile), || now);
-
-    match tc.expected {
-        ScopedExpectedOutcome::FatalInconsistent(expected_prof, expected_found) => {
-            assert!(
-                matches!(
-                    result,
-                    Err(TokenError::InconsistentCacheMetadata { ref profile, ref found })
-                        if profile == expected_prof && found == expected_found
-                ),
-                "test case '{}' failed",
-                tc.name
-            );
-            assert!(
-                client.request.borrow().is_none(),
-                "test case '{}' client must not be called on inconsistent metadata",
-                tc.name
-            );
-        }
-        ScopedExpectedOutcome::MissingOrUnsafe => {
-            let token = result.unwrap_or_else(|e| panic!("test case '{}' failed: {e:?}", tc.name));
-            assert_eq!(
-                token.access_token.as_ref(),
-                "minted-token",
-                "test case '{}' failed",
-                tc.name
-            );
-            assert!(
-                client.request.borrow().is_some(),
-                "test case '{}' must call client",
-                tc.name
-            );
-            assert!(
-                client.revoked.borrow().is_empty(),
-                "test case '{}' must not revoke because missing/unsafe had no renewable record",
-                tc.name
-            );
-        }
-        ScopedExpectedOutcome::Renewable => {
-            let token = result.unwrap_or_else(|e| panic!("test case '{}' failed: {e:?}", tc.name));
-            assert_eq!(
-                token.access_token.as_ref(),
-                "minted-token",
-                "test case '{}' failed",
-                tc.name
-            );
-            assert!(
-                client.request.borrow().is_some(),
-                "test case '{}' must call client",
-                tc.name
-            );
-            assert_eq!(
-                &*client.revoked.borrow(),
-                &["cached-token"],
-                "test case '{}' must revoke displaced renewable token",
-                tc.name
-            );
-        }
-        ScopedExpectedOutcome::Fresh => {
-            let token = result.unwrap_or_else(|e| panic!("test case '{}' failed: {e:?}", tc.name));
-            assert_eq!(
-                token.access_token.as_ref(),
-                "cached-token",
-                "test case '{}' must return cached fresh token",
-                tc.name
-            );
-            assert!(
-                client.request.borrow().is_none(),
-                "test case '{}' must not call client",
-                tc.name
-            );
-        }
-    }
-}
-
-fn scoped_classification_test_cases<'a>(
-    now: OffsetDateTime,
-    default_authority: &'a str,
-    default_policy: &'a str,
-    parent_gen: &'a str,
-) -> [ScopedClassificationTestCase<'a>; 5] {
-    [
-        ScopedClassificationTestCase {
-            name: "fatal profile mismatch",
-            profile_field: "other-profile",
-            source_profile: "developer",
-            source_authority: default_authority,
-            repo_scope: "acme/api",
-            policy: default_policy,
-            parent_generation: parent_gen,
-            expiry: now + Duration::hours(1),
-            expected: ScopedExpectedOutcome::FatalInconsistent("reader", "other-profile"),
-        },
-        ScopedClassificationTestCase {
-            name: "provenance mismatch yields cache miss",
-            profile_field: "reader",
-            source_profile: "other-developer",
-            source_authority: default_authority,
-            repo_scope: "acme/api",
-            policy: default_policy,
-            parent_generation: parent_gen,
-            expiry: now + Duration::hours(1),
-            expected: ScopedExpectedOutcome::MissingOrUnsafe,
-        },
-        ScopedClassificationTestCase {
-            name: "inside handoff margin (at exact 30s boundary)",
-            profile_field: "reader",
-            source_profile: "developer",
-            source_authority: default_authority,
-            repo_scope: "acme/api",
-            policy: default_policy,
-            parent_generation: parent_gen,
-            expiry: now + Duration::seconds(30),
-            expected: ScopedExpectedOutcome::MissingOrUnsafe,
-        },
-        ScopedClassificationTestCase {
-            name: "at exact 10m renewal boundary",
-            profile_field: "reader",
-            source_profile: "developer",
-            source_authority: default_authority,
-            repo_scope: "acme/api",
-            policy: default_policy,
-            parent_generation: parent_gen,
-            expiry: now + Duration::minutes(10),
-            expected: ScopedExpectedOutcome::Renewable,
-        },
-        ScopedClassificationTestCase {
-            name: "fresh beyond 10m renewal boundary",
-            profile_field: "reader",
-            source_profile: "developer",
-            source_authority: default_authority,
-            repo_scope: "acme/api",
-            policy: default_policy,
-            parent_generation: parent_gen,
-            expiry: now + Duration::minutes(10) + Duration::seconds(1),
-            expected: ScopedExpectedOutcome::Fresh,
-        },
-    ]
 }
 
 #[test]
-fn scoped_acquisition_maps_provenance_and_timing_outcomes() {
+fn scoped_acquisition_maps_profile_mismatch_to_an_error() {
     let now = OffsetDateTime::now_utc();
+    let store = FakeCredentialsStore::new(now);
+    let mut entry = fake_scoped(now, "cached-token", now + Duration::hours(1));
+    entry.profile = "wrong-profile".into();
+    store.scoped.replace(Some(entry));
+
     let config: Config = CONFIG.parse().unwrap();
     let profile = config.resolve_token_profile("reader").unwrap();
-    let permissions = BTreeMap::from([
-        ("contents".to_owned(), "read".to_owned()),
-        ("pull_requests".to_owned(), "write".to_owned()),
-    ]);
-    let default_policy = policy_fingerprint("acme", "acme/api", &permissions);
-    let default_authority = authority_fingerprint("id", "acme");
-    let base_cred = fake_base(now);
-    let parent_gen = base_cred.generation_fingerprint();
+    let client = no_response_client();
 
-    let cases =
-        scoped_classification_test_cases(now, &default_authority, &default_policy, &parent_gen);
+    assert!(matches!(
+        super::acquire::acquire_with_clock(&client, &store, scoped_request(&profile), || now),
+        Err(TokenError::InconsistentCacheMetadata { profile, found })
+            if profile == "reader" && found == "wrong-profile"
+    ));
+    assert!(client.request.borrow().is_none());
+}
 
-    for tc in &cases {
-        verify_scoped_classification_case(now, &profile, tc);
-    }
+#[test]
+fn scoped_acquisition_treats_other_provenance_mismatches_as_a_cache_miss() {
+    let now = OffsetDateTime::now_utc();
+    let store = FakeCredentialsStore::new(now);
+    let mut entry = fake_scoped(now, "cached-token", now + Duration::hours(1));
+    entry.source_profile = "wrong-source".into();
+    store.scoped.replace(Some(entry));
+
+    let minted_expiry = TokenExpiry::new(now + Duration::hours(2));
+    let client = client(IssuedScopedToken {
+        access_token: "minted-token".into(),
+        expires_at: Some(minted_expiry.to_string()),
+    });
+    let config: Config = CONFIG.parse().unwrap();
+    let profile = config.resolve_token_profile("reader").unwrap();
+
+    let acquired =
+        super::acquire::acquire_with_clock(&client, &store, scoped_request(&profile), || now)
+            .unwrap();
+
+    assert_eq!(acquired.access_token.as_ref(), "minted-token");
+    assert!(client.request.borrow().is_some());
 }

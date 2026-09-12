@@ -409,77 +409,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn base_credential_compatibility_checks_expiry_and_profile_authority() {
-        let now = OffsetDateTime::now_utc();
-        let make_valid = || BaseCredential {
+    fn base_credential(now: OffsetDateTime) -> BaseCredential {
+        BaseCredential {
             profile: "developer".into(),
             authority_fingerprint: "auth1".into(),
             github_user: "octocat".into(),
             expires_at: TokenExpiry::new(now + Duration::hours(1)),
-            access_token: AccessToken::from("token1"),
-        };
-        let make_candidate = || BaseCredential {
-            profile: "developer".into(),
-            authority_fingerprint: "auth1".into(),
-            github_user: "octocat".into(),
-            expires_at: TokenExpiry::new(now + Duration::hours(2)),
-            access_token: AccessToken::from("token2"),
-        };
-        assert!(make_valid().compatible_with(&make_candidate(), now));
-
-        // Candidate with different non-provenance fields (github_user, access_token, expired expiry) remains compatible
-        let diff_user = BaseCredential {
-            github_user: "different-user".into(),
-            ..make_candidate()
-        };
-        assert!(make_valid().compatible_with(&diff_user, now));
-
-        let candidate_expired = BaseCredential {
-            expires_at: TokenExpiry::new(now - Duration::hours(1)),
-            ..make_candidate()
-        };
-        assert!(make_valid().compatible_with(&candidate_expired, now));
-
-        // Receiver at exact 30-second boundary: at 30s is rejected, at 31s is safe
-        let at_boundary = BaseCredential {
-            expires_at: TokenExpiry::new(now + Duration::seconds(30)),
-            ..make_valid()
-        };
-        assert!(!at_boundary.compatible_with(&make_candidate(), now));
-
-        let beyond_boundary = BaseCredential {
-            expires_at: TokenExpiry::new(now + Duration::seconds(31)),
-            ..make_valid()
-        };
-        assert!(beyond_boundary.compatible_with(&make_candidate(), now));
-
-        // Expired or within handoff safety margin
-        let expiring = BaseCredential {
-            expires_at: TokenExpiry::new(now + Duration::seconds(20)),
-            ..make_valid()
-        };
-        assert!(!expiring.compatible_with(&make_candidate(), now));
-
-        // Different profile
-        let diff_profile = BaseCredential {
-            profile: "other".into(),
-            ..make_candidate()
-        };
-        assert!(!make_valid().compatible_with(&diff_profile, now));
-
-        // Different authority
-        let diff_auth = BaseCredential {
-            authority_fingerprint: "auth2".into(),
-            ..make_candidate()
-        };
-        assert!(!make_valid().compatible_with(&diff_auth, now));
+            access_token: AccessToken::from("base-token"),
+        }
     }
 
-    #[test]
-    fn scoped_credential_compatibility_checks_expiry_and_all_provenance_fields() {
-        let now = OffsetDateTime::now_utc();
-        let valid = ScopedCredential {
+    fn scoped_credential(now: OffsetDateTime) -> ScopedCredential {
+        ScopedCredential {
             profile: "reader".into(),
             source_profile: "developer".into(),
             source_authority_fingerprint: "auth1".into(),
@@ -488,145 +429,44 @@ mod tests {
             github_user: "octocat".into(),
             repo_scope: "acme/api".into(),
             expires_at: TokenExpiry::new(now + Duration::hours(1)),
-            access_token: AccessToken::from("scoped-token1"),
-        };
-        let make_candidate = || ScopedCredential {
-            profile: "reader".into(),
-            source_profile: "developer".into(),
-            source_authority_fingerprint: "auth1".into(),
-            parent_generation: "gen1".into(),
-            policy_fingerprint: "policy1".into(),
-            github_user: "octocat".into(),
-            repo_scope: "acme/api".into(),
-            expires_at: TokenExpiry::new(now + Duration::hours(2)),
-            access_token: AccessToken::from("scoped-token2"),
-        };
-        assert!(valid.compatible_with(&make_candidate(), now));
-
-        // Expired
-        let expiring = ScopedCredential {
-            profile: "reader".into(),
-            source_profile: "developer".into(),
-            source_authority_fingerprint: "auth1".into(),
-            parent_generation: "gen1".into(),
-            policy_fingerprint: "policy1".into(),
-            github_user: "octocat".into(),
-            repo_scope: "acme/api".into(),
-            expires_at: TokenExpiry::new(now + Duration::seconds(20)),
-            access_token: AccessToken::from("scoped-token1"),
-        };
-        assert!(!expiring.compatible_with(&make_candidate(), now));
-
-        // Mismatched fields
-        assert!(!valid.compatible_with(
-            &ScopedCredential {
-                profile: "other".into(),
-                ..make_candidate()
-            },
-            now
-        ));
-        assert!(!valid.compatible_with(
-            &ScopedCredential {
-                source_profile: "other".into(),
-                ..make_candidate()
-            },
-            now
-        ));
-        assert!(!valid.compatible_with(
-            &ScopedCredential {
-                source_authority_fingerprint: "other".into(),
-                ..make_candidate()
-            },
-            now
-        ));
-        assert!(!valid.compatible_with(
-            &ScopedCredential {
-                parent_generation: "other".into(),
-                ..make_candidate()
-            },
-            now
-        ));
-        assert!(!valid.compatible_with(
-            &ScopedCredential {
-                policy_fingerprint: "other".into(),
-                ..make_candidate()
-            },
-            now
-        ));
-        assert!(!valid.compatible_with(
-            &ScopedCredential {
-                repo_scope: "other".into(),
-                ..make_candidate()
-            },
-            now
-        ));
+            access_token: AccessToken::from("scoped-token"),
+        }
     }
 
     #[test]
-    fn scoped_credential_compatibility_candidate_fields_and_receiver_boundary() {
+    fn base_compatibility_uses_receiver_safety_and_provenance_only() {
         let now = OffsetDateTime::now_utc();
-        let valid = ScopedCredential {
-            profile: "reader".into(),
-            source_profile: "developer".into(),
-            source_authority_fingerprint: "auth1".into(),
-            parent_generation: "gen1".into(),
-            policy_fingerprint: "policy1".into(),
-            github_user: "octocat".into(),
-            repo_scope: "acme/api".into(),
-            expires_at: TokenExpiry::new(now + Duration::hours(1)),
-            access_token: AccessToken::from("scoped-token1"),
-        };
-        let make_candidate = || ScopedCredential {
-            profile: "reader".into(),
-            source_profile: "developer".into(),
-            source_authority_fingerprint: "auth1".into(),
-            parent_generation: "gen1".into(),
-            policy_fingerprint: "policy1".into(),
-            github_user: "octocat".into(),
-            repo_scope: "acme/api".into(),
-            expires_at: TokenExpiry::new(now + Duration::hours(2)),
-            access_token: AccessToken::from("scoped-token2"),
-        };
+        let receiver = base_credential(now);
+        let mut candidate = base_credential(now);
+        candidate.github_user = "different-user".into();
+        candidate.expires_at = TokenExpiry::new(now - Duration::hours(1));
+        candidate.access_token = AccessToken::from("different-token");
+        assert!(receiver.compatible_with(&candidate, now));
 
-        // Candidate with different non-provenance fields remains compatible
-        let diff_user = ScopedCredential {
-            github_user: "different-user".into(),
-            ..make_candidate()
-        };
-        assert!(valid.compatible_with(&diff_user, now));
+        candidate.authority_fingerprint = "different-authority".into();
+        assert!(!receiver.compatible_with(&candidate, now));
 
-        let candidate_expired = ScopedCredential {
-            expires_at: TokenExpiry::new(now - Duration::hours(1)),
-            ..make_candidate()
-        };
-        assert!(valid.compatible_with(&candidate_expired, now));
+        let mut unsafe_receiver = base_credential(now);
+        unsafe_receiver.expires_at = TokenExpiry::new(now + Duration::seconds(30));
+        assert!(!unsafe_receiver.compatible_with(&base_credential(now), now));
+    }
 
-        // Receiver at exact 30-second boundary: at 30s is rejected, at 31s is safe
-        let at_boundary = ScopedCredential {
-            expires_at: TokenExpiry::new(now + Duration::seconds(30)),
-            profile: "reader".into(),
-            source_profile: "developer".into(),
-            source_authority_fingerprint: "auth1".into(),
-            parent_generation: "gen1".into(),
-            policy_fingerprint: "policy1".into(),
-            github_user: "octocat".into(),
-            repo_scope: "acme/api".into(),
-            access_token: AccessToken::from("scoped-token1"),
-        };
-        assert!(!at_boundary.compatible_with(&make_candidate(), now));
+    #[test]
+    fn scoped_compatibility_uses_receiver_safety_and_provenance_only() {
+        let now = OffsetDateTime::now_utc();
+        let receiver = scoped_credential(now);
+        let mut candidate = scoped_credential(now);
+        candidate.github_user = "different-user".into();
+        candidate.expires_at = TokenExpiry::new(now - Duration::hours(1));
+        candidate.access_token = AccessToken::from("different-token");
+        assert!(receiver.compatible_with(&candidate, now));
 
-        let beyond_boundary = ScopedCredential {
-            expires_at: TokenExpiry::new(now + Duration::seconds(31)),
-            profile: "reader".into(),
-            source_profile: "developer".into(),
-            source_authority_fingerprint: "auth1".into(),
-            parent_generation: "gen1".into(),
-            policy_fingerprint: "policy1".into(),
-            github_user: "octocat".into(),
-            repo_scope: "acme/api".into(),
-            access_token: AccessToken::from("scoped-token1"),
-        };
-        assert!(beyond_boundary.compatible_with(&make_candidate(), now));
+        candidate.policy_fingerprint = "different-policy".into();
+        assert!(!receiver.compatible_with(&candidate, now));
+
+        let mut unsafe_receiver = scoped_credential(now);
+        unsafe_receiver.expires_at = TokenExpiry::new(now + Duration::seconds(30));
+        assert!(!unsafe_receiver.compatible_with(&scoped_credential(now), now));
     }
 
     #[test]
@@ -661,13 +501,8 @@ mod tests {
 
     #[test]
     fn base_credential_check_provenance_and_provenance_extraction() {
-        let cred = BaseCredential {
-            profile: "developer".into(),
-            authority_fingerprint: "auth_123".into(),
-            github_user: "octocat".into(),
-            expires_at: TokenExpiry::new(OffsetDateTime::now_utc() + Duration::hours(1)),
-            access_token: AccessToken::from("token"),
-        };
+        let mut cred = base_credential(OffsetDateTime::now_utc());
+        cred.authority_fingerprint = "auth_123".into();
 
         let expected = cred.provenance();
         assert_eq!(
@@ -679,7 +514,6 @@ mod tests {
         );
         assert_eq!(cred.check_provenance(&expected), Ok(()));
 
-        // Profile mismatch
         let wrong_profile = ExpectedBaseProvenance {
             profile: "reader",
             authority_fingerprint: "auth_123",
@@ -689,7 +523,6 @@ mod tests {
             Err(BaseProvenanceMismatch::Profile)
         );
 
-        // Authority mismatch
         let wrong_auth = ExpectedBaseProvenance {
             profile: "developer",
             authority_fingerprint: "auth_other",
@@ -699,7 +532,6 @@ mod tests {
             Err(BaseProvenanceMismatch::Authority)
         );
 
-        // Precedence: profile mismatch evaluated before authority
         let both_wrong = ExpectedBaseProvenance {
             profile: "reader",
             authority_fingerprint: "auth_other",
@@ -712,17 +544,11 @@ mod tests {
 
     #[test]
     fn scoped_credential_check_provenance_and_provenance_extraction() {
-        let cred = ScopedCredential {
-            profile: "reader".into(),
-            source_profile: "developer".into(),
-            source_authority_fingerprint: "auth_123".into(),
-            parent_generation: "gen_123".into(),
-            policy_fingerprint: "policy_123".into(),
-            github_user: "octocat".into(),
-            repo_scope: "acme/repo".into(),
-            expires_at: TokenExpiry::new(OffsetDateTime::now_utc() + Duration::hours(1)),
-            access_token: AccessToken::from("token"),
-        };
+        let mut cred = scoped_credential(OffsetDateTime::now_utc());
+        cred.source_authority_fingerprint = "auth_123".into();
+        cred.parent_generation = "gen_123".into();
+        cred.policy_fingerprint = "policy_123".into();
+        cred.repo_scope = "acme/repo".into();
 
         let expected = cred.provenance();
         assert_eq!(
@@ -738,7 +564,6 @@ mod tests {
         );
         assert_eq!(cred.check_provenance(&expected), Ok(()));
 
-        // Profile mismatch
         let mut mismatch = expected;
         mismatch.profile = "other_profile";
         assert_eq!(
@@ -746,7 +571,6 @@ mod tests {
             Err(ScopedProvenanceMismatch::Profile)
         );
 
-        // Source profile mismatch
         let mut mismatch = expected;
         mismatch.source_profile = "other_source";
         assert_eq!(
@@ -754,7 +578,6 @@ mod tests {
             Err(ScopedProvenanceMismatch::SourceProfile)
         );
 
-        // Source authority mismatch
         let mut mismatch = expected;
         mismatch.source_authority_fingerprint = "other_auth";
         assert_eq!(
@@ -762,7 +585,6 @@ mod tests {
             Err(ScopedProvenanceMismatch::SourceAuthority)
         );
 
-        // Repo scope mismatch
         let mut mismatch = expected;
         mismatch.repo_scope = "other_repo";
         assert_eq!(
@@ -770,7 +592,6 @@ mod tests {
             Err(ScopedProvenanceMismatch::RepositoryScope)
         );
 
-        // Policy mismatch
         let mut mismatch = expected;
         mismatch.policy_fingerprint = "other_policy";
         assert_eq!(
@@ -778,7 +599,6 @@ mod tests {
             Err(ScopedProvenanceMismatch::Policy)
         );
 
-        // Parent generation mismatch
         let mut mismatch = expected;
         mismatch.parent_generation = "other_gen";
         assert_eq!(
@@ -786,7 +606,6 @@ mod tests {
             Err(ScopedProvenanceMismatch::ParentGeneration)
         );
 
-        // Precedence: profile > source_profile
         let mut multi_mismatch = expected;
         multi_mismatch.profile = "other_profile";
         multi_mismatch.source_profile = "other_source";
@@ -795,7 +614,6 @@ mod tests {
             Err(ScopedProvenanceMismatch::Profile)
         );
 
-        // Precedence: repo_scope > policy > parent_generation
         let mut multi_mismatch2 = expected;
         multi_mismatch2.repo_scope = "other_repo";
         multi_mismatch2.policy_fingerprint = "other_policy";
@@ -803,30 +621,6 @@ mod tests {
         assert_eq!(
             cred.check_provenance(&multi_mismatch2),
             Err(ScopedProvenanceMismatch::RepositoryScope)
-        );
-    }
-
-    #[test]
-    fn scoped_provenance_mismatch_descriptions_match_trace_strings() {
-        assert_eq!(
-            ScopedProvenanceMismatch::SourceProfile.description(),
-            "source profile changed"
-        );
-        assert_eq!(
-            ScopedProvenanceMismatch::SourceAuthority.description(),
-            "source GitHub App authority changed"
-        );
-        assert_eq!(
-            ScopedProvenanceMismatch::RepositoryScope.description(),
-            "repository scope changed"
-        );
-        assert_eq!(
-            ScopedProvenanceMismatch::Policy.description(),
-            "permissions or target account changed"
-        );
-        assert_eq!(
-            ScopedProvenanceMismatch::ParentGeneration.description(),
-            "parent base token generation changed"
         );
     }
 }

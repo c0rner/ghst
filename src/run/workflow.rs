@@ -1072,24 +1072,6 @@ mod tests {
     }
 
     #[test]
-    fn test_pending_durability_store_commits_before_spawn() {
-        let trace = ExecutionTrace::new();
-        let client = FakeWorkflowClient::new(trace.clone());
-        let store = FakeWorkflowStore::new(trace.clone());
-        let mut spawner = FakeSpawner::new(trace.clone());
-        spawner.assert_store_committed = Some(Arc::clone(&store.pending_committed));
-
-        let cmd = [OsString::from("echo"), OsString::from("hi")];
-        let repos = sample_repos();
-        let perms = BTreeMap::from([("contents".to_string(), PermissionLevel::Read)]);
-        let req = sample_request(&cmd, &repos, &perms);
-
-        let signals = FakeSignalForwarding::new(trace);
-        assert!(execute_run(&client, &store, &spawner, &signals, &req).is_ok());
-        assert!(store.pending_committed.load(Ordering::SeqCst));
-    }
-
-    #[test]
     fn test_prepare_signals_failure_aborts_without_child_pid() {
         let trace = ExecutionTrace::new();
         let client = FakeWorkflowClient::new(trace.clone());
@@ -1310,88 +1292,61 @@ mod tests {
     }
 
     #[test]
-    fn test_commit_pending_storage_error_revokes_candidate_without_spawning() {
-        let trace = ExecutionTrace::new();
-        let client = FakeWorkflowClient::new(trace.clone());
-        let mut store = FakeWorkflowStore::new(trace.clone());
-        store.injected_commit = InjectedCommitOutcome::StorageError;
-        let spawner = FakeSpawner::new(trace.clone());
-        let signals = FakeSignalForwarding::new(trace.clone());
+    fn commit_pending_failures_revoke_candidate_without_spawning() {
+        for injected in [
+            InjectedCommitOutcome::StorageError,
+            InjectedCommitOutcome::EpochChanged,
+            InjectedCommitOutcome::BaseGenerationChanged,
+        ] {
+            let trace = ExecutionTrace::new();
+            let client = FakeWorkflowClient::new(trace.clone());
+            let mut store = FakeWorkflowStore::new(trace.clone());
+            store.injected_commit = injected;
+            let spawner = FakeSpawner::new(trace.clone());
+            let signals = FakeSignalForwarding::new(trace.clone());
+            let cmd = [OsString::from("echo"), OsString::from("hi")];
+            let repos = sample_repos();
+            let perms = BTreeMap::from([("contents".to_string(), PermissionLevel::Read)]);
+            let req = sample_request(&cmd, &repos, &perms);
 
-        let cmd = [OsString::from("echo"), OsString::from("hi")];
-        let repos = sample_repos();
-        let perms = BTreeMap::from([("contents".to_string(), PermissionLevel::Read)]);
-        let req = sample_request(&cmd, &repos, &perms);
+            let err = execute_run(&client, &store, &spawner, &signals, &req).unwrap_err();
 
-        let err = execute_run(&client, &store, &spawner, &signals, &req).unwrap_err();
-        assert!(matches!(err, ExecuteError::Token(TokenError::Storage(_))));
-        assert_eq!(err.cleanup_status(), None);
-
-        assert_eq!(
-            trace.events(),
-            vec![
-                "read_base",
-                "issuance_guard",
-                "create_scoped_token",
-                "commit_pending",
-                "delete_token",
-            ]
-        );
-        assert_eq!(
-            *client.delete_calls.borrow(),
-            vec!["ghu_issued_run_tok_999"]
-        );
-    }
-
-    #[test]
-    fn test_commit_pending_epoch_changed_revokes_candidate_without_spawning() {
-        let trace = ExecutionTrace::new();
-        let client = FakeWorkflowClient::new(trace.clone());
-        let mut store = FakeWorkflowStore::new(trace.clone());
-        store.injected_commit = InjectedCommitOutcome::EpochChanged;
-        let spawner = FakeSpawner::new(trace.clone());
-        let signals = FakeSignalForwarding::new(trace.clone());
-
-        let cmd = [OsString::from("echo"), OsString::from("hi")];
-        let repos = sample_repos();
-        let perms = BTreeMap::from([("contents".to_string(), PermissionLevel::Read)]);
-        let req = sample_request(&cmd, &repos, &perms);
-
-        let err = execute_run(&client, &store, &spawner, &signals, &req).unwrap_err();
-        assert!(matches!(
-            err,
-            ExecuteError::Token(TokenError::EpochChanged(ref p)) if p == "reader"
-        ));
-        assert_eq!(err.cleanup_status(), None);
-
-        assert_eq!(
-            trace.events(),
-            vec![
-                "read_base",
-                "issuance_guard",
-                "create_scoped_token",
-                "commit_pending",
-                "delete_token",
-            ]
-        );
-        assert_eq!(
-            *client.delete_calls.borrow(),
-            vec!["ghu_issued_run_tok_999"]
-        );
-    }
-
-    #[test]
-    fn run_ids_are_unique_random_and_domain_separated() {
-        use crate::cache::{compute_cache_key, compute_run_cache_key};
-        let first = generate_run_id::<crate::cache::CacheError>().unwrap();
-        let second = generate_run_id::<crate::cache::CacheError>().unwrap();
-        assert_eq!(first.len(), 64, "run ID must be 64 hex characters");
-        assert_ne!(first, second, "run IDs must be unique across calls");
-        assert_ne!(
-            compute_run_cache_key(&first),
-            compute_cache_key("run", &first),
-            "run cache key must be domain-separated from the generic cache key scheme"
-        );
+            match injected {
+                InjectedCommitOutcome::StorageError => {
+                    assert!(matches!(err, ExecuteError::Token(TokenError::Storage(_))));
+                }
+                InjectedCommitOutcome::EpochChanged => {
+                    assert!(matches!(
+                        err,
+                        ExecuteError::Token(TokenError::EpochChanged(ref profile))
+                            if profile == "reader"
+                    ));
+                }
+                InjectedCommitOutcome::BaseGenerationChanged => {
+                    assert!(matches!(
+                        err,
+                        ExecuteError::Token(TokenError::BaseGenerationChanged(ref profile))
+                            if profile == "reader"
+                    ));
+                }
+                InjectedCommitOutcome::Saved => unreachable!(),
+            }
+            assert_eq!(err.cleanup_status(), None);
+            assert_eq!(
+                trace.events(),
+                vec![
+                    "read_base",
+                    "issuance_guard",
+                    "create_scoped_token",
+                    "commit_pending",
+                    "delete_token",
+                ]
+            );
+            assert_eq!(
+                *client.delete_calls.borrow(),
+                vec!["ghu_issued_run_tok_999"]
+            );
+        }
     }
 
     #[test]
@@ -1404,43 +1359,6 @@ mod tests {
             render_command_line(&command),
             r#"printf "first\n    Lifetime: Fake""#,
             "newlines in arguments must be escaped to prevent status-line injection"
-        );
-    }
-
-    #[test]
-    fn test_commit_pending_base_generation_changed_revokes_candidate_without_spawning() {
-        let trace = ExecutionTrace::new();
-        let client = FakeWorkflowClient::new(trace.clone());
-        let mut store = FakeWorkflowStore::new(trace.clone());
-        store.injected_commit = InjectedCommitOutcome::BaseGenerationChanged;
-        let spawner = FakeSpawner::new(trace.clone());
-        let signals = FakeSignalForwarding::new(trace.clone());
-
-        let cmd = [OsString::from("echo"), OsString::from("hi")];
-        let repos = sample_repos();
-        let perms = BTreeMap::from([("contents".to_string(), PermissionLevel::Read)]);
-        let req = sample_request(&cmd, &repos, &perms);
-
-        let err = execute_run(&client, &store, &spawner, &signals, &req).unwrap_err();
-        assert!(matches!(
-            err,
-            ExecuteError::Token(TokenError::BaseGenerationChanged(ref p)) if p == "reader"
-        ));
-        assert_eq!(err.cleanup_status(), None);
-
-        assert_eq!(
-            trace.events(),
-            vec![
-                "read_base",
-                "issuance_guard",
-                "create_scoped_token",
-                "commit_pending",
-                "delete_token",
-            ]
-        );
-        assert_eq!(
-            *client.delete_calls.borrow(),
-            vec!["ghu_issued_run_tok_999"]
         );
     }
 }

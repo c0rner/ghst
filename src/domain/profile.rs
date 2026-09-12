@@ -48,6 +48,21 @@ impl<'a> AppCredentials<'a> {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct NamedAppRegistration<'a> {
+    pub profile_name: &'a str,
+    pub app: AppRegistration<'a>,
+}
+
+impl fmt::Debug for NamedAppRegistration<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NamedAppRegistration")
+            .field("profile_name", &self.profile_name)
+            .field("app", &self.app)
+            .finish()
+    }
+}
+
 #[derive(Clone, PartialEq, Eq)]
 pub enum ResolvedTokenProfile<'a> {
     Base {
@@ -251,5 +266,24 @@ mod tests {
         assert!(scoped_debug.contains("[REDACTED]"));
         assert!(scoped_debug.contains("scoped-profile"));
         assert!(scoped_debug.contains("base-profile"));
+
+        let named_with_secret = NamedAppRegistration {
+            profile_name: "custom-app",
+            app: registration_secret,
+        };
+        let named_debug = format!("{named_with_secret:?}");
+        assert!(!named_debug.contains(secret));
+        assert!(named_debug.contains("[REDACTED]"));
+        assert!(named_debug.contains("custom-app"));
+        assert!(named_debug.contains("acme-corp"));
+
+        let named_secretless = NamedAppRegistration {
+            profile_name: "secretless-app",
+            app: registration_secretless,
+        };
+        let named_secretless_debug = format!("{named_secretless:?}");
+        assert!(!named_secretless_debug.contains("[REDACTED]"));
+        assert!(named_secretless_debug.contains("None"));
+        assert!(named_secretless_debug.contains("secretless-app"));
     }
 }

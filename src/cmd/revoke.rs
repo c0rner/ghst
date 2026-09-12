@@ -6,6 +6,7 @@ use std::io::{self, Write};
 pub fn run_revoke(args: &GhstCli, cmd: &RevokeCmd) -> Result<(), CmdError> {
     let selection = selection(cmd)?;
     let config = crate::config::load(args.config.as_deref())?;
+    let app_registrations = config.app_registrations();
     let cache_dir = crate::config::cache_dir()?;
     let store = crate::cache::CacheStore::new(&cache_dir);
     let now = time::OffsetDateTime::now_utc();
@@ -13,11 +14,11 @@ pub fn run_revoke(args: &GhstCli, cmd: &RevokeCmd) -> Result<(), CmdError> {
     let report = match selection {
         RevokeSelection::All => {
             tracing::debug!(cache_dir = %cache_dir.display(), "revoking all cached credentials");
-            crate::token::revoke::revoke_all(&client, &config, &store, now)?
+            crate::token::revoke::revoke_all(&client, &app_registrations, &store, now)?
         }
         RevokeSelection::One(id) => {
             tracing::debug!(cache_dir = %cache_dir.display(), cache_id = id, "revoking cached credential");
-            match crate::token::revoke::revoke_one(&client, &config, &store, id, now)? {
+            match crate::token::revoke::revoke_one(&client, &app_registrations, &store, id, now)? {
                 RevokeOneOutcome::Revoked(report) => report,
                 RevokeOneOutcome::NotFound => {
                     return Err(CmdError::RevokeTargetNotFound(id.to_owned()));

@@ -1,4 +1,4 @@
-use crate::config::Config;
+use crate::domain::profile::{AppRegistration, NamedAppRegistration};
 use crate::token::store::{
     BeginRevocation, DeleteInspectedRecord, DeleteOutcome, InspectionState, Record,
     RecordInspection, RevocationBatch, RevocationSelection,
@@ -135,7 +135,7 @@ pub enum RevokeOneOutcome<E> {
 
 pub fn revoke_all<C, S, E>(
     client: &C,
-    config: &Config,
+    apps: &[NamedAppRegistration<'_>],
     store: &S,
     now: OffsetDateTime,
 ) -> Result<RevokeReport<E>, E>
@@ -150,13 +150,13 @@ where
         RevocationBatch::NotFound | RevocationBatch::Ambiguous => Vec::new(),
     };
     Ok(process_revocation_batch(
-        client, config, store, snapshots, now,
+        client, apps, store, snapshots, now,
     ))
 }
 
 pub fn revoke_one<C, S, E>(
     client: &C,
-    config: &Config,
+    apps: &[NamedAppRegistration<'_>],
     store: &S,
     cache_id: &str,
     now: OffsetDateTime,
@@ -171,7 +171,7 @@ where
         RevocationBatch::NotFound => Ok(RevokeOneOutcome::NotFound),
         RevocationBatch::Ambiguous => Ok(RevokeOneOutcome::Ambiguous),
         RevocationBatch::Selected(snapshots) => {
-            let report = process_revocation_batch(client, config, store, snapshots, now);
+            let report = process_revocation_batch(client, apps, store, snapshots, now);
             Ok(RevokeOneOutcome::Revoked(report))
         }
     }
@@ -179,7 +179,7 @@ where
 
 fn process_revocation_batch<C, S, E>(
     client: &C,
-    config: &Config,
+    apps: &[NamedAppRegistration<'_>],
     store: &S,
     snapshots: Vec<RecordInspection>,
     now: OffsetDateTime,
@@ -195,7 +195,7 @@ where
         "processing selected records for revocation"
     );
     for snapshot in snapshots {
-        process_snapshot(client, config, store, snapshot, now, &mut report);
+        process_snapshot(client, apps, store, snapshot, now, &mut report);
     }
     report
 }
@@ -215,7 +215,7 @@ enum LocalOnlyReason {
 
 fn process_snapshot<C, S, E>(
     client: &C,
-    config: &Config,
+    apps: &[NamedAppRegistration<'_>],
     store: &S,
     snapshot: RecordInspection,
     now: OffsetDateTime,
@@ -256,9 +256,9 @@ fn process_snapshot<C, S, E>(
         return;
     }
 
-    match crate::token::provenance::for_entry(config, &entry) {
+    match crate::token::provenance::for_entry(apps, &entry) {
         crate::token::provenance::ConfiguredAuthority::Match(app) => {
-            revoke_matching_authority(client, store, app, &slot_id, &entry, &label, report);
+            revoke_matching_authority(client, store, &app, &slot_id, &entry, &label, report);
         }
         crate::token::provenance::ConfiguredAuthority::Mismatch => {
             tracing::debug!(
@@ -294,7 +294,7 @@ fn process_snapshot<C, S, E>(
 fn revoke_matching_authority<C, S, E>(
     client: &C,
     store: &S,
-    app: &crate::config::AppProfile,
+    app: &AppRegistration<'_>,
     slot_id: &str,
     entry: &Record,
     label: &str,
@@ -304,7 +304,7 @@ fn revoke_matching_authority<C, S, E>(
     S: DeleteInspectedRecord<Error = E>,
     E: std::error::Error + 'static,
 {
-    let Some(secret) = app.github_app.client_secret.as_deref() else {
+    let Some(secret) = app.client_secret else {
         tracing::debug!(
             entry = label,
             "client secret unavailable; deleting cached credential locally only"
@@ -320,7 +320,7 @@ fn revoke_matching_authority<C, S, E>(
         return;
     };
     match client.delete_token(
-        &app.github_app.client_id,
+        app.authority.client_id,
         secret,
         entry.access_token().as_ref(),
     ) {
@@ -480,6 +480,7 @@ mod tests {
     use crate::credential::{
         AccessToken, BaseCredential, ScopedCredential, TokenExpiry, authority_fingerprint,
     };
+    use crate::domain::profile::AppAuthority;
     use crate::run::{RunRecord, RunState};
     use std::cell::{Cell, RefCell};
     use std::path::Path;
@@ -520,17 +521,17 @@ mod tests {
         }
     }
 
-    fn config(secret: bool) -> Config {
-        let secret = if secret {
-            "github_app.client_secret = \"secret\""
-        } else {
-            ""
-        };
-        format!(
-            "version = 1\ndefault_profile = \"developer\"\n[profile.developer]\ngithub_app.account = \"acme\"\ngithub_app.client_id = \"id\"\n{secret}\n"
-        )
-        .parse()
-        .unwrap()
+    fn app_regs(secret: bool) -> [NamedAppRegistration<'static>; 1] {
+        [NamedAppRegistration {
+            profile_name: "developer",
+            app: AppRegistration {
+                authority: AppAuthority {
+                    account: "acme",
+                    client_id: "id",
+                },
+                client_secret: if secret { Some("secret") } else { None },
+            },
+        }]
     }
 
     fn cache_base(cache_dir: &Path, expiry: OffsetDateTime) {
@@ -557,7 +558,7 @@ mod tests {
         let client = MockClient::default();
         let store = CacheStore::new(&cache_dir);
         let report =
-            revoke_all(&client, &config(false), &store, OffsetDateTime::now_utc()).unwrap();
+            revoke_all(&client, &app_regs(false), &store, OffsetDateTime::now_utc()).unwrap();
         assert_eq!(report.local_only, 1);
         assert_eq!(report.failures.len(), 1);
         assert_eq!(client.calls.get(), 0);
@@ -573,7 +574,7 @@ mod tests {
             let client = MockClient::default();
             let store = CacheStore::new(&cache_dir);
             let report =
-                revoke_all(&client, &config(true), &store, OffsetDateTime::now_utc()).unwrap();
+                revoke_all(&client, &app_regs(true), &store, OffsetDateTime::now_utc()).unwrap();
             assert_eq!(client.calls.get(), remote);
             assert!(report.failures.is_empty());
             assert!(list_all_cache_entries(&cache_dir).unwrap().is_empty());
@@ -608,7 +609,7 @@ mod tests {
 
         let report = match revoke_one(
             &client,
-            &config(true),
+            &app_regs(true),
             &store,
             &scoped_key[..crate::cache::MIN_CACHE_ID_LENGTH],
             now,
@@ -627,7 +628,7 @@ mod tests {
         assert_eq!(entries[0].0, crate::token::base_cache_key("developer"));
 
         assert!(matches!(
-            revoke_one(&client, &config(true), &store, &scoped_key, now).unwrap(),
+            revoke_one(&client, &app_regs(true), &store, &scoped_key, now).unwrap(),
             RevokeOneOutcome::NotFound
         ));
     }
@@ -642,7 +643,7 @@ mod tests {
         let client = MockClient::with_status(500);
         let store = CacheStore::new(&cache_dir);
 
-        let report = match revoke_one(&client, &config(true), &store, &base_key, now).unwrap() {
+        let report = match revoke_one(&client, &app_regs(true), &store, &base_key, now).unwrap() {
             RevokeOneOutcome::Revoked(report) => report,
             other => panic!("unexpected outcome: {other:?}"),
         };
@@ -676,7 +677,7 @@ mod tests {
         let client = MockClient::default();
         let store = CacheStore::new(&cache_dir);
 
-        let outcome = revoke_one(&client, &config(true), &store, "0123456", now).unwrap();
+        let outcome = revoke_one(&client, &app_regs(true), &store, "0123456", now).unwrap();
 
         assert!(matches!(outcome, RevokeOneOutcome::Ambiguous));
         assert!(client.revoked.borrow().is_empty());
@@ -687,9 +688,16 @@ mod tests {
     #[test]
     fn authority_mismatch_is_local_only_for_every_cache_kind() {
         let now = OffsetDateTime::now_utc();
-        let changed: Config = "version = 1\ndefault_profile = \"developer\"\n[profile.developer]\ngithub_app.account = \"different\"\ngithub_app.client_id = \"other-id\"\ngithub_app.client_secret = \"secret\"\n"
-            .parse()
-            .unwrap();
+        let changed = [NamedAppRegistration {
+            profile_name: "developer",
+            app: AppRegistration {
+                authority: AppAuthority {
+                    account: "different",
+                    client_id: "other-id",
+                },
+                client_secret: Some("secret"),
+            },
+        }];
         for (key, entry) in mismatched_entries(now + Duration::hours(1)) {
             let temp = tempfile::tempdir().unwrap();
             let cache_dir = temp.path().join("cache");
@@ -798,7 +806,7 @@ mod tests {
         let cache_dir_clone = cache_dir.clone();
         let worker = std::thread::spawn(move || {
             let store = CacheStore::new(&cache_dir_clone);
-            revoke_all(&*client_clone, &config(true), &store, now).unwrap()
+            revoke_all(&*client_clone, &app_regs(true), &store, now).unwrap()
         });
 
         started_rx
@@ -853,7 +861,7 @@ mod tests {
         let cache_dir_clone = cache_dir.clone();
         let worker = std::thread::spawn(move || {
             let store = CacheStore::new(&cache_dir_clone);
-            revoke_all(&*client_clone, &config(true), &store, now).unwrap()
+            revoke_all(&*client_clone, &app_regs(true), &store, now).unwrap()
         });
 
         started_rx
@@ -899,7 +907,7 @@ mod tests {
             cache_base(&cache_dir, now + Duration::seconds(secs));
             let client = MockClient::default();
             let store = CacheStore::new(&cache_dir);
-            let report = revoke_all(&client, &config(true), &store, now).unwrap();
+            let report = revoke_all(&client, &app_regs(true), &store, now).unwrap();
             assert_eq!(client.calls.get(), remote);
             assert_eq!(report.local_only, local);
             assert_eq!(report.remotely_inactive, remote);
@@ -933,7 +941,7 @@ mod tests {
 
         let client = MockClient::default();
         let store = CacheStore::new(&cache_dir);
-        let report = revoke_all(&client, &config(true), &store, now).unwrap();
+        let report = revoke_all(&client, &app_regs(true), &store, now).unwrap();
 
         assert_eq!(report.remotely_inactive, 1);
         assert_eq!(report.failures.len(), 0);
@@ -949,7 +957,8 @@ mod tests {
         cache_base(&cache_dir, now + Duration::hours(1));
 
         let store = CacheStore::new(&cache_dir);
-        let report = revoke_all(&MockClient::with_status(404), &config(true), &store, now).unwrap();
+        let report =
+            revoke_all(&MockClient::with_status(404), &app_regs(true), &store, now).unwrap();
         assert_eq!(report.remotely_inactive, 1);
         assert_eq!(report.retained, 0);
         assert!(report.failures.is_empty());
@@ -994,7 +1003,7 @@ mod tests {
 
         let client = MockClient::default();
         let store = CacheStore::new(&cache_dir);
-        let report = revoke_all(&client, &config(true), &store, now).unwrap();
+        let report = revoke_all(&client, &app_regs(true), &store, now).unwrap();
 
         assert_eq!(client.calls.get(), 0);
         assert_eq!(report.remotely_inactive, 0);
@@ -1085,11 +1094,11 @@ mod tests {
         });
 
         let client1 = Arc::clone(&client);
-        let cfg1 = config(true);
+        let apps1 = app_regs(true);
         let cache_dir1 = cache_dir.clone();
         let worker1 = std::thread::spawn(move || {
             let store1 = CacheStore::new(&cache_dir1);
-            revoke_all(&*client1, &cfg1, &store1, now).unwrap()
+            revoke_all(&*client1, &apps1, &store1, now).unwrap()
         });
 
         // Wait until revoker 1 has snapshotted the token and is paused in remote deletion
@@ -1099,11 +1108,11 @@ mod tests {
 
         // Now start revoker 2; it will snapshot the same token because revoker 1 has not unlinked it
         let client2 = Arc::clone(&client);
-        let cfg2 = config(true);
+        let apps2 = app_regs(true);
         let cache_dir2 = cache_dir.clone();
         let worker2 = std::thread::spawn(move || {
             let store2 = CacheStore::new(&cache_dir2);
-            revoke_all(&*client2, &cfg2, &store2, now).unwrap()
+            revoke_all(&*client2, &apps2, &store2, now).unwrap()
         });
 
         // Wait until revoker 2 has also snapshotted and is paused in remote deletion
@@ -1232,7 +1241,7 @@ mod tests {
                 delete_fn,
             };
             let client = MockClient::default();
-            let report = revoke_all(&client, &config(true), &store, now).unwrap();
+            let report = revoke_all(&client, &app_regs(true), &store, now).unwrap();
 
             assert_eq!(report.remotely_inactive, 0);
             assert_eq!(report.local_only, 0);

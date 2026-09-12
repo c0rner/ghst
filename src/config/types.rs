@@ -5,7 +5,8 @@ use serde::Deserialize;
 
 use crate::config::error::ConfigError;
 use crate::domain::profile::{
-    AppAuthority, AppCredentials, AppRegistration, PermissionLevel, RepoScope, ResolvedTokenProfile,
+    AppAuthority, AppCredentials, AppRegistration, NamedAppRegistration, PermissionLevel,
+    RepoScope, ResolvedTokenProfile,
 };
 
 #[derive(PartialEq, Eq, Deserialize)]
@@ -20,6 +21,25 @@ pub struct Config {
 }
 
 impl Config {
+    pub fn app_registrations(&self) -> Vec<NamedAppRegistration<'_>> {
+        self.profiles
+            .iter()
+            .filter_map(|(name, profile)| match profile {
+                ProfileConfig::App(app) => Some(NamedAppRegistration {
+                    profile_name: name.as_str(),
+                    app: AppRegistration {
+                        authority: AppAuthority {
+                            account: &app.github_app.account,
+                            client_id: &app.github_app.client_id,
+                        },
+                        client_secret: app.github_app.client_secret.as_deref(),
+                    },
+                }),
+                ProfileConfig::Scoped(_) => None,
+            })
+            .collect()
+    }
+
     pub fn resolve_token_profile<'a>(
         &'a self,
         name: &str,

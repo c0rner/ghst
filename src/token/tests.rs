@@ -274,6 +274,32 @@ fn base_acquisition_returns_cached_token() {
 }
 
 #[test]
+fn base_acquisition_rejects_a_token_at_the_handoff_boundary() {
+    let now = OffsetDateTime::now_utc();
+    let temp = tempfile::tempdir().unwrap();
+    let cache_dir = temp.path().join("cache");
+    cache_base(&cache_dir, now, "unsafe-base");
+    let key = base_cache_key("developer");
+    let Record::Base(mut base) = load_cache_entry(&cache_dir, &key).unwrap().unwrap() else {
+        panic!("expected base entry")
+    };
+    base.expires_at = TokenExpiry::new(now + Duration::seconds(30));
+    write_test_entry(&cache_dir, &key, &Record::Base(base)).unwrap();
+    let config: Config = CONFIG.parse().unwrap();
+    let profile = config.resolve_token_profile("developer").unwrap();
+
+    assert!(matches!(
+        super::acquire::acquire_with_clock(
+            &no_response_client(),
+            &CacheStore::new(&cache_dir),
+            base_request(&profile),
+            || now,
+        ),
+        Err(TokenError::NoBaseTokenCached(profile)) if profile == "developer"
+    ));
+}
+
+#[test]
 fn invalid_base_response_is_revoked_and_not_persisted() {
     let config: Config = CONFIG.parse().unwrap();
     let profile = config.resolve_token_profile("developer").unwrap();
@@ -1187,4 +1213,5 @@ fn scoped_acquisition_treats_other_provenance_mismatches_as_a_cache_miss() {
 
     assert_eq!(acquired.access_token.as_ref(), "minted-token");
     assert!(client.request.borrow().is_some());
+    assert!(client.revoked.borrow().is_empty());
 }

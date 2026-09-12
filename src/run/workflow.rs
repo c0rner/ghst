@@ -526,8 +526,7 @@ mod tests {
     use crate::token::{IssuedScopedToken, RemoteError, ScopedTokenRequest};
     use std::cell::RefCell;
     use std::rc::Rc;
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicU64, Ordering};
     use time::Duration;
 
     #[derive(Debug)]
@@ -648,7 +647,6 @@ mod tests {
     struct FakeWorkflowStore {
         trace: ExecutionTrace,
         guard_counter: AtomicU64,
-        pending_committed: Arc<AtomicBool>,
         injected_commit: InjectedCommitOutcome,
         injected_failure: Option<InjectedStoreFailure>,
         aborted_observation: RefCell<AbortObservation>,
@@ -659,7 +657,6 @@ mod tests {
             Self {
                 trace,
                 guard_counter: AtomicU64::new(1),
-                pending_committed: Arc::new(AtomicBool::new(false)),
                 injected_commit: InjectedCommitOutcome::Saved,
                 injected_failure: None,
                 aborted_observation: RefCell::new(AbortObservation::NotAborted),
@@ -755,10 +752,7 @@ mod tests {
         ) -> Result<PendingRunOutcome, Self::Error> {
             self.trace.record("commit_pending");
             match self.injected_commit {
-                InjectedCommitOutcome::Saved => {
-                    self.pending_committed.store(true, Ordering::SeqCst);
-                    Ok(PendingRunOutcome::Saved)
-                }
+                InjectedCommitOutcome::Saved => Ok(PendingRunOutcome::Saved),
                 InjectedCommitOutcome::EpochChanged => Ok(PendingRunOutcome::EpochChanged),
                 InjectedCommitOutcome::BaseGenerationChanged => {
                     Ok(PendingRunOutcome::BaseGenerationChanged)
@@ -895,7 +889,6 @@ mod tests {
         fail_spawn: bool,
         child_exit: i32,
         fail_wait: bool,
-        assert_store_committed: Option<Arc<AtomicBool>>,
     }
 
     impl FakeSpawner {
@@ -905,7 +898,6 @@ mod tests {
                 fail_spawn: false,
                 child_exit: 0,
                 fail_wait: false,
-                assert_store_committed: None,
             }
         }
     }
@@ -916,12 +908,6 @@ mod tests {
 
         fn spawn(&self, request: &SpawnRequest<'_>) -> Result<Self::Child, Self::Error> {
             self.trace.record("spawn");
-            if let Some(ref committed) = self.assert_store_committed {
-                assert!(
-                    committed.load(Ordering::SeqCst),
-                    "store must commit pending before spawn!"
-                );
-            }
             assert_eq!(request.token, "ghu_issued_run_tok_999");
             if self.fail_spawn {
                 Err(MockError("spawn failed"))
@@ -1347,6 +1333,18 @@ mod tests {
                 vec!["ghu_issued_run_tok_999"]
             );
         }
+    }
+
+    #[test]
+    fn generated_run_ids_are_64_lowercase_hex_characters() {
+        let run_id = generate_run_id::<crate::cache::CacheError>().unwrap();
+
+        assert_eq!(run_id.len(), 64);
+        assert!(
+            run_id
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        );
     }
 
     #[test]

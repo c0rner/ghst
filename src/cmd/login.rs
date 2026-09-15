@@ -1,19 +1,19 @@
-use crate::browser::{display_auth_instructions, open_auth_url};
+use crate::browser::BrowserAuthorizationPresenter;
 use crate::cache::CacheStore;
 use crate::cmd::{CmdError, GhstCli, LoginCmd, format_human_expiry, resolve_profile_name};
-use crate::credential::store::IssuanceGuardStore;
 use crate::github::GitHubClient;
-use crate::profile::ResolvedTokenProfile;
-use crate::token::{BasePersistence, DeviceFlow};
-use time::OffsetDateTime;
-use tracing::{debug, info};
+use crate::profile::{NamedAppRegistration, ResolvedTokenProfile};
+use crate::token::{LoginOutcome, authenticate};
 
 /// Handles execution of the `ghst login` subcommand.
 pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
     let config = crate::config::load(args.config.as_deref())?;
     let profile_name = resolve_profile_name(cmd.profile.as_deref(), &config)?;
     let app = match config.resolve_token_profile(&profile_name)? {
-        ResolvedTokenProfile::Base { app, .. } => app,
+        ResolvedTokenProfile::Base { app, .. } => NamedAppRegistration {
+            profile_name: &profile_name,
+            app,
+        },
         ResolvedTokenProfile::Scoped { source_name, .. } => {
             return Err(CmdError::ScopedLoginNotAllowed {
                 profile: profile_name,
@@ -24,87 +24,84 @@ pub fn run_login(args: &GhstCli, cmd: &LoginCmd) -> Result<(), CmdError> {
 
     let cache_dir = crate::config::cache_dir()?;
     let store = CacheStore::new(&cache_dir);
-    debug!(
-        profile = profile_name,
-        "checking for a reusable cached base token"
-    );
-    if let Some(status) = crate::token::load_valid_base_status(
-        &store,
-        &profile_name,
-        &app.authority,
-        OffsetDateTime::now_utc(),
-    )? {
-        debug!(
-            profile = profile_name,
-            github_user = status.github_user,
-            expires_at = %status.expires_at,
-            "reusing cached base token"
-        );
-        report_existing(&profile_name, &status);
-        return Ok(());
-    }
-
     let client = GitHubClient::new();
-    let mut flow = DeviceFlow::new(&client, std::thread::sleep, &profile_name);
-    let guard = store.issuance_guard()?;
-    info!(profile = profile_name, "initiating OAuth Device Flow");
-    let device = flow.request_authorization(app.authority.client_id)?;
-    display_auth_instructions(
-        app.authority.account,
-        &device.user_code,
-        &device.verification_uri,
-    );
-    open_auth_url(
-        &device.verification_uri,
-        cmd.no_browser || config.no_browser,
-    );
-    println!("Waiting for authorization in browser...");
-
-    debug!(
-        profile = profile_name,
-        expires_in_seconds = device.expires_in.as_secs(),
-        poll_interval_seconds = device.interval.as_secs(),
-        "device authorization request created"
-    );
-    let response = flow.poll_authorization(app.authority.client_id, &device)?;
-    debug!(
-        profile = profile_name,
-        "device authorization completed; validating and caching base token"
-    );
-
-    match crate::token::persist_base_response(
-        &client,
-        &app,
-        &profile_name,
-        &store,
-        response,
-        OffsetDateTime::now_utc(),
-        guard,
-    )? {
-        BasePersistence::Saved(entry) => {
-            debug!(profile = profile_name, expires_at = %entry.expires_at, "cached new base token");
-            report_saved(&profile_name, &entry);
+    let presenter =
+        BrowserAuthorizationPresenter::new(no_browser(cmd.no_browser, config.no_browser));
+    match authenticate(&client, &store, &presenter, app)? {
+        LoginOutcome::Authenticated(status) => {
+            report_saved(&profile_name, &status);
         }
-        BasePersistence::Retained(entry) => {
-            debug!(profile = profile_name, expires_at = %entry.expires_at, "retained compatible base token cached by a concurrent login");
-            report_existing(&profile_name, &entry);
+        LoginOutcome::AlreadyAuthenticated(status) => {
+            report_existing(&profile_name, &status);
         }
     }
     Ok(())
 }
 
 fn report_saved(profile_name: &str, status: &crate::token::BaseTokenStatus) {
-    println!(
+    println!("{}", saved_message(profile_name, status));
+}
+
+fn saved_message(profile_name: &str, status: &crate::token::BaseTokenStatus) -> String {
+    format!(
         "Successfully authenticated as @{} for profile '{profile_name}'. Base token cached until {}.",
         status.github_user,
         format_human_expiry(status.expires_at)
-    );
+    )
 }
 
 fn report_existing(profile_name: &str, status: &crate::token::BaseTokenStatus) {
-    println!(
+    println!("{}", existing_message(profile_name, status));
+}
+
+fn existing_message(profile_name: &str, status: &crate::token::BaseTokenStatus) -> String {
+    format!(
         "Profile '{profile_name}' already has a valid cached base token for @{} (valid until {}).",
         status.github_user,
         format_human_expiry(status.expires_at)
-    );
+    )
+}
+
+const fn no_browser(command_line: bool, configured: bool) -> bool {
+    command_line || configured
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::credential::TokenExpiry;
+    use time::OffsetDateTime;
+
+    fn status() -> crate::token::BaseTokenStatus {
+        crate::token::BaseTokenStatus {
+            github_user: "octocat".into(),
+            expires_at: TokenExpiry::new(OffsetDateTime::UNIX_EPOCH),
+        }
+    }
+
+    #[test]
+    fn login_result_messages_are_exact() {
+        let status = status();
+        let expiry = format_human_expiry(status.expires_at);
+        assert_eq!(
+            saved_message("developer", &status),
+            format!(
+                "Successfully authenticated as @octocat for profile 'developer'. Base token cached until {expiry}."
+            )
+        );
+        assert_eq!(
+            existing_message("developer", &status),
+            format!(
+                "Profile 'developer' already has a valid cached base token for @octocat (valid until {expiry})."
+            )
+        );
+    }
+
+    #[test]
+    fn no_browser_flag_is_cli_or_configuration() {
+        assert!(!no_browser(false, false));
+        assert!(no_browser(true, false));
+        assert!(no_browser(false, true));
+        assert!(no_browser(true, true));
+    }
 }

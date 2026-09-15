@@ -1,7 +1,7 @@
 use crate::cache::CacheError;
 use crate::config::ConfigError;
 use crate::repository::RepositoryError;
-use crate::token::{DeviceFlowError, RemoteError, TokenError};
+use crate::token::{LoginError, RemoteError, TokenError};
 use std::fmt;
 use std::path::PathBuf;
 
@@ -215,12 +215,14 @@ impl From<RemoteError> for CmdError {
     }
 }
 
-impl From<DeviceFlowError> for CmdError {
-    fn from(error: DeviceFlowError) -> Self {
+impl From<LoginError<CacheError>> for CmdError {
+    fn from(error: LoginError<CacheError>) -> Self {
         match error {
-            DeviceFlowError::Remote(source) => Self::GitHub(source),
-            DeviceFlowError::Expired => Self::OAuthExpired,
-            DeviceFlowError::AccessDenied => Self::OAuthAccessDenied,
+            LoginError::Token(source) => Self::Token(source),
+            LoginError::IssuanceGuard(source) => Self::Cache(source),
+            LoginError::Remote(source) => Self::GitHub(source),
+            LoginError::Expired => Self::OAuthExpired,
+            LoginError::AccessDenied => Self::OAuthAccessDenied,
         }
     }
 }
@@ -273,13 +275,37 @@ mod tests {
     #[test]
     fn device_flow_terminal_states_keep_login_guidance() {
         assert_eq!(
-            CmdError::from(DeviceFlowError::Expired).to_string(),
+            CmdError::from(LoginError::<CacheError>::Expired).to_string(),
             "device code expired; run `ghst login` again"
         );
         assert_eq!(
-            CmdError::from(DeviceFlowError::AccessDenied).to_string(),
+            CmdError::from(LoginError::<CacheError>::AccessDenied).to_string(),
             "authorization request was denied by the user"
         );
+    }
+
+    #[test]
+    fn login_error_mapping_preserves_cli_categories_and_sources() {
+        let cache = CacheError::io(
+            "/tmp/cache/entry",
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied"),
+        );
+        let token = CmdError::from(LoginError::Token(TokenError::Storage(cache)));
+        assert!(matches!(token, CmdError::Token(_)));
+        assert!(std::error::Error::source(&token).is_some());
+
+        let guard = CmdError::from(LoginError::IssuanceGuard(CacheError::io(
+            "/tmp/cache/lock",
+            std::io::Error::other("locked"),
+        )));
+        assert!(matches!(guard, CmdError::Cache(_)));
+        assert!(std::error::Error::source(&guard).is_some());
+
+        let remote = CmdError::from(LoginError::<CacheError>::Remote(RemoteError::Protocol {
+            context: "oauth",
+        }));
+        assert!(matches!(remote, CmdError::GitHub(_)));
+        assert!(std::error::Error::source(&remote).is_some());
     }
 
     #[test]

@@ -1,5 +1,28 @@
+use crate::token::{AuthorizationPrompt, PresentAuthorization};
 use std::io::Write;
 use tracing::{info, warn};
+
+pub struct BrowserAuthorizationPresenter {
+    no_browser: bool,
+}
+
+impl BrowserAuthorizationPresenter {
+    pub const fn new(no_browser: bool) -> Self {
+        Self { no_browser }
+    }
+}
+
+impl PresentAuthorization for BrowserAuthorizationPresenter {
+    fn present(&self, prompt: AuthorizationPrompt<'_>) {
+        display_auth_instructions(
+            prompt.target_account,
+            prompt.user_code,
+            prompt.verification_uri,
+        );
+        open_auth_url(prompt.verification_uri, self.no_browser);
+        println!("Waiting for authorization in browser...");
+    }
+}
 
 /// Print a prominent multiline authorization banner for GitHub OAuth Device Flow.
 pub fn display_auth_instructions(target_account: &str, user_code: &str, verification_uri: &str) {

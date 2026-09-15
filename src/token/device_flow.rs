@@ -6,7 +6,7 @@ use std::time::Duration;
 use tracing::{debug, warn};
 
 #[derive(Debug)]
-pub enum DeviceFlowError {
+pub(super) enum DeviceFlowError {
     Remote(RemoteError),
     Expired,
     AccessDenied,
@@ -37,7 +37,7 @@ impl From<RemoteError> for DeviceFlowError {
     }
 }
 
-pub struct DeviceFlow<'a, C, S> {
+pub(super) struct DeviceFlow<'a, C, S> {
     client: &'a C,
     sleep: S,
     profile_name: &'a str,
@@ -48,7 +48,7 @@ where
     C: DeviceFlowClient,
     S: FnMut(Duration),
 {
-    pub const fn new(client: &'a C, sleep: S, profile_name: &'a str) -> Self {
+    pub(super) const fn new(client: &'a C, sleep: S, profile_name: &'a str) -> Self {
         Self {
             client,
             sleep,
@@ -56,7 +56,7 @@ where
         }
     }
 
-    pub fn request_authorization(
+    pub(super) fn request_authorization(
         &self,
         client_id: &str,
     ) -> Result<DeviceAuthorization, DeviceFlowError> {
@@ -65,7 +65,7 @@ where
             .map_err(Into::into)
     }
 
-    pub fn poll_authorization(
+    pub(super) fn poll_authorization(
         &mut self,
         client_id: &str,
         authorization: &DeviceAuthorization,

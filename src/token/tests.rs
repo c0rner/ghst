@@ -12,6 +12,7 @@ use crate::credential::{
     policy_fingerprint,
 };
 use crate::profile::{AppAuthority, ResolvedTokenProfile};
+use crate::token::base::persist_base_response;
 use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::Path;

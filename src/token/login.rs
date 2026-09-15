@@ -119,17 +119,17 @@ where
     let authorization = flow
         .request_authorization(app.app.authority.client_id)
         .map_err(map_device_flow_error)?;
+    presenter.present(AuthorizationPrompt {
+        target_account: app.app.authority.account,
+        user_code: &authorization.user_code,
+        verification_uri: &authorization.verification_uri,
+    });
     tracing::debug!(
         profile = app.profile_name,
         expires_in_seconds = authorization.expires_in.as_secs(),
         poll_interval_seconds = authorization.interval.as_secs(),
         "device authorization request created"
     );
-    presenter.present(AuthorizationPrompt {
-        target_account: app.app.authority.account,
-        user_code: &authorization.user_code,
-        verification_uri: &authorization.verification_uri,
-    });
     let response = flow
         .poll_authorization(app.app.authority.client_id, &authorization)
         .map_err(map_device_flow_error)?;

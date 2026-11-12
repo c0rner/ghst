@@ -855,9 +855,12 @@ dependencies = [
 
 [[package]]
 name = "sysdirs"
-version = "0.9.4"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7578b3743c69fccacb467648b3755cbee8fcef4cc9a4c8d75b0211cc082e1d20"
+checksum = "ef2db808c3cdb03ab5046d650b53bf6ccefdf47a03d8633ffbdbb619a3dd8579"
+dependencies = [
+ "windows-sys 0.61.2",
+]
 
 [[package]]
 name = "tempfile"
